@@ -49,6 +49,11 @@ public final class EffectActionExecutor: EffectActionExecutorProtocol {
     public private(set) var pulseRingEntity: PulseRingEntity?
     public private(set) var sparkBurstEntity: SparkBurstEntity?
 
+    /// id → handler closure for `.custom(id:)` step actions. Consumers
+    /// register handlers at app launch; the engine looks them up here
+    /// when a chapter step fires `.custom(id:)`.
+    private var customHandlers: [String: @MainActor () -> Void] = [:]
+
     // MARK: - Pulse Ring
 
     public func showPulseRing(config: PulseRingConfig) {
@@ -109,7 +114,23 @@ public final class EffectActionExecutor: EffectActionExecutorProtocol {
 
     // MARK: - Custom
 
+    /// Register a handler that fires when a chapter step's `.custom(id:)`
+    /// action runs. Overwrites any previous handler for the same id.
+    public func registerCustomAction(id: String, _ handler: @escaping @MainActor () -> Void) {
+        customHandlers[id] = handler
+    }
+
+    /// Remove a previously-registered custom action handler. Calls with
+    /// an unknown id are no-ops.
+    public func unregisterCustomAction(id: String) {
+        customHandlers.removeValue(forKey: id)
+    }
+
     public func handleCustomAction(id: String) {
-        logger.info("handleCustomAction — id=\(id) (no handler registered)")
+        if let handler = customHandlers[id] {
+            handler()
+        } else {
+            logger.info("handleCustomAction — id=\(id) (no handler registered)")
+        }
     }
 }
