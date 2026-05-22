@@ -1,0 +1,15 @@
+{
+  "originHash" : "7c685088b8bb7f0ce8bb80aa07991ea4ab018d12a10c682707ae6823dfc477f6",
+  "pins" : [
+    {
+      "identity" : "chapterscript",
+      "kind" : "remoteSourceControl",
+      "location" : "https://github.com/mike-bundy/ChapterScript.git",
+      "state" : {
+        "revision" : "268fda9c4bc64a98953643f1e4df62ed328c7976",
+        "version" : "0.4.0"
+      }
+    }
+  ],
+  "version" : 3
+}
