@@ -129,7 +129,7 @@ private extension AudioEffect {
 // MARK: - MoveAction / FadeAction / RevealAction
 
 private extension MoveAction {
-    public init(_ dto: MoveActionDTO) {
+    init(_ dto: MoveActionDTO) {
         self.init(
             entity: dto.entity,
             positionOffset: dto.positionOffset.map(SIMD3.init),
@@ -138,10 +138,22 @@ private extension MoveAction {
             headYOnly: dto.headYOnly,
             scaleMultiplier: dto.scaleMultiplier,
             absoluteScale: dto.absoluteScale.map(SIMD3.init),
+            absoluteRotation: dto.absoluteRotation.map { quatFromEulerDegrees(SIMD3($0)) },
+            rotationOffset: dto.rotationOffset.map { quatFromEulerDegrees(SIMD3($0)) },
             duration: dto.duration,
             timing: StepTimingFunction(dto.timing)
         )
     }
+}
+
+/// Convert Euler angles (degrees, YXZ order) to a quaternion. Matches the
+/// editor's `quatFromEuler` so authored rotations look identical in
+/// Maestro's viewport and on the headset.
+private func quatFromEulerDegrees(_ degrees: SIMD3<Float>) -> simd_quatf {
+    let r = degrees * .pi / 180
+    return simd_quatf(angle: r.y, axis: SIMD3<Float>(0, 1, 0))
+         * simd_quatf(angle: r.x, axis: SIMD3<Float>(1, 0, 0))
+         * simd_quatf(angle: r.z, axis: SIMD3<Float>(0, 0, 1))
 }
 
 private extension FadeAction {

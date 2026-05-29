@@ -114,13 +114,18 @@ public final class EntityActionExecutor: EntityActionExecutorProtocol {
             let worldTarget = resolveHeadWorldPosition(offset: headOffset, headYOnly: action.headYOnly)
 
             var targetScale = entity.scale(relativeTo: nil)
-            let targetRotation = entity.orientation(relativeTo: nil)
+            var targetRotation = entity.orientation(relativeTo: nil)
 
             if let multiplier = action.scaleMultiplier {
                 targetScale *= multiplier
             }
             if let absolute = action.absoluteScale {
                 targetScale = absolute
+            }
+            if let absRot = action.absoluteRotation {
+                targetRotation = absRot
+            } else if let offset = action.rotationOffset {
+                targetRotation = offset * targetRotation
             }
 
             let targetTransform = Transform(
@@ -137,7 +142,7 @@ public final class EntityActionExecutor: EntityActionExecutorProtocol {
             // Parent-space positioning
             var targetPosition = entity.position(relativeTo: entity.parent)
             var targetScale = entity.scale
-            let targetRotation = entity.orientation
+            var targetRotation = entity.orientation
 
             if let offset = action.positionOffset {
                 targetPosition += offset
@@ -150,6 +155,11 @@ public final class EntityActionExecutor: EntityActionExecutorProtocol {
             }
             if let absolute = action.absoluteScale {
                 targetScale = absolute
+            }
+            if let absRot = action.absoluteRotation {
+                targetRotation = absRot
+            } else if let offset = action.rotationOffset {
+                targetRotation = offset * targetRotation
             }
 
             let targetTransform = Transform(

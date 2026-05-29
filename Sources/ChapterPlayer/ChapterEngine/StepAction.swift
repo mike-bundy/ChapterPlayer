@@ -104,6 +104,12 @@ public struct MoveAction: Sendable {
     public let headYOnly: Bool
     public let scaleMultiplier: Float?
     public let absoluteScale: SIMD3<Float>?
+    /// Final absolute orientation. When set, the entity animates to this
+    /// orientation over `duration`.
+    public let absoluteRotation: simd_quatf?
+    /// Relative orientation delta composed onto the entity's current
+    /// orientation. Ignored when `absoluteRotation` is set.
+    public let rotationOffset: simd_quatf?
     public let duration: TimeInterval
     public let timing: StepTimingFunction
 
@@ -115,6 +121,8 @@ public struct MoveAction: Sendable {
         headYOnly: Bool = false,
         scaleMultiplier: Float? = nil,
         absoluteScale: SIMD3<Float>? = nil,
+        absoluteRotation: simd_quatf? = nil,
+        rotationOffset: simd_quatf? = nil,
         duration: TimeInterval = 1.0,
         timing: StepTimingFunction = .easeInOut
     ) {
@@ -129,6 +137,8 @@ public struct MoveAction: Sendable {
         self.headYOnly = headYOnly
         self.scaleMultiplier = scaleMultiplier
         self.absoluteScale = absoluteScale
+        self.absoluteRotation = absoluteRotation
+        self.rotationOffset = rotationOffset
         self.duration = duration
         self.timing = timing
     }
