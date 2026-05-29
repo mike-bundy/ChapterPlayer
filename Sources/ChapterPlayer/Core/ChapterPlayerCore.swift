@@ -98,7 +98,11 @@ open class ChapterPlayerCore {
             // space mounted, materialize its entities now that we have
             // a root.
             if let document = loadedExperience?.document, immersiveSceneRoot != nil {
-                documentEntities.materialize(document: document, sceneRoot: immersiveSceneRoot)
+                documentEntities.materialize(
+                    document: document,
+                    sceneRoot: immersiveSceneRoot,
+                    mediaResolver: loadedExperience?.mediaResolver
+                )
             }
         }
     }

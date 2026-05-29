@@ -61,8 +61,12 @@ public final class DocumentEntityLoader {
     /// Build every entity in `document.entities` and wire it into the
     /// scene + executors. Idempotent: a second call with a new document
     /// removes the prior batch first.
-    public func materialize(document: ExperienceDocument, sceneRoot: Entity?) {
+    public func materialize(document: ExperienceDocument, sceneRoot: Entity?, mediaResolver: MediaResolver? = nil) {
         unload()
+
+        // Give the factory the resolver so image entities ("Add Image"
+        // reveals) can locate their files and render as textured planes.
+        factory.mediaResolver = mediaResolver
 
         guard let entityExecutor, let videoManager else { return }
         guard let root = sceneRoot else {

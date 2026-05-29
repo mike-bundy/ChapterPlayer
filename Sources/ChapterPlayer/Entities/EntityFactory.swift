@@ -30,6 +30,11 @@ public final class EntityFactory {
 
     public init() {}
 
+    /// Resolver used to locate on-disk URLs for image entities (so an
+    /// "Add Image" reveal renders as an in-scene textured plane). Set by
+    /// `DocumentEntityLoader.materialize` from the loaded experience.
+    public var mediaResolver: MediaResolver?
+
     /// `customFactoryId` → factory closure. Populate at app launch with whatever
     /// custom procedural entities the player supports.
     public private(set) var customFactories: [String: (EntityDefinition) -> Entity] = [:]
@@ -60,10 +65,15 @@ public final class EntityFactory {
         case .particles:
             entity = Entity() // ParticleEmitterPreset binding is Phase 3+
         case .custom:
-            guard let id = definition.customFactoryId,
-                  let make = customFactories[id]
-            else { return nil }
-            entity = make(definition)
+            if let id = definition.customFactoryId, let make = customFactories[id] {
+                entity = make(definition)
+            } else if Self.isImageFile(definition.id) {
+                // Maestro "Add Image" entities travel as custom; render
+                // them as in-scene textured planes.
+                entity = makeImagePlane(definition)
+            } else {
+                return nil
+            }
         }
 
         entity.name = definition.id
@@ -73,6 +83,35 @@ public final class EntityFactory {
     }
 
     // MARK: - Built-in builders
+
+    /// True when an entity id names an image file the player can texture
+    /// onto an in-scene plane.
+    static func isImageFile(_ id: String) -> Bool {
+        let ext = (id as NSString).pathExtension.lowercased()
+        return ["heic", "jpg", "jpeg", "png"].contains(ext)
+    }
+
+    /// Build a flat plane textured with an image asset (an "Add Image"
+    /// reveal). Returns a neutral placeholder immediately and swaps in the
+    /// texture (and the image's aspect ratio) once it loads asynchronously.
+    private func makeImagePlane(_ def: EntityDefinition) -> Entity {
+        let model = ModelEntity(
+            mesh: .generatePlane(width: 1.0, height: 1.0),
+            materials: [UnlitMaterial(color: .gray)]
+        )
+        guard let url = mediaResolver?.url(for: def.id, kind: .image) else { return model }
+        Task { @MainActor in
+            guard let texture = try? await TextureResource(contentsOf: url) else { return }
+            var mat = UnlitMaterial()
+            mat.color = .init(tint: .white, texture: .init(texture))
+            model.model?.materials = [mat]
+            let w = Float(texture.width), h = Float(texture.height)
+            if w > 0, h > 0 {
+                model.model?.mesh = .generatePlane(width: w / h, height: 1.0)
+            }
+        }
+        return model
+    }
 
     private func makePrimitive(_ def: EntityDefinition) -> Entity {
         guard let spec = def.primitive else {
