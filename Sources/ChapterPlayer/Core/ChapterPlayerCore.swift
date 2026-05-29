@@ -158,8 +158,19 @@ open class ChapterPlayerCore {
         let deadline = Date().addingTimeInterval(3.0)
         while Date() < deadline {
             if let head = provider.sampleDeviceTransform(leveled: true) {
-                root.transform = head
-                logger.info("Rebased scene root to head: t=\(head.translation)")
+                // Take ONLY the head's height (Y) — the viewer's eye
+                // level. X / Z / yaw are intentionally NOT taken from
+                // the head: an entity authored at (0, 0, -2) should
+                // sit 2m in front of the tracking origin regardless
+                // of where in the room the viewer is standing or which
+                // way they're facing. Otherwise content would slide
+                // with the user.
+                root.transform = Transform(
+                    scale: .one,
+                    rotation: simd_quatf(angle: 0, axis: SIMD3<Float>(0, 1, 0)),
+                    translation: SIMD3<Float>(0, head.translation.y, 0)
+                )
+                logger.info("Rebased scene root to eye height: y=\(head.translation.y) (X/Z/yaw left at tracking origin)")
                 return
             }
             try? await Task.sleep(nanoseconds: 80_000_000) // 80ms
