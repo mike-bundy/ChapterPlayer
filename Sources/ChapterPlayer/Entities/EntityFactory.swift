@@ -53,9 +53,7 @@ public final class EntityFactory {
         case .primitive:
             entity = makePrimitive(definition)
         case .usdz:
-            // USDZ loading happens asynchronously via `Entity(named:in:)` —
-            // experiences that ship USDZ assets are a Phase 3+ concern.
-            entity = Entity()
+            entity = makeUSDZ(definition)
         case .text3D:
             entity = makeTextEntity(definition)
         case .light:
@@ -89,6 +87,34 @@ public final class EntityFactory {
     static func isImageFile(_ id: String) -> Bool {
         let ext = (id as NSString).pathExtension.lowercased()
         return ["heic", "jpg", "jpeg", "png"].contains(ext)
+    }
+
+    /// Load a USDZ asset (e.g. a Maestro-imported model) and parent it
+    /// under a placeholder Entity so the caller can apply the
+    /// EntityDefinition's transform without waiting for the async load.
+    /// The model swaps in once `Entity(contentsOf:)` resolves.
+    private func makeUSDZ(_ def: EntityDefinition) -> Entity {
+        let container = Entity()
+        // The id is also the filename; the usdzAssetId field doubles as
+        // the same when Maestro emits the definition.
+        let assetId = def.usdzAssetId ?? def.id
+        guard let url = mediaResolver?.url(for: assetId, kind: .usdz) else {
+            // Fall back to the main bundle so apps that ship USDZs as
+            // resources still resolve.
+            if let bundled = Bundle.main.url(forResource: (assetId as NSString).deletingPathExtension, withExtension: "usdz") {
+                loadUSDZ(from: bundled, into: container)
+            }
+            return container
+        }
+        loadUSDZ(from: url, into: container)
+        return container
+    }
+
+    private func loadUSDZ(from url: URL, into container: Entity) {
+        Task { @MainActor in
+            guard let loaded = try? await Entity(contentsOf: url) else { return }
+            container.addChild(loaded)
+        }
     }
 
     /// Build a flat plane textured with an image asset (an "Add Image"
