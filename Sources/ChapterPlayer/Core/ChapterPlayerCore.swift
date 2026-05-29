@@ -22,6 +22,7 @@ import RealityKit
 import SwiftUI
 import OSLog
 import ChapterScript
+import ARKit
 
 private let logger = Logger(
     subsystem: Bundle.main.bundleIdentifier ?? "com.shellcorp.chapterplayer",
@@ -94,9 +95,6 @@ open class ChapterPlayerCore {
     /// closure runs.
     public var immersiveSceneRoot: Entity? {
         didSet {
-            // If a document was already loaded before the immersive
-            // space mounted, materialize its entities now that we have
-            // a root.
             if let document = loadedExperience?.document, immersiveSceneRoot != nil {
                 documentEntities.materialize(
                     document: document,
@@ -104,7 +102,61 @@ open class ChapterPlayerCore {
                     mediaResolver: loadedExperience?.mediaResolver
                 )
             }
+            // Rebase the scene root to the viewer's head so all authored
+            // coordinates are implicitly head-relative — entities placed
+            // at (x, y, z) in Maestro appear at the same offset from the
+            // viewer's head on device. Sampled once when the root mounts;
+            // subsequent chapter changes don't re-rebase (which would
+            // disorientingly shift the world).
+            if immersiveSceneRoot != nil {
+                Task { await rebaseSceneRootToHead() }
+            }
         }
+    }
+
+    // MARK: - Head-anchored scene root
+
+    /// One-shot ARKit session that powers head sampling. Lazily started
+    /// the first time the immersive scene root mounts; lives for the
+    /// app's lifetime so `EntityActionExecutor.headTransformProvider`
+    /// stays connected for the (still supported) legacy
+    /// `headRelativePosition` action mode.
+    private var arkitSession: ARKitSession?
+    private var worldTracking: WorldTrackingProvider?
+
+    /// Start head tracking (if not already running), wire the executor's
+    /// head provider, then sample once and set the scene root's transform
+    /// to match — making world (0,0,0) = the viewer's head.
+    private func rebaseSceneRootToHead() async {
+        guard let root = immersiveSceneRoot else { return }
+        if worldTracking == nil {
+            let session = ARKitSession()
+            let provider = WorldTrackingProvider()
+            do {
+                try await session.run([provider])
+                self.arkitSession = session
+                self.worldTracking = provider
+                // Forward to the executor for the legacy head-relative
+                // action mode (older documents that still use it).
+                self.entityExecutor.headTransformProvider = { [weak provider] in
+                    provider?.sampleDeviceTransform(leveled: true)
+                }
+            } catch {
+                logger.warning("ARKit world tracking failed to start: \(error.localizedDescription)")
+                return
+            }
+        }
+        guard let provider = worldTracking,
+              let head = provider.sampleDeviceTransform(leveled: true)
+        else {
+            logger.info("Head not yet available; scene root left at origin.")
+            return
+        }
+        // Move the scene root to the viewer's head position + yaw. Now an
+        // entity at (0, 0, -2) sits 2m in front of the viewer at eye
+        // level regardless of where the user is in the room.
+        root.transform = head
+        logger.info("Rebased scene root to head: t=\(head.translation)")
     }
 
     // MARK: - Window / Space IDs
