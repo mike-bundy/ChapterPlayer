@@ -146,17 +146,25 @@ open class ChapterPlayerCore {
                 return
             }
         }
-        guard let provider = worldTracking,
-              let head = provider.sampleDeviceTransform(leveled: true)
-        else {
-            logger.info("Head not yet available; scene root left at origin.")
+        guard let provider = worldTracking else {
+            logger.warning("World tracking provider not running; scene root left at origin.")
             return
         }
-        // Move the scene root to the viewer's head position + yaw. Now an
-        // entity at (0, 0, -2) sits 2m in front of the viewer at eye
-        // level regardless of where the user is in the room.
-        root.transform = head
-        logger.info("Rebased scene root to head: t=\(head.translation)")
+        // `session.run` returning doesn't guarantee an anchor is ready —
+        // queryDeviceAnchor frequently returns nil for the first frame
+        // or two after start. Poll up to 3s before giving up so the
+        // rebase actually fires when the user first enters the
+        // immersive space.
+        let deadline = Date().addingTimeInterval(3.0)
+        while Date() < deadline {
+            if let head = provider.sampleDeviceTransform(leveled: true) {
+                root.transform = head
+                logger.info("Rebased scene root to head: t=\(head.translation)")
+                return
+            }
+            try? await Task.sleep(nanoseconds: 80_000_000) // 80ms
+        }
+        logger.warning("Head anchor never became available within 3s; scene root left at origin. Check NSWorldSensingUsageDescription in the app's Info.plist.")
     }
 
     // MARK: - Window / Space IDs
