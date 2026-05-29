@@ -168,14 +168,15 @@ private extension FadeAction {
 }
 
 private extension RevealAction {
-    public init(_ dto: RevealActionDTO) {
+    init(_ dto: RevealActionDTO) {
         self.init(
             entity: dto.entity,
             position: dto.position.map(SIMD3.init),
             headRelativePosition: dto.headRelativePosition.map(SIMD3.init),
             headYOnly: dto.headYOnly,
             scale: dto.scale.map(SIMD3.init),
-            fadeIn: dto.fadeIn
+            fadeIn: dto.fadeIn,
+            manipulable: dto.manipulable ?? false
         )
     }
 }

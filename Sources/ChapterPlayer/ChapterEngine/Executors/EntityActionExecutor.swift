@@ -247,7 +247,15 @@ public final class EntityActionExecutor: EntityActionExecutorProtocol {
         // 5. Fade in (or cut-in if duration == 0)
         entity.fadeOpacity(to: 1.0, duration: action.fadeIn)
 
-        logger.debug("Reveal entity: \(action.entity) fadeIn=\(String(format: "%.1f", action.fadeIn))s")
+        // 6. Optional hand manipulation — make the entity grabbable /
+        //    movable / rotatable / scalable by the viewer. RealityKit's
+        //    ManipulationComponent.configureEntity wires up the collision
+        //    + input-target + hover-effect components it needs.
+        if action.manipulable {
+            ManipulationComponent.configureEntity(entity)
+        }
+
+        logger.debug("Reveal entity: \(action.entity) fadeIn=\(String(format: "%.1f", action.fadeIn))s manipulable=\(action.manipulable)")
     }
 
     // MARK: - Head Position Helper

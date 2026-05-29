@@ -201,6 +201,9 @@ public struct RevealAction: Sendable {
     public let headYOnly: Bool
     public let scale: SIMD3<Float>?
     public let fadeIn: TimeInterval
+    /// When true, the revealed entity is made directly hand-manipulable
+    /// (RealityKit ManipulationComponent — grab / move / rotate / scale).
+    public let manipulable: Bool
 
     public init(
         entity: String,
@@ -208,7 +211,8 @@ public struct RevealAction: Sendable {
         headRelativePosition: SIMD3<Float>? = nil,
         headYOnly: Bool = false,
         scale: SIMD3<Float>? = nil,
-        fadeIn: TimeInterval = 0
+        fadeIn: TimeInterval = 0,
+        manipulable: Bool = false
     ) {
         assert(headRelativePosition == nil || position == nil,
                "headRelativePosition and position are mutually exclusive")
@@ -220,6 +224,7 @@ public struct RevealAction: Sendable {
         self.headYOnly = headYOnly
         self.scale = scale
         self.fadeIn = max(fadeIn, 0)
+        self.manipulable = manipulable
     }
 }
 

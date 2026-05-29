@@ -6,8 +6,8 @@
       "kind" : "remoteSourceControl",
       "location" : "https://github.com/mike-bundy/ChapterScript.git",
       "state" : {
-        "revision" : "8123ab2a21f7b5ae34d0846e4849105f874b07a9",
-        "version" : "0.4.1"
+        "revision" : "43cd1693a60bddd238dc784427d8099ec8b28329",
+        "version" : "0.4.2"
       }
     }
   ],
