@@ -231,7 +231,9 @@ extension VideoAction {
             volume: dto.volume,
             loop: dto.loop,
             presentation: VideoPresentation(dto.presentation),
-            layout: VideoLayout(dto.layout)
+            layout: VideoLayout(dto.layout),
+            sourceIn: dto.sourceIn,
+            sourceOut: dto.sourceOut
         )
     }
 }

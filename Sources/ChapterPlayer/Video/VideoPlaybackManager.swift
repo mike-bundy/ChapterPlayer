@@ -28,6 +28,13 @@ public class VideoPlaybackManager {
     // MARK: - Channel
 
     private struct VideoChannel {
+        /// True once `play(action:)` has been asked for this channel. An
+        /// in-flight `prepareAsync` MUST NOT stop/pause/mute a channel the
+        /// chapter is actually playing — without this flag a preheat that
+        /// overlaps a cold play froze the first video's frame (warm-up
+        /// `pause()` landing on the live player) or killed it outright
+        /// (preheat's entry `stop`).
+        var isPlayRequested: Bool = false
         let player: AVPlayer
         var looper: AVPlayerLooper?
         let presentation: VideoPresentation
@@ -61,6 +68,7 @@ public class VideoPlaybackManager {
         // disabled to keep the panel hidden during preheat) and call
         // player.play() — first frame appears the same render tick.
         if var ch = channels[action.channel] {
+            ch.isPlayRequested = true
             ch.player.volume = action.volume
             if ch.isPrepared, let entity = ch.entity {
                 // Already attached during preheat — flip opacity to 1
@@ -128,12 +136,26 @@ public class VideoPlaybackManager {
         let useLooper: Bool = {
             if !action.loop { return false }
             if case .immersive = action.presentation { return false }
+            // Looping a source-trimmed clip needs both endpoints for the
+            // looper's timeRange; an in-only trim falls through to the
+            // manual observer, which can seek back to sourceIn.
+            if (action.sourceIn ?? 0) > 0 && action.sourceOut == nil { return false }
             return true
         }()
 
         if useLooper {
             let queuePlayer = AVQueuePlayer()
-            let looper = AVPlayerLooper(player: queuePlayer, templateItem: playerItem)
+            // Non-destructive trim: loop only the [sourceIn, sourceOut)
+            // window of the master.
+            let looper: AVPlayerLooper
+            if let out = action.sourceOut {
+                let start = CMTime(seconds: max(0, action.sourceIn ?? 0), preferredTimescale: 600)
+                let end = CMTime(seconds: out, preferredTimescale: 600)
+                looper = AVPlayerLooper(player: queuePlayer, templateItem: playerItem,
+                                        timeRange: CMTimeRange(start: start, end: end))
+            } else {
+                looper = AVPlayerLooper(player: queuePlayer, templateItem: playerItem)
+            }
             queuePlayer.volume = action.volume
             // Don't make the player wait for a full buffer before showing
             // the first frame — visionOS HTTP streaming over the live
@@ -144,6 +166,7 @@ public class VideoPlaybackManager {
             queuePlayer.play()
 
             var channel = VideoChannel(
+                isPlayRequested: true,
                 player: queuePlayer,
                 looper: looper,
                 presentation: action.presentation
@@ -154,22 +177,26 @@ public class VideoPlaybackManager {
             let player = AVPlayer(playerItem: playerItem)
             player.volume = action.volume
             player.automaticallyWaitsToMinimizeStalling = false
-            // Manual loop for immersive backdrops. Observer ID
-            // captured so `stop(channel:)` can remove it (avoided
-            // adding a second observer on each replay).
+            // Non-destructive source window: cap playback at sourceOut
+            // (fires DidPlayToEndTime there) and start from sourceIn.
+            applySourceWindow(action: action, playerItem: playerItem, player: player)
+            // Manual loop for immersive backdrops and in-only trims.
+            // Observer loops back to the window start, not frame 0.
             if action.loop {
+                let loopStart = CMTime(seconds: max(0, action.sourceIn ?? 0), preferredTimescale: 600)
                 NotificationCenter.default.addObserver(
                     forName: .AVPlayerItemDidPlayToEndTime,
                     object: playerItem,
                     queue: .main
                 ) { [weak player] _ in
-                    player?.seek(to: .zero)
+                    player?.seek(to: loopStart, toleranceBefore: .zero, toleranceAfter: .zero)
                     player?.play()
                 }
             }
             player.play()
 
             var channel = VideoChannel(
+                isPlayRequested: true,
                 player: player,
                 presentation: action.presentation
             )
@@ -196,7 +223,28 @@ public class VideoPlaybackManager {
     /// Calling `play()` later picks up this prepared channel via the
     /// `isPrepared` fast path and only has to flip `entity.isEnabled` +
     /// `player.play()` — first frame appears in the same render tick.
+    /// Apply a VideoAction's non-destructive source window to a live
+    /// player/item pair: cap the item at `sourceOut` (so play-to-end fires
+    /// there) and cue the player at `sourceIn`. Metadata only — the master
+    /// file is untouched. No-op when the action carries no trim.
+    private func applySourceWindow(action: VideoAction, playerItem: AVPlayerItem, player: AVPlayer) {
+        if let out = action.sourceOut {
+            playerItem.forwardPlaybackEndTime = CMTime(seconds: out, preferredTimescale: 600)
+        }
+        let sourceIn = max(0, action.sourceIn ?? 0)
+        if sourceIn > 0 {
+            player.seek(
+                to: CMTime(seconds: sourceIn, preferredTimescale: 600),
+                toleranceBefore: .zero, toleranceAfter: .zero
+            )
+        }
+    }
+
     public func prepareAsync(action: VideoAction) async {
+        // Never preheat over a channel the chapter is already playing —
+        // the entry `stop` would kill the live video (the "first video is
+        // a black box" race when preheat overlaps a cold play).
+        if channels[action.channel]?.isPlayRequested == true { return }
         stop(channel: action.channel)
 
         guard let url = findVideoURL(file: action.file) else {
@@ -220,10 +268,21 @@ public class VideoPlaybackManager {
             return
         }
 
+        // Re-check AFTER the await: a real play() may have landed while
+        // the asset loaded (it saw no channel and went cold). Storing the
+        // preheat channel now would clobber the LIVE player with a muted,
+        // paused one — the exact-same-moment "first video is a black box"
+        // race. The play path owns the channel; stand down.
+        if channels[action.channel]?.isPlayRequested == true { return }
+
         let playerItem = AVPlayerItem(asset: asset)
         let player = AVPlayer(playerItem: playerItem)
         player.volume = 0  // muted during warmup; restored by play()
         player.automaticallyWaitsToMinimizeStalling = false
+        // Apply the non-destructive source window BEFORE warmup so the
+        // decoder primes at sourceIn and the warmed first frame is the
+        // trimmed clip's first frame, not the master's.
+        applySourceWindow(action: action, playerItem: playerItem, player: player)
 
         var channel = VideoChannel(
             player: player,
@@ -288,10 +347,16 @@ public class VideoPlaybackManager {
         // Two render frames @ ~90Hz on visionOS ≈ 22ms; a touch over
         // gives us margin while staying invisible to the user.
         try? await Task.sleep(nanoseconds: 60_000_000)
-        player.pause()
 
-        // Stale-task guard before flipping flags.
+        // Stale-task guard before touching the player again.
         guard channels[action.channel]?.player === player else { return }
+        if channels[action.channel]?.isPlayRequested == true {
+            // A real play() arrived during warm-up — leave the player
+            // running (pausing here froze the first video's frame).
+            channels[action.channel]?.isPrepared = true
+            return
+        }
+        player.pause()
         channels[action.channel]?.isPrepared = true
         logger.info("Preroll + first-frame warmup complete for channel '\(action.channel)'")
     }

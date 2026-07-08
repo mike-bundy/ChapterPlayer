@@ -330,6 +330,13 @@ public struct VideoAction: Sendable {
     public let loop: Bool
     public let presentation: VideoPresentation
     public let layout: VideoLayout
+    /// Non-destructive source trim: playback starts this many seconds into
+    /// the master file. `nil` plays from the start. The file's bytes are
+    /// untouched — the trim is pure action metadata from the editor.
+    public let sourceIn: Double?
+    /// Exclusive end of the source window (master-file seconds). `nil`
+    /// plays to the natural end. Looping loops `[sourceIn, sourceOut)`.
+    public let sourceOut: Double?
 
     public init(
         file: String,
@@ -337,7 +344,9 @@ public struct VideoAction: Sendable {
         volume: Float = 1.0,
         loop: Bool = false,
         presentation: VideoPresentation = .attachment(id: "video"),
-        layout: VideoLayout = .mono
+        layout: VideoLayout = .mono,
+        sourceIn: Double? = nil,
+        sourceOut: Double? = nil
     ) {
         self.file = file
         self.channel = channel
@@ -345,6 +354,8 @@ public struct VideoAction: Sendable {
         self.loop = loop
         self.presentation = presentation
         self.layout = layout
+        self.sourceIn = sourceIn
+        self.sourceOut = sourceOut
     }
 }
 

@@ -13,7 +13,10 @@ let package = Package(
         )
     ],
     dependencies: [
-        .package(url: "https://github.com/mike-bundy/ChapterScript.git", from: "0.4.0")
+        // Local path during the source-trim rollout (needs ChapterScript
+        // v0.5.0's sourceIn/sourceOut). Restore the tagged remote once
+        // v0.5.0 is pushed: .package(url: "https://github.com/mike-bundy/ChapterScript.git", from: "0.5.0")
+        .package(path: "../ChapterScript")
     ],
     targets: [
         .target(
