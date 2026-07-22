@@ -3,7 +3,7 @@
 //  SharedVisions
 //
 //  Phase 5: discovers a MaestroStudio instance on the LAN via Bonjour
-//  (`_maestro._tcp`), fetches the current `ExperienceDocument` over HTTP,
+//  (`_maestro._tcp`), fetches the current `ChapterDocument` over HTTP,
 //  and (when subscribed) hot-reloads on Server-Sent Events.
 //
 //  Network framework only — no third-party dependency.
@@ -97,7 +97,7 @@ public final class LiveServerBrowser: ObservableObject {
 
 // MARK: - Provider
 
-/// Loads an `ExperienceDocument` from a discovered MaestroStudio instance over
+/// Loads an `ChapterDocument` from a discovered MaestroStudio instance over
 /// HTTP. Optionally subscribes to the SSE stream for hot-reload.
 public struct LiveDevExperienceProvider: ExperienceProvider {
     public let descriptor: LiveServerDescriptor
@@ -112,12 +112,12 @@ public struct LiveDevExperienceProvider: ExperienceProvider {
 
     public func load() async throws -> LoadedExperience {
         let baseURL = try await resolveBaseURL()
-        let docURL = baseURL.appending(path: "experience.json")
+        let docURL = baseURL.appending(path: "chapter.json")
         var request = URLRequest(url: docURL)
         request.cachePolicy = .reloadIgnoringLocalAndRemoteCacheData
         request.setValue("application/json", forHTTPHeaderField: "Accept")
 
-        let document: ExperienceDocument
+        let document: ChapterDocument
         do {
             let (data, response) = try await URLSession.shared.data(for: request)
             guard let http = response as? HTTPURLResponse, (200...299).contains(http.statusCode) else {
@@ -125,7 +125,7 @@ public struct LiveDevExperienceProvider: ExperienceProvider {
                 throw ExperienceLoaderError.malformedDocument(reason: "HTTP \(code) from \(docURL.path())")
             }
             let migrated = try Migrator.migrate(data)
-            document = try ChapterScriptFormat.makeDecoder().decode(ExperienceDocument.self, from: migrated)
+            document = try ChapterScriptFormat.makeDecoder().decode(ChapterDocument.self, from: migrated)
         } catch let err as ExperienceLoaderError {
             throw err
         } catch {

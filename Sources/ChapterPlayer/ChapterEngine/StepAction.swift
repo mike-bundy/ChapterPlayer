@@ -230,11 +230,11 @@ public struct RevealAction: Sendable {
 
 // MARK: - Audio Scope
 
-/// Determines audio lifecycle during chapter transitions.
-/// - `.chapter`: killed automatically on chapter change (default).
-/// - `.ambient`: persists across chapter changes until explicitly stopped.
+/// Determines audio lifecycle during segment transitions.
+/// - `.segment`: killed automatically on segment change (default).
+/// - `.ambient`: persists across segment changes until explicitly stopped.
 public enum AudioScope: Sendable {
-    case chapter
+    case segment
     case ambient
 }
 
@@ -255,7 +255,7 @@ public struct AudioAction: Sendable {
     public init(
         file: String,
         channel: String,
-        scope: AudioScope = .chapter,
+        scope: AudioScope = .segment,
         volume: Float = 1.0,
         loop: Bool = false,
         fadeIn: TimeInterval? = nil,
@@ -445,7 +445,7 @@ public struct DuckingRule: Sendable {
 }
 
 public struct DuckTarget: Sendable {
-    public let channel: String          // Channel to duck (e.g. "ambient", "chapter_audio")
+    public let channel: String          // Channel to duck (e.g. "ambient", "segment_audio")
     public let duckLevel: Float         // Volume multiplier when ducked (0.2 = duck to 20% of current volume)
     public let fadeInDuration: TimeInterval   // How fast to duck down
     public let fadeOutDuration: TimeInterval  // How fast to restore

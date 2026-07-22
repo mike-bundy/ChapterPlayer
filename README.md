@@ -1,10 +1,10 @@
 # ChapterPlayer
 
-Swift package that runs ChapterScript documents on visionOS. Bundles the chapter engine, spatial audio + immersive video managers, entity factory, and live-experience client into a single framework so a consuming app only needs to ship its UI, content, and product-specific extensions.
+Swift package that runs ChapterScript documents on visionOS. Bundles the segment engine, spatial audio + immersive video managers, entity factory, and live-experience client into a single framework so a consuming app only needs to ship its UI, content, and product-specific extensions.
 
 ## What's in the package
 
-- **`ChapterEngine`** — declarative chapter/step choreographer. Always resets entities on chapter change; pluggable executor protocols for entity / audio / video / attachment / effect actions.
+- **`SegmentEngine`** — declarative segment/step choreographer. Always resets entities on segment change; pluggable executor protocols for entity / audio / video / attachment / effect actions.
 - **`SpatialAudioManager`** — `AVAudioEngine` + `PHASEEngine` ambient/spatial channel system with category mixing, ducking, audio zones, loop configs.
 - **`VideoPlaybackManager`** — per-channel `AVPlayer` orchestrator. Supports flat panels via `VideoMaterial`, attachment-based SwiftUI overlays, and 360°/180° immersive skybox via `VideoPlayerComponent` (matches Apple's `PlayingImmersiveMediaWithRealityKit` sample).
 - **`EntityFactory`** — builds RealityKit entities for ChapterScript `EntityDefinition`s (primitives, USDZs, text, lights, video panels).

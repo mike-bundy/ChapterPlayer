@@ -3,7 +3,7 @@
 //  SharedVisions
 //
 //  Maps StepTimingFunction (data layer) to RealityKit's AnimationTimingFunction.
-//  Kept in its own file so ChapterDefinition stays a pure data layer (no RealityKit import).
+//  Kept in its own file so SegmentDefinition stays a pure data layer (no RealityKit import).
 //
 
 import RealityKit

@@ -47,17 +47,17 @@ public final class AudioActionExecutor: AudioActionExecutorProtocol {
     static public let narrationDuckTargets: [DuckTarget] = [
         DuckTarget(channel: "ambient", duckLevel: 0.2, fadeInDuration: 0.8, fadeOutDuration: 1.5),
         DuckTarget(channel: "ambient_main", duckLevel: 0.2, fadeInDuration: 0.8, fadeOutDuration: 1.5),
-        DuckTarget(channel: "chapter_audio", duckLevel: 0.4, fadeInDuration: 0.8, fadeOutDuration: 1.5),
+        DuckTarget(channel: "segment_audio", duckLevel: 0.4, fadeInDuration: 0.8, fadeOutDuration: 1.5),
         DuckTarget(channel: "sfx", duckLevel: 0.6, fadeInDuration: 0.5, fadeOutDuration: 0.8),
     ]
 
     public let audioManager: SpatialAudioManager
 
-    /// Channels that survive chapter transitions — dynamically populated
+    /// Channels that survive segment transitions — dynamically populated
     /// when audio is played with `scope: .ambient`.
     public var protectedChannels: Set<String> = []
 
-    /// Completion callback — wired by ChapterEngine for .onAudioComplete actions
+    /// Completion callback — wired by SegmentEngine for .onAudioComplete actions
     public var onChannelFinished: ((String) -> Void)? {
         get { self.audioManager.onChannelFinished }
         set { self.audioManager.onChannelFinished = newValue }
@@ -129,7 +129,7 @@ public final class AudioActionExecutor: AudioActionExecutorProtocol {
         audioManager.activeZoneCount
     }
 
-    /// Stops all chapter audio — preserves protected ambient channels.
+    /// Stops all segment audio — preserves protected ambient channels.
     public func stopAll() {
         audioManager.stopAll(except: protectedChannels)
     }

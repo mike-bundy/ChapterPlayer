@@ -1,28 +1,33 @@
 //
-//  ChapterDefinition.swift
+//  SegmentDefinition.swift
 //  SharedVisions
 //
-//  Declarative chapter and step definitions for the ChapterEngine.
-//  Chapters are defined as data — the engine handles timing, controls, and reporting.
+//  Declarative segment and step definitions for the SegmentEngine.
+//  Segments are defined as data — the engine handles timing, controls, and reporting.
 //
 
 import Foundation
 import simd
+import ChapterScript
 
-// MARK: - Chapter Definition
+// MARK: - Segment Definition
 
-public struct ChapterDefinition: Sendable {
+public struct SegmentDefinition: Sendable {
     public let id: String
     public let name: String
     public let phase: String
-    /// Whether this chapter expects the immersive space open or a flat
-    /// windowed scene. `AppModel.applyChapterPresentation` toggles the
-    /// space lifecycle in response to this when chapters switch.
-    public let presentation: ChapterPresentation
+    /// Whether this segment expects the immersive space open or a flat
+    /// windowed scene. `AppModel.applySegmentPresentation` toggles the
+    /// space lifecycle in response to this when segments switch.
+    public let presentation: SegmentPresentation
     /// Optional immersive backdrop (skybox video or USDZ scene) loaded
-    /// while this chapter plays. Mirrors `ChapterScript.ImmersiveBackdropSpec`.
-    public let immersiveBackdrop: ChapterBackdrop?
+    /// while this segment plays. Mirrors `ChapterScript.ImmersiveBackdropSpec`.
+    public let immersiveBackdrop: SegmentBackdrop?
     public let steps: [StepDefinition]
+    /// Segment-level keyframe animation tracks (format types used directly —
+    /// the curves are pure data sampled by `SegmentAnimationEvaluator`).
+    /// Keys sit at absolute seconds on the segment's authored step grid.
+    public let animationTracks: [EntityAnimationTrack]
     public let visibility: VisibilityState
     public let onComplete: CompletionAction
 
@@ -30,9 +35,10 @@ public struct ChapterDefinition: Sendable {
         id: String,
         name: String,
         phase: String,
-        presentation: ChapterPresentation = .immersive,
-        immersiveBackdrop: ChapterBackdrop? = nil,
+        presentation: SegmentPresentation = .immersive,
+        immersiveBackdrop: SegmentBackdrop? = nil,
         steps: [StepDefinition],
+        animationTracks: [EntityAnimationTrack] = [],
         visibility: VisibilityState = VisibilityState(),
         onComplete: CompletionAction = .holdOnLastStep
     ) {
@@ -42,6 +48,7 @@ public struct ChapterDefinition: Sendable {
         self.presentation = presentation
         self.immersiveBackdrop = immersiveBackdrop
         self.steps = steps
+        self.animationTracks = animationTracks
         self.visibility = visibility
         self.onComplete = onComplete
     }
@@ -51,12 +58,12 @@ public struct ChapterDefinition: Sendable {
     }
 }
 
-public enum ChapterPresentation: String, Sendable, Equatable {
+public enum SegmentPresentation: String, Sendable, Equatable {
     /// Full immersion — passthrough hidden, ideal for skyboxes and
     /// fully-authored 3D backdrops.
     case immersive
     /// Mixed reality — passthrough visible, with RealityKit content
-    /// placing into world space. Use when a chapter wants 3D depth
+    /// placing into world space. Use when a segment wants 3D depth
     /// (anchored entities, USDZ setpieces) without replacing the
     /// user's real environment.
     case mixed
@@ -67,10 +74,10 @@ public enum ChapterPresentation: String, Sendable, Equatable {
 /// Runtime-side mirror of `ChapterScript.ImmersiveBackdropSpec`. Carries the
 /// fields needed by `VideoPlaybackManager` (for `.video`), the static-image
 /// skybox path (for `.image`), or the document entity loader (for `.usdz`)
-/// when the chapter activates. Reuses the `VideoLayout` and `ImmersiveField`
+/// when the segment activates. Reuses the `VideoLayout` and `ImmersiveField`
 /// enums from `StepAction` so AppModel can hand them straight to
 /// `VideoAction` without converting.
-public enum ChapterBackdrop: Sendable, Equatable {
+public enum SegmentBackdrop: Sendable, Equatable {
     case video(file: String, layout: VideoLayout, field: ImmersiveField, radius: Float, loop: Bool)
     case image(file: String, field: ImmersiveField, radius: Float)
     case usdz(assetId: String)
@@ -126,7 +133,7 @@ public struct StepGate: Sendable {
 // MARK: - Visibility State
 
 /// Declarative entity visibility snapshot for SharedVisions primitives and example VFX.
-/// Chapters declare their target visibility; the engine applies it on transition.
+/// Segments declare their target visibility; the engine applies it on transition.
 public struct VisibilityState: Sendable, Equatable {
     public var orb: Bool = false
     public var cube: Bool = false
@@ -157,7 +164,7 @@ public struct VisibilityState: Sendable, Equatable {
 public enum CompletionAction: Sendable, Equatable {
     case holdOnLastStep
     case transitionTo(phase: String, visibility: VisibilityState)
-    case autoAdvance(nextChapterId: String)
+    case autoAdvance(nextSegmentId: String)
     case dismissToHome
 }
 

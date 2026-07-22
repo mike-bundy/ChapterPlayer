@@ -3,7 +3,7 @@
 //  SharedVisions
 //
 //  Conversions between the open ChapterScript format DTOs and the runtime
-//  ChapterEngine types. All mappings are forward-only (DTO → runtime) for now;
+//  SegmentEngine types. All mappings are forward-only (DTO → runtime) for now;
 //  reverse direction added when an authoring/export pass needs it.
 //
 
@@ -56,7 +56,7 @@ private extension StepTimingFunction {
 private extension AudioScope {
     public init(_ dto: ChapterScript.AudioScope) {
         switch dto {
-        case .chapter: self = .chapter
+        case .segment: self = .segment
         case .ambient: self = .ambient
         }
     }
@@ -222,7 +222,7 @@ private extension AudioAction {
 
 extension VideoAction {
     /// Public DTO bridge used by `AppModel.preheatVideos` to stage AVPlayer
-    /// items before chapter playback. Other internal call sites continue
+    /// items before segment playback. Other internal call sites continue
     /// to construct VideoAction directly via this same init.
     public init(_ dto: VideoActionDTO) {
         self.init(
@@ -401,13 +401,13 @@ private extension CompletionAction {
         switch dto {
         case .holdOnLastStep:                         self = .holdOnLastStep
         case .transitionTo(let phase, let visibility): self = .transitionTo(phase: phase, visibility: VisibilityState(visibility))
-        case .autoAdvance(let nextChapterId):          self = .autoAdvance(nextChapterId: nextChapterId)
+        case .autoAdvance(let nextSegmentId):          self = .autoAdvance(nextSegmentId: nextSegmentId)
         case .dismissToHome:                           self = .dismissToHome
         }
     }
 }
 
-// MARK: - ScheduledAction / StepDefinition / ChapterDefinition
+// MARK: - ScheduledAction / StepDefinition / SegmentDefinition
 
 private extension ScheduledAction {
     public init(_ dto: ScheduledActionDTO) throws {
@@ -428,23 +428,24 @@ extension StepDefinition {
     }
 }
 
-extension ChapterDefinition {
-    public init(dto: ChapterDefinitionDTO) throws {
+extension SegmentDefinition {
+    public init(dto: SegmentDefinitionDTO) throws {
         self.init(
             id: dto.id,
             name: dto.name,
             phase: dto.phase,
-            presentation: ChapterPresentation(dto.presentation),
-            immersiveBackdrop: dto.immersiveBackdrop.map { ChapterBackdrop($0) },
+            presentation: SegmentPresentation(dto.presentation),
+            immersiveBackdrop: dto.immersiveBackdrop.map { SegmentBackdrop($0) },
             steps: try dto.steps.map { try StepDefinition(dto: $0) },
+            animationTracks: dto.animationTracks,
             visibility: VisibilityState(dto.visibility),
             onComplete: CompletionAction(dto.onComplete)
         )
     }
 }
 
-extension ChapterPresentation {
-    public init(_ dto: ChapterScript.ChapterPresentation) {
+extension SegmentPresentation {
+    public init(_ dto: ChapterScript.SegmentPresentation) {
         switch dto {
         case .immersive: self = .immersive
         case .mixed:     self = .mixed
@@ -453,7 +454,7 @@ extension ChapterPresentation {
     }
 }
 
-extension ChapterBackdrop {
+extension SegmentBackdrop {
     public init(_ dto: ImmersiveBackdropSpec) {
         switch dto {
         case .video(let file, let layout, let field, let radius, let loop):
@@ -496,16 +497,16 @@ extension ImmersiveField {
     }
 }
 
-// MARK: - ExperienceDocument loading
+// MARK: - ChapterDocument loading
 
-extension ChapterDefinition {
-    /// Find `chapterId` in `document.chapters` and convert it to a runtime chapter.
-    static public func from(document: ExperienceDocument, chapterId: String) throws -> ChapterDefinition {
-        guard let dto = document.chapters.first(where: { $0.id == chapterId }) else {
+extension SegmentDefinition {
+    /// Find `segmentId` in `document.segments` and convert it to a runtime segment.
+    static public func from(document: ChapterDocument, segmentId: String) throws -> SegmentDefinition {
+        guard let dto = document.segments.first(where: { $0.id == segmentId }) else {
             throw ChapterScriptRuntimeError.unsupportedDocument(
-                reason: "chapter id '\(chapterId)' not found in document '\(document.id)'"
+                reason: "segment id '\(segmentId)' not found in document '\(document.id)'"
             )
         }
-        return try ChapterDefinition(dto: dto)
+        return try SegmentDefinition(dto: dto)
     }
 }

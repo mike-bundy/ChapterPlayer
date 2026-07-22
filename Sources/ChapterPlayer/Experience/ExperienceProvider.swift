@@ -6,7 +6,7 @@
 //  implementations are planned across phases:
 //
 //    LocalFolderExperienceProvider   — reads a `.chapterscript` directory bundle (this phase)
-//    BundledExperienceProvider       — reads an experience.json from the app bundle (this phase)
+//    BundledExperienceProvider       — reads a chapter.json from the app bundle (this phase)
 //    LiveDevExperienceProvider       — Bonjour + HTTP client to MaestroStudio  (Phase 5)
 //
 //  Background Assets-backed media resolution is folded in at the resolver level
@@ -17,7 +17,7 @@ import Foundation
 import ChapterScript
 
 public struct LoadedExperience: Sendable {
-    public let document: ExperienceDocument
+    public let document: ChapterDocument
     public let mediaResolver: MediaResolver
     /// On-disk root the experience was loaded from. `nil` for synthetic / in-memory loads.
     public let rootURL: URL?
@@ -31,7 +31,7 @@ public enum ExperienceLoaderError: Error, CustomStringConvertible {
     public var description: String {
         switch self {
         case .missingDocument(let path):
-            return "experience.json not found at \(path)"
+            return "chapter.json not found at \(path)"
         case .malformedDocument(let reason):
             return "Malformed experience document: \(reason)"
         case .unreadable(let url, let err):
@@ -47,7 +47,7 @@ public protocol ExperienceProvider: Sendable {
 // MARK: - Local folder
 
 /// Loads a `.chapterscript` directory bundle from any URL on disk. The directory
-/// is expected to contain `experience.json` plus an optional `assets/` subfolder.
+/// is expected to contain `chapter.json` plus an optional `assets/` subfolder.
 public struct LocalFolderExperienceProvider: ExperienceProvider {
     public let folderURL: URL
 
@@ -68,11 +68,11 @@ public struct LocalFolderExperienceProvider: ExperienceProvider {
             throw ExperienceLoaderError.unreadable(docURL, underlying: error)
         }
 
-        let document: ExperienceDocument
+        let document: ChapterDocument
         do {
             // Run any pending JSON migrations forward to the current format version.
             let migrated = try Migrator.migrate(data)
-            document = try ChapterScriptFormat.makeDecoder().decode(ExperienceDocument.self, from: migrated)
+            document = try ChapterScriptFormat.makeDecoder().decode(ChapterDocument.self, from: migrated)
         } catch {
             throw ExperienceLoaderError.malformedDocument(reason: String(describing: error))
         }
@@ -88,19 +88,20 @@ public struct LocalFolderExperienceProvider: ExperienceProvider {
 
 // MARK: - App bundle
 
-/// Loads a single `experience.json` from the app bundle. Handy for shipping a
+/// Loads a single `chapter.json` from the app bundle. Handy for shipping a
 /// canonical default experience without standing up a downloaded asset pack.
 /// Media references are NOT resolved by this provider — they're expected to
 /// fall back to the existing manager-side bundle search.
 public struct BundledExperienceProvider: ExperienceProvider {
-    /// Resource name (without extension). Defaults to "experience".
+    /// Resource name (without extension). Defaults to "chapter" (the document
+    /// file inside a `.chapterscript` bundle is `chapter.json`).
     public let resourceName: String
     /// Optional subdirectory inside the bundle, e.g. "Experiences/colorDrift.chapterscript".
     public let subdirectory: String?
     /// Bundle to search. Defaults to `Bundle.main`.
     public let bundle: Bundle
 
-    public init(resourceName: String = "experience", subdirectory: String? = nil, bundle: Bundle = .main) {
+    public init(resourceName: String = "chapter", subdirectory: String? = nil, bundle: Bundle = .main) {
         self.resourceName = resourceName
         self.subdirectory = subdirectory
         self.bundle = bundle
@@ -119,7 +120,7 @@ public struct BundledExperienceProvider: ExperienceProvider {
         }
         do {
             let migrated = try Migrator.migrate(data)
-            let doc = try ChapterScriptFormat.makeDecoder().decode(ExperienceDocument.self, from: migrated)
+            let doc = try ChapterScriptFormat.makeDecoder().decode(ChapterDocument.self, from: migrated)
             return LoadedExperience(document: doc, mediaResolver: BundleMediaResolver(), rootURL: url.deletingLastPathComponent())
         } catch {
             throw ExperienceLoaderError.malformedDocument(reason: String(describing: error))

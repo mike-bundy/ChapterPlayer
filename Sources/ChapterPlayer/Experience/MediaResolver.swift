@@ -19,12 +19,12 @@ public enum MediaKind: Sendable, Equatable {
 
 public protocol MediaResolver: Sendable {
     /// Return a file URL for the given asset id, or `nil` if not resolvable.
-    /// Implementations should be cheap: callers may invoke many times per chapter.
+    /// Implementations should be cheap: callers may invoke many times per segment.
     func url(for assetId: String, kind: MediaKind) -> URL?
 }
 
 /// Default resolver — preserves the legacy behavior of `SpatialAudioManager` /
-/// `VideoPlaybackManager` so existing chapters keep working unchanged.
+/// `VideoPlaybackManager` so existing segments keep working unchanged.
 /// Audio/video managers may continue to fall back to their own bundle-search
 /// logic if this returns nil.
 public struct BundleMediaResolver: MediaResolver {

@@ -2,9 +2,9 @@
 //  DocumentEntityLoader.swift
 //  ChapterPlayer
 //
-//  Walks a `ChapterScript.ExperienceDocument`'s entities, builds them via
-//  `EntityFactory`, and registers each one with the chapter engine's
-//  entity executor + the video manager's video-entity registry so chapter
+//  Walks a `ChapterScript.ChapterDocument`'s entities, builds them via
+//  `EntityFactory`, and registers each one with the segment engine's
+//  entity executor + the video manager's video-entity registry so segment
 //  actions can resolve them by id.
 //
 //  Decoupled from any consumer-side AppModel: the consumer supplies the
@@ -61,7 +61,7 @@ public final class DocumentEntityLoader {
     /// Build every entity in `document.entities` and wire it into the
     /// scene + executors. Idempotent: a second call with a new document
     /// removes the prior batch first.
-    public func materialize(document: ExperienceDocument, sceneRoot: Entity?, mediaResolver: MediaResolver? = nil) {
+    public func materialize(document: ChapterDocument, sceneRoot: Entity?, mediaResolver: MediaResolver? = nil) {
         unload()
 
         // Give the factory the resolver so image entities ("Add Image"
@@ -94,7 +94,7 @@ public final class DocumentEntityLoader {
                 continue
             }
 
-            // Disable by default — chapter actions reveal what they want
+            // Disable by default — segment actions reveal what they want
             // visible. Matches the engine's `stop(resetEntities: true)`
             // semantics so the doc's entities behave like pre-registered
             // ones.

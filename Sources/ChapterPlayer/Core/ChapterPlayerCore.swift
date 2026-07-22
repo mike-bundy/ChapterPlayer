@@ -3,10 +3,10 @@
 //  ChapterPlayer
 //
 //  Central observable state for a ChapterPlayer-driven visionOS app.
-//  Owns the ChapterEngine, SpatialAudioManager, VideoPlaybackManager,
+//  Owns the SegmentEngine, SpatialAudioManager, VideoPlaybackManager,
 //  AssetPreloader, and all the pluggable executors. Wires them together
-//  and exposes a small surface for the consuming app: `playChapter`,
-//  `stopChapter`, `transitionToPhase`, and the live-experience hooks.
+//  and exposes a small surface for the consuming app: `playSegment`,
+//  `stopSegment`, `transitionToPhase`, and the live-experience hooks.
 //
 //  A consuming app typically aliases this type as `AppModel` and observes
 //  it via `@Environment(AppModel.self)`. Customize the open/dismiss
@@ -35,7 +35,7 @@ open class ChapterPlayerCore {
 
     // MARK: - Managers
 
-    public let chapterEngine = ChapterEngine()
+    public let segmentEngine = SegmentEngine()
     public let audioManager = SpatialAudioManager()
     public let videoManager = VideoPlaybackManager()
     public let assetPreloader = AssetPreloader()
@@ -48,14 +48,14 @@ open class ChapterPlayerCore {
     public let attachmentExecutor = AttachmentActionExecutor()
     public let effectExecutor = EffectActionExecutor()
 
-    // MARK: - Chapter routing
+    // MARK: - Segment routing
 
-    public var activeChapterId: String?
-    public var chapterReentryNonce: Int = 0
+    public var activeSegmentId: String?
+    public var segmentReentryNonce: Int = 0
 
     /// The currently-loaded ChapterScript experience document (if any).
     /// Populated by the live-load path (Maestro over Bonjour) or the
-    /// consumer's "open project" file-importer flow. Drives chapter
+    /// consumer's "open project" file-importer flow. Drives segment
     /// lookup for auto-advance and any timeline UI.
     public var loadedExperience: LoadedExperience?
 
@@ -106,7 +106,7 @@ open class ChapterPlayerCore {
             // coordinates are implicitly head-relative — entities placed
             // at (x, y, z) in Maestro appear at the same offset from the
             // viewer's head on device. Sampled once when the root mounts;
-            // subsequent chapter changes don't re-rebase (which would
+            // subsequent segment changes don't re-rebase (which would
             // disorientingly shift the world).
             if immersiveSceneRoot != nil {
                 Task { await rebaseSceneRootToHead() }
@@ -181,7 +181,7 @@ open class ChapterPlayerCore {
     // MARK: - Window / Space IDs
 
     /// Identifier the consumer's `ImmersiveSpace` scene was declared
-    /// with. Passed to the injected `openSpace` closure when a chapter's
+    /// with. Passed to the injected `openSpace` closure when a segment's
     /// presentation requires immersion.
     public let immersiveSpaceID: String
 
@@ -204,24 +204,24 @@ open class ChapterPlayerCore {
     public var dismissSpace: (() async -> Void)?
 
     /// Currently-bound USDZ backdrop entity, parented under
-    /// `immersiveSceneRoot`. Tracked so `applyChapterBackdrop` can swap
-    /// or tear it down when the next chapter activates. Nil for video /
-    /// image / no-backdrop chapters.
+    /// `immersiveSceneRoot`. Tracked so `applySegmentBackdrop` can swap
+    /// or tear it down when the next segment activates. Nil for video /
+    /// image / no-backdrop segments.
     public var currentBackdropUSDZ: Entity?
 
     /// Whether the skybox entity currently holds a `.image` backdrop's
     /// sphere mesh + UnlitMaterial. Tracked separately from the
-    /// VideoPlayerComponent path so chapter transitions know which
+    /// VideoPlayerComponent path so segment transitions know which
     /// teardown to run.
     public var currentImageSkyboxActive: Bool = false
 
-    /// Channel name reserved for the chapter-level immersive backdrop
+    /// Channel name reserved for the segment-level immersive backdrop
     /// video. Independent from any per-step `playVideo` channel so
     /// authors can mix the two without clobbering each other (last
-    /// write to the "skybox" entity still wins on visionOS — chapter
-    /// backdrop runs at chapter start; step-level skybox plays can
+    /// write to the "skybox" entity still wins on visionOS — segment
+    /// backdrop runs at segment start; step-level skybox plays can
     /// override it intentionally).
-    public static let backdropVideoChannel = "chapterBackdrop"
+    public static let backdropVideoChannel = "segmentBackdrop"
 
     /// Name of the ambient backdrop entity in the consumer's
     /// RealityKit scene that should be hidden while a Maestro
@@ -240,20 +240,20 @@ open class ChapterPlayerCore {
         self.ambientBackdropName = ambientBackdropName
         self.audioExecutor = AudioActionExecutor(audioManager: audioManager)
         self.videoExecutor = VideoActionExecutor(videoManager: videoManager)
-        // The chapter backdrop's video channel is owned at the
-        // ChapterPlayerCore scope (one backdrop per chapter, swapped at
-        // chapter transitions), not at the chapter-engine scope.
+        // The segment backdrop's video channel is owned at the
+        // ChapterPlayerCore scope (one backdrop per segment, swapped at
+        // segment transitions), not at the segment-engine scope.
         // Protect it from `videoManager.stopAll()` which the engine
-        // calls on every chapter transition to wipe per-step video
+        // calls on every segment transition to wipe per-step video
         // state — see `VideoPlaybackManager.protectedChannels`.
         videoManager.protectedChannels.insert(Self.backdropVideoChannel)
 
         // Wire executors into the engine
-        chapterEngine.entityExecutor = entityExecutor
-        chapterEngine.audioExecutor = audioExecutor
-        chapterEngine.videoExecutor = videoExecutor
-        chapterEngine.attachmentExecutor = attachmentExecutor
-        chapterEngine.effectExecutor = effectExecutor
+        segmentEngine.entityExecutor = entityExecutor
+        segmentEngine.audioExecutor = audioExecutor
+        segmentEngine.videoExecutor = videoExecutor
+        segmentEngine.attachmentExecutor = attachmentExecutor
+        segmentEngine.effectExecutor = effectExecutor
 
         // DocumentEntityLoader needs the two executors it registers
         // entities with. Constructed after self is fully initialized so
@@ -264,31 +264,31 @@ open class ChapterPlayerCore {
             ambientBackdropName: ambientBackdropName
         )
 
-        // Chapter lifecycle callbacks
-        chapterEngine.onChapterStarted = { [weak self] chapterId in
-            self?.activeChapterId = chapterId
-            self?.chapterReentryNonce += 1
+        // Segment lifecycle callbacks
+        segmentEngine.onSegmentStarted = { [weak self] segmentId in
+            self?.activeSegmentId = segmentId
+            self?.segmentReentryNonce += 1
         }
 
-        // Auto-advance: follow CompletionAction.autoAdvance(nextChapterId:)
-        // to the next chapter. The next chapter must come from the
+        // Auto-advance: follow CompletionAction.autoAdvance(nextSegmentId:)
+        // to the next segment. The next segment must come from the
         // currently-loaded ChapterScript document — the core no longer
-        // ships bundled demo chapters as a fallback.
-        chapterEngine.onChapterComplete = { [weak self] completion in
+        // ships bundled demo segments as a fallback.
+        segmentEngine.onSegmentComplete = { [weak self] completion in
             guard let self else { return }
             switch completion {
             case .autoAdvance(let nextId):
                 Task { @MainActor in
-                    guard let next = self.chapterFromLoadedDocument(id: nextId) else { return }
-                    // Respect the next chapter's presentation +
-                    // backdrop. Auto-advance crosses chapter boundaries
+                    guard let next = self.segmentFromLoadedDocument(id: nextId) else { return }
+                    // Respect the next segment's presentation +
+                    // backdrop. Auto-advance crosses segment boundaries
                     // so this is exactly where immersive → windowed (or
                     // vice versa) transitions need to fire and where
-                    // the previous chapter's skybox / USDZ environment
+                    // the previous segment's skybox / USDZ environment
                     // is torn down before the new one binds.
-                    await self.applyChapterPresentation(next)
-                    self.applyChapterBackdrop(next)
-                    _ = await self.chapterEngine.playAndAwait(chapter: next)
+                    await self.applySegmentPresentation(next)
+                    self.applySegmentBackdrop(next)
+                    _ = await self.segmentEngine.playAndAwait(segment: next)
                 }
             case .holdOnLastStep, .transitionTo, .dismissToHome:
                 break
@@ -296,37 +296,37 @@ open class ChapterPlayerCore {
         }
     }
 
-    // MARK: - Chapter control
+    // MARK: - Segment control
 
-    /// Start playback of a named chapter. If another chapter is already
+    /// Start playback of a named segment. If another segment is already
     /// running it is stopped first. Awaits any required immersive-space
-    /// transition (`.immersive` chapter wants the space open,
-    /// `.windowed` wants it dismissed) before the chapter's first step
+    /// transition (`.immersive` segment wants the space open,
+    /// `.windowed` wants it dismissed) before the segment's first step
     /// runs so the engine never fires audio / video against a
     /// mis-presented stage.
-    public func playChapter(_ chapter: ChapterDefinition) async {
-        await applyChapterPresentation(chapter)
-        applyChapterBackdrop(chapter)
-        chapterEngine.play(chapter: chapter)
+    public func playSegment(_ segment: SegmentDefinition) async {
+        await applySegmentPresentation(segment)
+        applySegmentBackdrop(segment)
+        segmentEngine.play(segment: segment)
     }
 
-    /// Bind / swap / tear down the chapter's immersive backdrop. Called
+    /// Bind / swap / tear down the segment's immersive backdrop. Called
     /// from the user-initiated play path and from auto-advance. No-op
-    /// for `.windowed` chapters (the immersive space isn't open).
-    public func applyChapterBackdrop(_ chapter: ChapterDefinition) {
-        logger.info("[backdrop] applyChapterBackdrop chapter=\(chapter.id) presentation=\(String(describing: chapter.presentation)) backdrop=\(String(describing: chapter.immersiveBackdrop))")
-        // First, drop whatever was bound for the previous chapter so
-        // the new chapter starts from a clean slate.
+    /// for `.windowed` segments (the immersive space isn't open).
+    public func applySegmentBackdrop(_ segment: SegmentDefinition) {
+        logger.info("[backdrop] applySegmentBackdrop segment=\(segment.id) presentation=\(String(describing: segment.presentation)) backdrop=\(String(describing: segment.immersiveBackdrop))")
+        // First, drop whatever was bound for the previous segment so
+        // the new segment starts from a clean slate.
         videoManager.stop(channel: Self.backdropVideoChannel)
         currentBackdropUSDZ?.removeFromParent()
         currentBackdropUSDZ = nil
         tearDownImageSkybox()
 
-        // Backdrops only make sense for immersive / mixed chapters.
-        guard chapter.presentation != .windowed,
-              let backdrop = chapter.immersiveBackdrop
+        // Backdrops only make sense for immersive / mixed segments.
+        guard segment.presentation != .windowed,
+              let backdrop = segment.immersiveBackdrop
         else {
-            logger.info("[backdrop] no backdrop to apply (presentation=\(String(describing: chapter.presentation)), spec=\(chapter.immersiveBackdrop == nil ? "nil" : "set"))")
+            logger.info("[backdrop] no backdrop to apply (presentation=\(String(describing: segment.presentation)), spec=\(segment.immersiveBackdrop == nil ? "nil" : "set"))")
             return
         }
 
@@ -335,8 +335,8 @@ open class ChapterPlayerCore {
             // Video backdrop = stereoscopic-capable VideoPlayerComponent
             // wrapping the camera. Would block the user's mixed-reality
             // view, so reject in mixed mode.
-            guard chapter.presentation == .immersive else {
-                logger.info("Skipping video backdrop on \(String(describing: chapter.presentation)) chapter — would occlude passthrough.")
+            guard segment.presentation == .immersive else {
+                logger.info("Skipping video backdrop on \(String(describing: segment.presentation)) segment — would occlude passthrough.")
                 return
             }
             logger.info("[backdrop] dispatching video backdrop file='\(file)' layout=\(String(describing: layout)) field=\(String(describing: field)) radius=\(radius) loop=\(loop)")
@@ -353,11 +353,11 @@ open class ChapterPlayerCore {
             // Static equirectangular image skybox. Same occlusion
             // concern as video — sphere wraps the user — so reject in
             // mixed mode.
-            guard chapter.presentation == .immersive else {
-                logger.info("Skipping image backdrop on \(String(describing: chapter.presentation)) chapter — would occlude passthrough.")
+            guard segment.presentation == .immersive else {
+                logger.info("Skipping image backdrop on \(String(describing: segment.presentation)) segment — would occlude passthrough.")
                 return
             }
-            bindImageSkybox(file: file, field: field, radius: radius, chapterId: chapter.id)
+            bindImageSkybox(file: file, field: field, radius: radius, segmentId: segment.id)
 
         case .usdz(let assetId):
             // USDZ backdrops work in BOTH immersive and mixed modes —
@@ -372,7 +372,7 @@ open class ChapterPlayerCore {
             Task { @MainActor in
                 do {
                     let entity = try await Entity(contentsOf: url)
-                    guard self.activeChapterId == chapter.id else { return }
+                    guard self.activeSegmentId == segment.id else { return }
                     sceneRoot.addChild(entity)
                     self.currentBackdropUSDZ = entity
                 } catch {
@@ -385,7 +385,7 @@ open class ChapterPlayerCore {
     /// Build a sphere mesh + UnlitMaterial(texture:) on the skybox
     /// entity using the file as an equirectangular projection. Half-
     /// sphere for `.equirect180`, full sphere for `.equirect360`.
-    private func bindImageSkybox(file: String, field: ImmersiveField, radius: Float, chapterId: String) {
+    private func bindImageSkybox(file: String, field: ImmersiveField, radius: Float, segmentId: String) {
         guard let url = resolveBackdropAssetURL(file: file, kind: .image) else {
             logger.warning("Backdrop image '\(file)' could not be located on disk.")
             return
@@ -397,7 +397,7 @@ open class ChapterPlayerCore {
         Task { @MainActor in
             do {
                 let texture = try await TextureResource(contentsOf: url, options: .init(semantic: .color))
-                guard self.activeChapterId == chapterId else { return }
+                guard self.activeSegmentId == segmentId else { return }
                 let mesh: MeshResource
                 switch field {
                 case .equirect360:
@@ -428,7 +428,7 @@ open class ChapterPlayerCore {
 
     /// Reverse `bindImageSkybox` — drop the ModelComponent so the
     /// skybox entity returns to its empty-anchor state for the next
-    /// chapter's binding. Idempotent (no-op when no image was bound).
+    /// segment's binding. Idempotent (no-op when no image was bound).
     private func tearDownImageSkybox() {
         guard currentImageSkyboxActive,
               let skybox = videoManager.videoEntityRegistry["skybox"]
@@ -452,18 +452,18 @@ open class ChapterPlayerCore {
         return Bundle.main.url(forResource: stem.isEmpty ? file : stem, withExtension: ext.isEmpty ? "usdz" : ext)
     }
 
-    /// Open or dismiss the ImmersiveSpace to match the chapter's
+    /// Open or dismiss the ImmersiveSpace to match the segment's
     /// `presentation`. Updates `immersionStyle` so the active style
-    /// (full vs mixed) tracks the chapter even when the space is
+    /// (full vs mixed) tracks the segment even when the space is
     /// already open. Toggles the always-loaded ambient background
     /// entities so they don't occlude passthrough in mixed-mode
-    /// chapters.
-    public func applyChapterPresentation(_ chapter: ChapterDefinition) async {
-        logger.info("[presentation] applyChapterPresentation chapter=\(chapter.id) presentation=\(String(describing: chapter.presentation)) spaceState=\(String(describing: self.immersiveSpaceState))")
-        switch chapter.presentation {
+    /// segments.
+    public func applySegmentPresentation(_ segment: SegmentDefinition) async {
+        logger.info("[presentation] applySegmentPresentation segment=\(segment.id) presentation=\(String(describing: segment.presentation)) spaceState=\(String(describing: self.immersiveSpaceState))")
+        switch segment.presentation {
         case .immersive, .mixed:
-            let desiredStyle: ImmersionStyle = chapter.presentation == .immersive ? .full : .mixed
-            applyAmbientBackgroundVisibility(for: chapter)
+            let desiredStyle: ImmersionStyle = segment.presentation == .immersive ? .full : .mixed
+            applyAmbientBackgroundVisibility(for: segment)
             if immersiveSpaceState == .open {
                 immersionStyle = desiredStyle
                 return
@@ -488,20 +488,20 @@ open class ChapterPlayerCore {
     }
 
     /// Show or hide the always-loaded ambient background entities
-    /// based on the chapter's presentation + backdrop. The
+    /// based on the segment's presentation + backdrop. The
     /// `ambientBackdropName` set at init controls which scene-tree
     /// entity (e.g. a Reality Composer Pro anchor) is toggled
     /// alongside the skybox.
-    private func applyAmbientBackgroundVisibility(for chapter: ChapterDefinition) {
+    private func applyAmbientBackgroundVisibility(for segment: SegmentDefinition) {
         let rcpBackdrop: Entity? = {
             guard let name = ambientBackdropName else { return nil }
             return immersiveSceneRoot?.findEntity(named: name)
         }()
         let skybox = immersiveSceneRoot?.findEntity(named: "skybox")
             ?? videoManager.videoEntityRegistry["skybox"]
-        switch chapter.presentation {
+        switch segment.presentation {
         case .immersive:
-            switch chapter.immersiveBackdrop {
+            switch segment.immersiveBackdrop {
             case .none:
                 rcpBackdrop?.isEnabled = true
                 skybox?.isEnabled = false
@@ -520,35 +520,35 @@ open class ChapterPlayerCore {
         }
     }
 
-    public func stopChapter(fullReset: Bool = false) {
-        chapterEngine.stop(resetEntities: true, fullReset: fullReset)
-        activeChapterId = nil
+    public func stopSegment(fullReset: Bool = false) {
+        segmentEngine.stop(resetEntities: true, fullReset: fullReset)
+        activeSegmentId = nil
     }
 
     /// Look up `id` in the currently-loaded ChapterScript document,
-    /// converting the matching DTO into a runtime `ChapterDefinition`.
+    /// converting the matching DTO into a runtime `SegmentDefinition`.
     /// Returns nil if no document is loaded or the id isn't present.
-    public func chapterFromLoadedDocument(id: String) -> ChapterDefinition? {
+    public func segmentFromLoadedDocument(id: String) -> SegmentDefinition? {
         guard let document = loadedExperience?.document else { return nil }
-        return try? ChapterDefinition.from(document: document, chapterId: id)
+        return try? SegmentDefinition.from(document: document, segmentId: id)
     }
 
-    /// All runtime chapters that the player UI should render in any
+    /// All runtime segments that the player UI should render in any
     /// timeline scrub bar. When a ChapterScript document is loaded
-    /// (live, file-open, or local folder), returns its chapters mapped
-    /// through `ChapterDefinition.from`. Empty when nothing is loaded
+    /// (live, file-open, or local folder), returns its segments mapped
+    /// through `SegmentDefinition.from`. Empty when nothing is loaded
     /// — the consumer's UI surfaces an empty state.
-    public var displayChapters: [ChapterDefinition] {
+    public var displaySegments: [SegmentDefinition] {
         guard let document = loadedExperience?.document else { return [] }
-        return document.chapters.compactMap { dto in
-            try? ChapterDefinition.from(document: document, chapterId: dto.id)
+        return document.segments.compactMap { dto in
+            try? SegmentDefinition.from(document: document, segmentId: dto.id)
         }
     }
 
     // MARK: - Phase transitions
 
     /// Minimal phase router. `"immersive"` opens the ImmersiveSpace and
-    /// auto-plays the default chapter. `"idle"` stops playback and
+    /// auto-plays the default segment. `"idle"` stops playback and
     /// dismisses the space.
     public func transitionToPhase(_ phase: String) async {
         switch phase {
@@ -575,7 +575,7 @@ open class ChapterPlayerCore {
             }
 
         case "idle":
-            stopChapter(fullReset: true)
+            stopSegment(fullReset: true)
             if let dismissSpace, immersiveSpaceState != .closed {
                 immersiveSpaceState = .inTransition
                 await dismissSpace()

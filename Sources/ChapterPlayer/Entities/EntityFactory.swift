@@ -246,7 +246,7 @@ public final class EntityFactory {
         // colored rectangle on the same plane as the eventual video and
         // looked awful — and on visionOS, AVPlayer's VideoPlayerComponent
         // didn't reliably replace that placeholder material when the
-        // chapter's `playVideo` action ran, so the gray rectangle stuck
+        // segment's `playVideo` action ran, so the gray rectangle stuck
         // around for the entire video step.
         //
         // Now `VideoPlaybackManager.attachToPresentation` is responsible

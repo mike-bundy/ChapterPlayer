@@ -30,7 +30,7 @@ public class VideoPlaybackManager {
     private struct VideoChannel {
         /// True once `play(action:)` has been asked for this channel. An
         /// in-flight `prepareAsync` MUST NOT stop/pause/mute a channel the
-        /// chapter is actually playing — without this flag a preheat that
+        /// segment is actually playing — without this flag a preheat that
         /// overlaps a cold play froze the first video's frame (warm-up
         /// `pause()` landing on the live player) or killed it outright
         /// (preheat's entry `stop`).
@@ -50,9 +50,9 @@ public class VideoPlaybackManager {
     public var videoEntityRegistry: [String: Entity] = [:]
 
     /// Channels that survive `stopAll()` — they're managed at a higher
-    /// scope than the chapter (e.g. `AppModel.backdropVideoChannel`)
-    /// and must not be torn down when `ChapterEngine.stop()` resets
-    /// per-chapter video state at chapter transitions. Mirrors the
+    /// scope than the segment (e.g. `AppModel.backdropVideoChannel`)
+    /// and must not be torn down when `SegmentEngine.stop()` resets
+    /// per-segment video state at segment transitions. Mirrors the
     /// equivalent `protectedChannels` set on `AudioActionExecutor`.
     public var protectedChannels: Set<String> = []
 
@@ -79,23 +79,22 @@ public class VideoPlaybackManager {
                 // render tick.
                 entity.isEnabled = true
                 entity.components.set(OpacityComponent(opacity: 1))
-            } else {
-                // Either preheat hasn't completed yet, or this play() is
-                // running cold without a prior prepare. Do the full
-                // attach now (which also enables the entity), and make
-                // sure no stale OpacityComponent is hiding it.
-                attachToPresentation(
-                    player: ch.player,
-                    presentation: action.presentation,
-                    channel: &ch
-                )
-                if let entity = ch.entity {
-                    entity.components.set(OpacityComponent(opacity: 1))
-                }
+                channels[action.channel] = ch
+                ch.player.play()
+                logger.info("Playing prepared video on channel '\(action.channel)' (warmed)")
+                return
             }
+            // Preheat hasn't completed yet (or this play() is running cold
+            // over a half-built channel). Do the full attach now, then gate
+            // the actual start on item readiness so the panel never shows
+            // black while audio runs ahead.
+            attachToPresentation(
+                player: ch.player,
+                presentation: action.presentation,
+                channel: &ch
+            )
             channels[action.channel] = ch
-            ch.player.play()
-            logger.info("Playing prepared video on channel '\(action.channel)' (warmed=\(ch.isPrepared))")
+            startGatedPlayback(player: ch.player, action: action, awaitSourceIn: false)
             return
         }
 
@@ -159,11 +158,10 @@ public class VideoPlaybackManager {
             queuePlayer.volume = action.volume
             // Don't make the player wait for a full buffer before showing
             // the first frame — visionOS HTTP streaming over the live
-            // channel was sometimes stalling for the entire chapter step
+            // channel was sometimes stalling for the entire segment step
             // before producing any frame, so the author saw nothing
             // during the step then a paused frame after it ended.
             queuePlayer.automaticallyWaitsToMinimizeStalling = false
-            queuePlayer.play()
 
             var channel = VideoChannel(
                 isPlayRequested: true,
@@ -173,13 +171,20 @@ public class VideoPlaybackManager {
             )
             attachToPresentation(player: queuePlayer, presentation: action.presentation, channel: &channel)
             channels[action.channel] = channel
+            // The looper already restricts playback to the source window,
+            // so no cue seek is needed — just gate the start on readiness.
+            startGatedPlayback(player: queuePlayer, action: action, awaitSourceIn: false)
         } else {
             let player = AVPlayer(playerItem: playerItem)
             player.volume = action.volume
             player.automaticallyWaitsToMinimizeStalling = false
             // Non-destructive source window: cap playback at sourceOut
-            // (fires DidPlayToEndTime there) and start from sourceIn.
-            applySourceWindow(action: action, playerItem: playerItem, player: player)
+            // (fires DidPlayToEndTime there). The cue to sourceIn happens
+            // inside the gated start below, AWAITED, so a trimmed clip can
+            // never flash frame 0 before the seek lands.
+            if let out = action.sourceOut {
+                playerItem.forwardPlaybackEndTime = CMTime(seconds: out, preferredTimescale: 600)
+            }
             // Manual loop for immersive backdrops and in-only trims.
             // Observer loops back to the window start, not frame 0.
             if action.loop {
@@ -193,7 +198,6 @@ public class VideoPlaybackManager {
                     player?.play()
                 }
             }
-            player.play()
 
             var channel = VideoChannel(
                 isPlayRequested: true,
@@ -202,9 +206,65 @@ public class VideoPlaybackManager {
             )
             attachToPresentation(player: player, presentation: action.presentation, channel: &channel)
             channels[action.channel] = channel
+            startGatedPlayback(player: player, action: action, awaitSourceIn: true)
         }
 
         logger.info("Playing video: \(action.file) on channel '\(action.channel)'")
+    }
+
+    /// Cold-start gate: the fix for "first video is a black panel with
+    /// audible audio." A cold `play()` used to call `player.play()` the
+    /// moment the action fired — audio starts within milliseconds, but the
+    /// first decoded frame (decoder init + texture upload on a never-warmed
+    /// channel) can trail it by hundreds of ms, and `VideoMaterial` renders
+    /// black until it arrives. The immersive path always gated its attach on
+    /// item readiness; this brings the same discipline to flat panels:
+    ///
+    ///   1. Flat panels are held at opacity 0 (synchronously, before any
+    ///      render tick can show the freshly-bound black material).
+    ///   2. Wait for the AVPlayerItem to reach `.readyToPlay`.
+    ///   3. For trimmed clips, complete the cue seek to `sourceIn` — awaited,
+    ///      so the window start can't flash frame 0.
+    ///   4. Preroll, then start playback and reveal one render tick later —
+    ///      audio and picture begin together.
+    ///
+    /// On timeout/failure we start anyway (degraded but audible beats
+    /// silent), matching the immersive path's behavior.
+    private func startGatedPlayback(player: AVPlayer, action: VideoAction, awaitSourceIn: Bool) {
+        if case .entity = action.presentation, let entity = channels[action.channel]?.entity {
+            entity.components.set(OpacityComponent(opacity: 0))
+        }
+        Task { @MainActor [weak self, weak player] in
+            guard let self, let player else { return }
+            let isReady = await self.awaitCurrentItemReadyToPlay(player: player, timeout: 8.0)
+            if !isReady {
+                logger.warning("[video] gated start: item never reached .readyToPlay on channel '\(action.channel)' — starting anyway")
+            }
+            let sourceIn = max(0, action.sourceIn ?? 0)
+            if isReady, awaitSourceIn, sourceIn > 0 {
+                await withCheckedContinuation { (cont: CheckedContinuation<Void, Never>) in
+                    player.seek(
+                        to: CMTime(seconds: sourceIn, preferredTimescale: 600),
+                        toleranceBefore: .zero, toleranceAfter: .zero
+                    ) { _ in cont.resume() }
+                }
+            }
+            if isReady {
+                await withCheckedContinuation { (cont: CheckedContinuation<Void, Never>) in
+                    player.preroll(atRate: 1.0) { _ in cont.resume() }
+                }
+            }
+            // The channel may have been stopped/replaced while we waited.
+            guard self.channels[action.channel]?.player === player else { return }
+            player.play()
+            if case .entity = action.presentation, let entity = self.channels[action.channel]?.entity {
+                // One render tick (~2 frames at 90 Hz) for the texture
+                // upload before revealing; inaudible, invisible.
+                try? await Task.sleep(nanoseconds: 25_000_000)
+                guard self.channels[action.channel]?.player === player else { return }
+                entity.components.set(OpacityComponent(opacity: 1))
+            }
+        }
     }
 
     // MARK: - Prepare
@@ -215,7 +275,7 @@ public class VideoPlaybackManager {
     ///   • AVPlayerItem.preroll(atRate: 1.0) complete
     ///   • If `.entity` presentation: ModelComponent (mesh + VideoMaterial)
     ///     bound onto the target entity, so RealityKit's GPU upload
-    ///     happens *now* rather than at chapter step time
+    ///     happens *now* rather than at segment step time
     ///   • A brief play→pause→seek-to-zero cycle so AVPlayer has actually
     ///     produced its first decoded frame and visionOS's video pipeline
     ///     is warm
@@ -241,7 +301,7 @@ public class VideoPlaybackManager {
     }
 
     public func prepareAsync(action: VideoAction) async {
-        // Never preheat over a channel the chapter is already playing —
+        // Never preheat over a channel the segment is already playing —
         // the entry `stop` would kill the live video (the "first video is
         // a black box" race when preheat overlaps a cold play).
         if channels[action.channel]?.isPlayRequested == true { return }
@@ -292,14 +352,14 @@ public class VideoPlaybackManager {
         channels[action.channel] = channel
 
         // Bind VideoMaterial onto the target entity NOW so RealityKit
-        // uploads the texture binding before chapter time.
+        // uploads the texture binding before segment time.
         attachToPresentation(player: player, presentation: action.presentation, channel: &channel)
         channels[action.channel] = channel
 
         // Keep the entity ENABLED during preheat — disabling it removes
         // the entity from RealityKit's render graph, which means
         // VideoMaterial's GPU upload doesn't happen until isEnabled flips
-        // back at chapter time. That re-introduces the multi-second
+        // back at segment time. That re-introduces the multi-second
         // first-frame delay we're trying to eliminate.
         //
         // Instead, drive visibility via OpacityComponent. The entity
@@ -331,17 +391,17 @@ public class VideoPlaybackManager {
 
         // 2) Force visionOS to actually decode + render the first frame.
         //    The trick: play() then pause(), and rely on AVPlayer's
-        //    natural position (a few ms in) so the chapter step's
+        //    natural position (a few ms in) so the segment step's
         //    eventual play() resumes from a warm decode buffer.
         //
         //    Earlier revisions did `seek(to: .zero, toleranceBefore: .zero,
         //    toleranceAfter: .zero)` here to rewind to exactly frame 0.
         //    Zero-tolerance seek is precise but flushes AVPlayer's
         //    decoded-frame buffer — which destroyed the entire reason
-        //    for the warmup. Step 1 of every chapter would then play
+        //    for the warmup. Step 1 of every segment would then play
         //    1+ seconds late while the decoder re-primed. We accept a
         //    handful of frames of offset (the user can't perceive ~50ms
-        //    on a chapter-step entry) in exchange for actual instant
+        //    on a segment-step entry) in exchange for actual instant
         //    playback.
         player.play()
         // Two render frames @ ~90Hz on visionOS ≈ 22ms; a touch over
@@ -435,7 +495,7 @@ public class VideoPlaybackManager {
         // we just disable it. For the immersive skybox, drop the
         // VideoPlayerComponent so the now-stopped AVPlayer's frame
         // doesn't keep rendering, and disable the entity so the next
-        // chapter's `applyAmbientBackgroundVisibility` decides
+        // segment's `applyAmbientBackgroundVisibility` decides
         // whether to bring it back up. No ModelComponent to restore
         // — the video path uses an empty entity + VideoPlayerComponent
         // only.
@@ -469,14 +529,14 @@ public class VideoPlaybackManager {
     }
 
     public func stopAll() {
-        // `ChapterEngine.stop()` calls this on every chapter transition to
-        // reset chapter-scope video state. Protected channels —
+        // `SegmentEngine.stop()` calls this on every segment transition to
+        // reset segment-scope video state. Protected channels —
         // currently just `AppModel.backdropVideoChannel` for the
-        // chapter-level immersive video backdrop — are SCOPED ABOVE
-        // chapter boundaries and must survive the reset. Without this
+        // segment-level immersive video backdrop — are SCOPED ABOVE
+        // segment boundaries and must survive the reset. Without this
         // guard, an immersive video backdrop bound by
-        // `applyChapterBackdrop` was getting wiped out the moment the
-        // engine started the chapter's step loop (because the engine
+        // `applySegmentBackdrop` was getting wiped out the moment the
+        // engine started the segment's step loop (because the engine
         // calls stop() before running steps).
         for key in channels.keys where !protectedChannels.contains(key) {
             stop(channel: key)
@@ -510,7 +570,7 @@ public class VideoPlaybackManager {
                 // VideoPlayerComponent on top of an UnlitMaterial
                 // placeholder, which on visionOS left the gray placeholder
                 // visible and never reliably swapped in the video texture
-                // before the chapter step ended.
+                // before the segment step ended.
                 let mesh = MeshResource.generatePlane(width: width, height: height)
                 let material = VideoMaterial(avPlayer: player)
                 entity.components.set(ModelComponent(mesh: mesh, materials: [material]))

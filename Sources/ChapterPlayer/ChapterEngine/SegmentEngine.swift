@@ -1,9 +1,9 @@
 //
-//  ChapterEngine.swift
+//  SegmentEngine.swift
 //  SharedVisions
 //
 //  Generic step choreographer.
-//  Reads ChapterDefinitions and executes StepActions through pluggable executors.
+//  Reads SegmentDefinitions and executes StepActions through pluggable executors.
 //  Handles timing, pause/resume/skip/goto/restart.
 //
 
@@ -12,7 +12,7 @@ import OSLog
 
 private let logger = Logger(
     subsystem: Bundle.main.bundleIdentifier ?? "com.shellcorp.sharedvisions",
-    category: "ChapterEngine"
+    category: "SegmentEngine"
 )
 
 #if DEBUG
@@ -26,8 +26,8 @@ private let stepSignposter = OSSignposter(
 
 // MARK: - Status (internal reporting struct)
 
-public struct ChapterStatus: Sendable {
-    public let chapterId: String
+public struct SegmentStatus: Sendable {
+    public let segmentId: String
     public let stepId: String
     public let stepIndex: Int
     public let stepName: String
@@ -47,13 +47,13 @@ public struct ChapterStatus: Sendable {
 
 @MainActor
 @Observable
-public final class ChapterEngine {
+public final class SegmentEngine {
 
 
     public init() {}
     // MARK: - State
 
-    public private(set) var currentChapter: ChapterDefinition?
+    public private(set) var currentSegment: SegmentDefinition?
     public private(set) var currentStepIndex: Int = 0
     public private(set) var isPaused: Bool = false
     public private(set) var isPlaying: Bool = false
@@ -67,9 +67,9 @@ public final class ChapterEngine {
     // MARK: - Timing
 
     private var stepStartTime: Date = .now
-    private var chapterStartTime: Date = .now
+    private var segmentStartTime: Date = .now
     private var stepPausedDuration: TimeInterval = 0
-    private var chapterPausedDuration: TimeInterval = 0
+    private var segmentPausedDuration: TimeInterval = 0
     private var pauseStartTime: Date?
 
     // MARK: - Internal
@@ -98,12 +98,12 @@ public final class ChapterEngine {
 
     /// Called when a step changes — lets AppModel/ImmersiveView react
     public var onStepChanged: ((StepDefinition, Int) -> Void)?
-    /// Called when chapter completes
-    public var onChapterComplete: ((CompletionAction) -> Void)?
+    /// Called when segment completes
+    public var onSegmentComplete: ((CompletionAction) -> Void)?
     /// Called to send step status (observers / utility window)
-    public var onStatusUpdate: ((ChapterStatus) -> Void)?
-    /// Called when a chapter starts playing
-    public var onChapterStarted: ((String) -> Void)?
+    public var onStatusUpdate: ((SegmentStatus) -> Void)?
+    /// Called when a segment starts playing
+    public var onSegmentStarted: ((String) -> Void)?
     /// Called when a gate activates — lets ImmersiveView show a prompt
     public var onGateStarted: ((StepGate) -> Void)?
     /// Called when a gate is satisfied — lets ImmersiveView hide the prompt
@@ -112,14 +112,14 @@ public final class ChapterEngine {
     // MARK: - Computed
 
     public var currentStep: StepDefinition? {
-        guard let chapter = currentChapter,
+        guard let segment = currentSegment,
               currentStepIndex >= 0,
-              currentStepIndex < chapter.steps.count else { return nil }
-        return chapter.steps[currentStepIndex]
+              currentStepIndex < segment.steps.count else { return nil }
+        return segment.steps[currentStepIndex]
     }
 
-    public var currentChapterId: String {
-        currentChapter?.id ?? ""
+    public var currentSegmentId: String {
+        currentSegment?.id ?? ""
     }
 
     public var currentStepId: String {
@@ -127,7 +127,7 @@ public final class ChapterEngine {
     }
 
     public var totalDuration: TimeInterval {
-        currentChapter?.totalDuration ?? 0
+        currentSegment?.totalDuration ?? 0
     }
 
     public var stepElapsed: TimeInterval {
@@ -141,79 +141,103 @@ public final class ChapterEngine {
     public var totalElapsed: TimeInterval {
         guard isPlaying else { return 0 }
         let now = Date.now
-        let raw = now.timeIntervalSince(chapterStartTime)
+        let raw = now.timeIntervalSince(segmentStartTime)
         let activePause = pauseStartTime.map { now.timeIntervalSince($0) } ?? 0
-        return raw - chapterPausedDuration - activePause
+        return raw - segmentPausedDuration - activePause
     }
 
     // MARK: - Play
 
-    /// Starts chapter playback. Use `startingAtStepIndex` to skip earlier steps.
+    /// Starts segment playback. Use `startingAtStepIndex` to skip earlier steps.
     /// Always resets entities, attachments, and effects to their canonical defaults so
-    /// switching chapters starts from a clean slate (SharedVisions policy: safe full reset).
-    public func play(chapter: ChapterDefinition, startingAtStepIndex startIndex: Int = 0) {
+    /// switching segments starts from a clean slate (SharedVisions policy: safe full reset).
+    public func play(segment: SegmentDefinition, startingAtStepIndex startIndex: Int = 0) {
         stop(resetEntities: true)
 
-        currentChapter = chapter
-        let stepCount = chapter.steps.count
+        currentSegment = segment
+        let stepCount = segment.steps.count
         let clampedStart = max(0, min(startIndex, stepCount > 0 ? stepCount - 1 : 0))
         currentStepIndex = clampedStart
         isPaused = false
         isPlaying = true
         stepPausedDuration = 0
-        chapterPausedDuration = 0
+        segmentPausedDuration = 0
         pauseStartTime = nil
 
         var elapsed: TimeInterval = 0
         for i in 0..<clampedStart {
-            elapsed += chapter.steps[i].duration
+            elapsed += segment.steps[i].duration
         }
-        chapterStartTime = Date.now.addingTimeInterval(-elapsed)
+        segmentStartTime = Date.now.addingTimeInterval(-elapsed)
 
-        logger.info("Playing chapter: \(chapter.id) from step index \(clampedStart)/\(stepCount) (\(String(format: "%.1f", chapter.totalDuration))s total)")
+        logger.info("Playing segment: \(segment.id) from step index \(clampedStart)/\(stepCount) (\(String(format: "%.1f", segment.totalDuration))s total)")
 
+        registerSegmentAnimation(segment)
         startStatusReporting()
-        onChapterStarted?(chapter.id)
+        onSegmentStarted?(segment.id)
 
-        logger.notice("▶ play() creating playTask for chapter=\(chapter.id) stepIndex=\(clampedStart)")
-        startPlayTask(chapter: chapter, startIndex: clampedStart)
+        logger.notice("▶ play() creating playTask for segment=\(segment.id) stepIndex=\(clampedStart)")
+        startPlayTask(segment: segment, startIndex: clampedStart)
     }
 
     /// Async variant: runs the step loop in the caller's Task context instead of
     /// creating a new fire-and-forget Task. Use from auto-advance chains.
     /// Always resets entities/attachments/effects (SharedVisions policy).
-    public func playAndAwait(chapter: ChapterDefinition, startingAtStepIndex startIndex: Int = 0) async -> CompletionAction? {
+    public func playAndAwait(segment: SegmentDefinition, startingAtStepIndex startIndex: Int = 0) async -> CompletionAction? {
         stop(resetEntities: true)
 
-        currentChapter = chapter
-        let stepCount = chapter.steps.count
+        currentSegment = segment
+        let stepCount = segment.steps.count
         let clampedStart = max(0, min(startIndex, stepCount > 0 ? stepCount - 1 : 0))
         currentStepIndex = clampedStart
         isPaused = false
         isPlaying = true
         stepPausedDuration = 0
-        chapterPausedDuration = 0
+        segmentPausedDuration = 0
         pauseStartTime = nil
 
         var elapsed: TimeInterval = 0
         for i in 0..<clampedStart {
-            elapsed += chapter.steps[i].duration
+            elapsed += segment.steps[i].duration
         }
-        chapterStartTime = Date.now.addingTimeInterval(-elapsed)
+        segmentStartTime = Date.now.addingTimeInterval(-elapsed)
 
-        logger.info("Playing chapter (await): \(chapter.id) from step index \(clampedStart)/\(stepCount) (\(String(format: "%.1f", chapter.totalDuration))s total)")
+        logger.info("Playing segment (await): \(segment.id) from step index \(clampedStart)/\(stepCount) (\(String(format: "%.1f", segment.totalDuration))s total)")
 
+        registerSegmentAnimation(segment)
         startStatusReporting()
-        onChapterStarted?(chapter.id)
+        onSegmentStarted?(segment.id)
 
-        return await runStepsFrom(index: clampedStart, in: chapter)
+        return await runStepsFrom(index: clampedStart, in: segment)
+    }
+
+    /// Hand the segment's animation tracks to the entity executor, clocked
+    /// by the authored segment time so gates/pauses hold curves in place.
+    private func registerSegmentAnimation(_ segment: SegmentDefinition) {
+        entityExecutor?.setSegmentAnimation(
+            tracks: segment.animationTracks,
+            clock: { [weak self] in self?.segmentAnimationTime ?? 0 }
+        )
+    }
+
+    /// The authored segment clock: absolute seconds along the segment's
+    /// step grid — the domain animation-track keys live in. Unlike
+    /// `totalElapsed` (wall time minus pauses), this clock stops at a
+    /// gated step's end and never drifts when gates stretch real time.
+    public var segmentAnimationTime: TimeInterval {
+        guard let segment = currentSegment, isPlaying else { return 0 }
+        let index = max(0, min(currentStepIndex, segment.steps.count - 1))
+        var start: TimeInterval = 0
+        for i in 0..<index { start += segment.steps[i].duration }
+        let stepDuration = segment.steps.indices.contains(index) ? segment.steps[index].duration : 0
+        return start + min(max(stepElapsed, 0), stepDuration)
     }
 
     // MARK: - Stop
 
     public func stop(resetEntities: Bool = true, fullReset: Bool = false) {
         if playTask != nil {
-            logger.notice("⏹ stop() cancelling playTask for chapter=\(self.currentChapterId) resetEntities=\(resetEntities) fullReset=\(fullReset)")
+            logger.notice("⏹ stop() cancelling playTask for segment=\(self.currentSegmentId) resetEntities=\(resetEntities) fullReset=\(fullReset)")
         }
         playTask?.cancel()
         playTask = nil
@@ -222,7 +246,7 @@ public final class ChapterEngine {
         isPaused = false
         isPlaying = false
         stepPausedDuration = 0
-        chapterPausedDuration = 0
+        segmentPausedDuration = 0
         pauseStartTime = nil
         resumeIfPaused()
         clearGate()
@@ -238,6 +262,7 @@ public final class ChapterEngine {
             audioExecutor?.stopAll()
         }
         videoExecutor?.stopAll()
+        entityExecutor?.setSegmentAnimation(tracks: [], clock: nil)
 
         cleanup(resetEntities: resetEntities)
     }
@@ -268,7 +293,7 @@ public final class ChapterEngine {
         if let start = pauseStartTime {
             let elapsed = Date.now.timeIntervalSince(start)
             stepPausedDuration += elapsed
-            chapterPausedDuration += elapsed
+            segmentPausedDuration += elapsed
         }
         pauseStartTime = nil
         isPaused = false
@@ -285,9 +310,9 @@ public final class ChapterEngine {
     }
 
     public func skip() {
-        guard let chapter = currentChapter else { return }
+        guard let segment = currentSegment else { return }
         let nextIndex = currentStepIndex + 1
-        guard nextIndex < chapter.steps.count else {
+        guard nextIndex < segment.steps.count else {
             logger.info("Already at last step — cannot skip")
             return
         }
@@ -303,8 +328,8 @@ public final class ChapterEngine {
     }
 
     public func jumpToStep(_ stepId: String) {
-        guard let chapter = currentChapter,
-              let index = chapter.steps.firstIndex(where: { $0.id == stepId }) else {
+        guard let segment = currentSegment,
+              let index = segment.steps.firstIndex(where: { $0.id == stepId }) else {
             logger.warning("Unknown step ID: \(stepId)")
             return
         }
@@ -312,10 +337,10 @@ public final class ChapterEngine {
     }
 
     public func jumpToStep(index: Int) {
-        guard let chapter = currentChapter,
-              index >= 0, index < chapter.steps.count else { return }
+        guard let segment = currentSegment,
+              index >= 0, index < segment.steps.count else { return }
 
-        logger.info("Jumping to step index \(index): \(chapter.steps[index].id)")
+        logger.info("Jumping to step index \(index): \(segment.steps[index].id)")
 
         playTask?.cancel()
         playTask = nil
@@ -324,7 +349,7 @@ public final class ChapterEngine {
         clearGate()
         isPaused = false
         stepPausedDuration = 0
-        chapterPausedDuration = 0
+        segmentPausedDuration = 0
         pauseStartTime = nil
 
         audioExecutor?.stopAll()
@@ -333,33 +358,33 @@ public final class ChapterEngine {
 
         var elapsed: TimeInterval = 0
         for i in 0..<index {
-            elapsed += chapter.steps[i].duration
+            elapsed += segment.steps[i].duration
         }
-        chapterStartTime = Date.now.addingTimeInterval(-elapsed)
+        segmentStartTime = Date.now.addingTimeInterval(-elapsed)
 
         isPlaying = true
         startStatusReporting()
 
-        startPlayTask(chapter: chapter, startIndex: index)
+        startPlayTask(segment: segment, startIndex: index)
     }
 
     public func restart() {
-        guard let chapter = currentChapter else { return }
-        play(chapter: chapter)
+        guard let segment = currentSegment else { return }
+        play(segment: segment)
     }
 
     // MARK: - Step Loop
 
     /// Shared step-iteration loop used by play(), jumpToStep(), and playAndAwait().
-    /// Returns the chapter completion only when playback reaches its natural end.
-    private func runStepsFrom(index startIndex: Int, in chapter: ChapterDefinition) async -> CompletionAction? {
-        let stepCount = chapter.steps.count
-        logger.notice("▶ runStepsFrom: chapter=\(chapter.id) startIndex=\(startIndex) stepCount=\(stepCount) isCancelled=\(Task.isCancelled)")
+    /// Returns the segment completion only when playback reaches its natural end.
+    private func runStepsFrom(index startIndex: Int, in segment: SegmentDefinition) async -> CompletionAction? {
+        let stepCount = segment.steps.count
+        logger.notice("▶ runStepsFrom: segment=\(segment.id) startIndex=\(startIndex) stepCount=\(stepCount) isCancelled=\(Task.isCancelled)")
 
         for index in startIndex..<stepCount {
-            let step = chapter.steps[index]
+            let step = segment.steps[index]
             guard !Task.isCancelled else {
-                logger.warning("⚠️ Chapter \(chapter.id) cancelled at step \(step.id) — playTask was cancelled before step could start")
+                logger.warning("⚠️ Segment \(segment.id) cancelled at step \(step.id) — playTask was cancelled before step could start")
                 return nil
             }
 
@@ -431,9 +456,9 @@ public final class ChapterEngine {
 
         guard !Task.isCancelled else { return nil }
 
-        logger.info("Chapter \(chapter.id) complete")
+        logger.info("Segment \(segment.id) complete")
 
-        if case .holdOnLastStep = chapter.onComplete {
+        if case .holdOnLastStep = segment.onComplete {
             sendStatus(isComplete: true)
         } else {
             isPlaying = false
@@ -441,13 +466,13 @@ public final class ChapterEngine {
             sendStatus(playing: false)
         }
 
-        return chapter.onComplete
+        return segment.onComplete
     }
 
-    private func startPlayTask(chapter: ChapterDefinition, startIndex: Int) {
+    private func startPlayTask(segment: SegmentDefinition, startIndex: Int) {
         playTask = Task { @MainActor in
-            guard let completion = await self.runStepsFrom(index: startIndex, in: chapter) else { return }
-            self.onChapterComplete?(completion)
+            guard let completion = await self.runStepsFrom(index: startIndex, in: segment) else { return }
+            self.onSegmentComplete?(completion)
         }
     }
 
@@ -585,7 +610,7 @@ public final class ChapterEngine {
 
         // Audio
         case .playAudio(let audioAction):
-            audioExecutor?.play(audioAction, stepContext: "\(currentChapterId)/\(currentStepId)")
+            audioExecutor?.play(audioAction, stepContext: "\(currentSegmentId)/\(currentStepId)")
         case .stopAudio(let channel):
             audioExecutor?.stop(channel: channel)
         case .fadeAudio(let channel, let to, let duration):
@@ -672,10 +697,10 @@ public final class ChapterEngine {
     // MARK: - Status Reporting
 
     private func sendStatus(playing: Bool? = nil, isComplete: Bool = false) {
-        guard let chapter = currentChapter, let step = currentStep else { return }
+        guard let segment = currentSegment, let step = currentStep else { return }
 
-        let status = ChapterStatus(
-            chapterId: chapter.id,
+        let status = SegmentStatus(
+            segmentId: segment.id,
             stepId: step.id,
             stepIndex: currentStepIndex,
             stepName: step.name,
@@ -683,7 +708,7 @@ public final class ChapterEngine {
             stepDuration: step.duration,
             totalElapsed: totalElapsed,
             totalDuration: totalDuration,
-            totalSteps: chapter.steps.count,
+            totalSteps: segment.steps.count,
             isPlaying: playing ?? (isPlaying && !isPaused),
             isWaiting: isWaiting,
             isComplete: isComplete,
