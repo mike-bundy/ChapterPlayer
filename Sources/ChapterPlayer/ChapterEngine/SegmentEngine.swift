@@ -363,6 +363,10 @@ public final class SegmentEngine {
         segmentStartTime = Date.now.addingTimeInterval(-elapsed)
 
         isPlaying = true
+        // Re-register the segment's animation tracks: a natural completion
+        // deregisters them, so a jump after completion (or after stop)
+        // must restore per-frame track sampling like play() does.
+        registerSegmentAnimation(segment)
         startStatusReporting()
 
         startPlayTask(segment: segment, startIndex: index)
@@ -464,6 +468,12 @@ public final class SegmentEngine {
             isPlaying = false
             stopStatusReporting()
             sendStatus(playing: false)
+            // Deregister the segment's animation tracks: with isPlaying
+            // false the animation clock reads 0, so a still-registered
+            // track would slam every keyed entity back to its t=0 pose on
+            // the next per-frame sample. Entities keep the final sampled
+            // transforms; a subsequent play/jump re-registers.
+            entityExecutor?.setSegmentAnimation(tracks: [], clock: nil)
         }
 
         return segment.onComplete

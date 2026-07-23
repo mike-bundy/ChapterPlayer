@@ -40,6 +40,22 @@ public class VideoPlaybackManager {
         let presentation: VideoPresentation
         var entity: Entity?
         var isPrepared: Bool = false
+        /// Request fingerprint — what this channel's player was built FOR.
+        /// `play(action:)` compares an incoming action against these before
+        /// taking any reuse path; a mismatch (different file, different
+        /// source window, different loop mode, different presentation)
+        /// tears the channel down and rebuilds cold. Without this check the
+        /// warm/half-built paths happily resumed the OLD player — wrong
+        /// file, or a played-to-end item that renders as a frozen/black
+        /// panel.
+        let file: String
+        let sourceIn: Double?
+        let sourceOut: Double?
+        let loop: Bool
+        /// Manual-loop DidPlayToEndTime observer token (plain-AVPlayer
+        /// loops: immersive, in-only trims, and warmed channels). Removed
+        /// on `stop` so tokens don't accumulate across channel rebuilds.
+        var loopObserver: NSObjectProtocol?
     }
 
     // MARK: - State
@@ -67,17 +83,44 @@ public class VideoPlaybackManager {
         // expects instant playback. We just enable the entity (was
         // disabled to keep the panel hidden during preheat) and call
         // player.play() — first frame appears the same render tick.
-        if var ch = channels[action.channel] {
+        if var ch = channels[action.channel], channelMatches(ch, action) {
             ch.isPlayRequested = true
             ch.player.volume = action.volume
+            // Warmed channels come from `prepareAsync`, which builds a
+            // plain AVPlayer — no AVPlayerLooper. A looping action reusing
+            // that player MUST get the manual loop observer or it plays the
+            // window once and freezes on the last frame forever.
+            if action.loop, ch.looper == nil, ch.loopObserver == nil,
+               let item = ch.player.currentItem {
+                ch.loopObserver = installManualLoop(
+                    player: ch.player, item: item, sourceIn: action.sourceIn
+                )
+            }
             if ch.isPrepared, let entity = ch.entity {
+                entity.isEnabled = true
+                // The warm fast path only works when the player is still
+                // parked at the clip's start (preheat leaves it ~60ms in).
+                // If it's anywhere else — an editor scrub seeked it, or a
+                // previous non-looping run played it to the end — play()
+                // alone resumes mid-file or holds on the final frame. Cue
+                // back to sourceIn behind the opacity gate instead, so the
+                // flush-seek can't flash a stale frame.
+                let sourceIn = max(0, action.sourceIn ?? 0)
+                let current = ch.player.currentItem.map { $0.currentTime().seconds } ?? sourceIn
+                if !current.isFinite || abs(current - sourceIn) > 0.75 {
+                    entity.components.set(OpacityComponent(opacity: 0))
+                    channels[action.channel] = ch
+                    startGatedPlayback(player: ch.player, action: action,
+                                       awaitSourceIn: true, forceCue: true)
+                    logger.info("Re-cueing prepared video on channel '\(action.channel)' (was parked at \(current, format: .fixed(precision: 2))s)")
+                    return
+                }
                 // Already attached during preheat — flip opacity to 1
                 // (the OpacityComponent was set to 0 during preheat to
                 // keep the entity in the render graph but invisible) and
                 // start playback. First frame is already in the GPU
                 // texture from the warmup cycle, so it appears the same
                 // render tick.
-                entity.isEnabled = true
                 entity.components.set(OpacityComponent(opacity: 1))
                 channels[action.channel] = ch
                 ch.player.play()
@@ -167,7 +210,11 @@ public class VideoPlaybackManager {
                 isPlayRequested: true,
                 player: queuePlayer,
                 looper: looper,
-                presentation: action.presentation
+                presentation: action.presentation,
+                file: action.file,
+                sourceIn: action.sourceIn,
+                sourceOut: action.sourceOut,
+                loop: action.loop
             )
             attachToPresentation(player: queuePlayer, presentation: action.presentation, channel: &channel)
             channels[action.channel] = channel
@@ -185,25 +232,22 @@ public class VideoPlaybackManager {
             if let out = action.sourceOut {
                 playerItem.forwardPlaybackEndTime = CMTime(seconds: out, preferredTimescale: 600)
             }
-            // Manual loop for immersive backdrops and in-only trims.
-            // Observer loops back to the window start, not frame 0.
-            if action.loop {
-                let loopStart = CMTime(seconds: max(0, action.sourceIn ?? 0), preferredTimescale: 600)
-                NotificationCenter.default.addObserver(
-                    forName: .AVPlayerItemDidPlayToEndTime,
-                    object: playerItem,
-                    queue: .main
-                ) { [weak player] _ in
-                    player?.seek(to: loopStart, toleranceBefore: .zero, toleranceAfter: .zero)
-                    player?.play()
-                }
-            }
-
             var channel = VideoChannel(
                 isPlayRequested: true,
                 player: player,
-                presentation: action.presentation
+                presentation: action.presentation,
+                file: action.file,
+                sourceIn: action.sourceIn,
+                sourceOut: action.sourceOut,
+                loop: action.loop
             )
+            // Manual loop for immersive backdrops and in-only trims.
+            // Observer loops back to the window start, not frame 0.
+            if action.loop {
+                channel.loopObserver = installManualLoop(
+                    player: player, item: playerItem, sourceIn: action.sourceIn
+                )
+            }
             attachToPresentation(player: player, presentation: action.presentation, channel: &channel)
             channels[action.channel] = channel
             startGatedPlayback(player: player, action: action, awaitSourceIn: true)
@@ -228,9 +272,20 @@ public class VideoPlaybackManager {
     ///   4. Preroll, then start playback and reveal one render tick later —
     ///      audio and picture begin together.
     ///
-    /// On timeout/failure we start anyway (degraded but audible beats
-    /// silent), matching the immersive path's behavior.
-    private func startGatedPlayback(player: AVPlayer, action: VideoAction, awaitSourceIn: Bool) {
+    /// On timeout/failure we still start playback (degraded but audible
+    /// beats silent) — but a flat panel is NOT revealed until its item
+    /// actually becomes renderable (see the second readiness wait below):
+    /// revealing on a dead item was itself a black-box path.
+    ///
+    /// `forceCue` seeks to `sourceIn` even when it's 0 — used when reusing
+    /// a prepared player that is parked somewhere other than the clip's
+    /// start (scrub seek, played-to-end item).
+    private func startGatedPlayback(
+        player: AVPlayer,
+        action: VideoAction,
+        awaitSourceIn: Bool,
+        forceCue: Bool = false
+    ) {
         if case .entity = action.presentation, let entity = channels[action.channel]?.entity {
             entity.components.set(OpacityComponent(opacity: 0))
         }
@@ -241,7 +296,7 @@ public class VideoPlaybackManager {
                 logger.warning("[video] gated start: item never reached .readyToPlay on channel '\(action.channel)' — starting anyway")
             }
             let sourceIn = max(0, action.sourceIn ?? 0)
-            if isReady, awaitSourceIn, sourceIn > 0 {
+            if isReady, awaitSourceIn, sourceIn > 0 || forceCue {
                 await withCheckedContinuation { (cont: CheckedContinuation<Void, Never>) in
                     player.seek(
                         to: CMTime(seconds: sourceIn, preferredTimescale: 600),
@@ -257,13 +312,73 @@ public class VideoPlaybackManager {
             // The channel may have been stopped/replaced while we waited.
             guard self.channels[action.channel]?.player === player else { return }
             player.play()
-            if case .entity = action.presentation, let entity = self.channels[action.channel]?.entity {
+            if case .entity = action.presentation {
+                if !isReady {
+                    // The 8s gate elapsed with no decodable item. Revealing
+                    // now would show a black panel — keep it hidden and keep
+                    // waiting. play() is already called, so the moment the
+                    // item recovers AVPlayer starts producing frames; we
+                    // reveal then. Only after an extended grace period do we
+                    // reveal regardless (with a loud log) so a broken file
+                    // can't hide the panel forever once it self-heals.
+                    let recovered = await self.awaitCurrentItemReadyToPlay(player: player, timeout: 30.0)
+                    if !recovered {
+                        logger.error("[video] gated start: revealing channel '\(action.channel)' after 38s without .readyToPlay (file '\(action.file)') — panel may render black")
+                    }
+                }
                 // One render tick (~2 frames at 90 Hz) for the texture
                 // upload before revealing; inaudible, invisible.
                 try? await Task.sleep(nanoseconds: 25_000_000)
                 guard self.channels[action.channel]?.player === player else { return }
-                entity.components.set(OpacityComponent(opacity: 1))
+                self.channels[action.channel]?.entity?
+                    .components.set(OpacityComponent(opacity: 1))
             }
+        }
+    }
+
+    // MARK: - Channel reuse validation
+
+    /// True when an existing channel was built for exactly this request —
+    /// same file, same non-destructive source window, same loop mode, same
+    /// presentation target. Anything else must go through stop + cold
+    /// rebuild: the reuse paths never re-create the AVPlayerItem, so a
+    /// mismatched reuse plays the WRONG content (or a played-out item that
+    /// renders as a frozen/black panel). A failed item is never reusable.
+    private func channelMatches(_ ch: VideoChannel, _ action: VideoAction) -> Bool {
+        if ch.player.currentItem?.status == .failed { return false }
+        guard ch.file == action.file,
+              max(0, ch.sourceIn ?? 0) == max(0, action.sourceIn ?? 0),
+              ch.sourceOut == action.sourceOut,
+              ch.loop == action.loop
+        else { return false }
+        switch (ch.presentation, action.presentation) {
+        case (.attachment(let a), .attachment(let b)):
+            return a == b
+        case (.entity(let n1, let w1, let h1), .entity(let n2, let w2, let h2)):
+            return n1 == n2 && w1 == w2 && h1 == h2
+        case (.immersive(let r1, let f1), .immersive(let r2, let f2)):
+            return r1 == r2 && f1 == f2
+        default:
+            return false
+        }
+    }
+
+    /// Install the manual DidPlayToEndTime loop used everywhere an
+    /// AVPlayerLooper can't be (immersive backdrops, in-only trims, and
+    /// warmed channels whose player was built by `prepareAsync`). Loops
+    /// back to the source-window start, not frame 0. Returns the observer
+    /// token; `stop(channel:)` removes it.
+    private func installManualLoop(
+        player: AVPlayer, item: AVPlayerItem, sourceIn: Double?
+    ) -> NSObjectProtocol {
+        let loopStart = CMTime(seconds: max(0, sourceIn ?? 0), preferredTimescale: 600)
+        return NotificationCenter.default.addObserver(
+            forName: .AVPlayerItemDidPlayToEndTime,
+            object: item,
+            queue: .main
+        ) { [weak player] _ in
+            player?.seek(to: loopStart, toleranceBefore: .zero, toleranceAfter: .zero)
+            player?.play()
         }
     }
 
@@ -347,7 +462,11 @@ public class VideoPlaybackManager {
         var channel = VideoChannel(
             player: player,
             presentation: action.presentation,
-            isPrepared: false
+            isPrepared: false,
+            file: action.file,
+            sourceIn: action.sourceIn,
+            sourceOut: action.sourceOut,
+            loop: action.loop
         )
         channels[action.channel] = channel
 
@@ -490,6 +609,10 @@ public class VideoPlaybackManager {
         guard var ch = channels.removeValue(forKey: channel) else { return }
         ch.player.pause()
         ch.looper = nil
+        if let token = ch.loopObserver {
+            NotificationCenter.default.removeObserver(token)
+            ch.loopObserver = nil
+        }
 
         // Hide / unbind the channel's target entity. For flat panels
         // we just disable it. For the immersive skybox, drop the
@@ -499,13 +622,27 @@ public class VideoPlaybackManager {
         // whether to bring it back up. No ModelComponent to restore
         // — the video path uses an empty entity + VideoPlayerComponent
         // only.
+        //
+        // Either way, clear any preheat/gate-era opacity-0 back to 1:
+        // the entity is disabled (invisible) regardless, and a later
+        // `showEntity`/reveal or a fresh backdrop bind must not inherit
+        // a stale fully-transparent OpacityComponent — that was the
+        // "revealed panel/skybox renders nothing" black-box path.
         switch ch.presentation {
         case .entity(let name, _, _):
-            videoEntityRegistry[name]?.isEnabled = false
+            if let entity = videoEntityRegistry[name] {
+                entity.isEnabled = false
+                if entity.components.has(OpacityComponent.self) {
+                    entity.components[OpacityComponent.self]?.opacity = 1
+                }
+            }
         case .immersive(_, _):
             if let entity = videoEntityRegistry["skybox"] {
                 entity.components.remove(VideoPlayerComponent.self)
                 entity.isEnabled = false
+                if entity.components.has(OpacityComponent.self) {
+                    entity.components[OpacityComponent.self]?.opacity = 1
+                }
             }
         case .attachment:
             break
@@ -522,10 +659,15 @@ public class VideoPlaybackManager {
     }
 
     public func resumeAll() {
-        for (_, channel) in channels {
+        // Only resume channels the segment actually asked to play.
+        // Preheat-only channels are deliberately parked at the clip's
+        // first frame (paused, opacity 0) — blanket-playing them here let
+        // a pause/resume cycle silently run a warmed video to its end, so
+        // the eventual real play() started mid-file or on a dead frame.
+        for (_, channel) in channels where channel.isPlayRequested {
             channel.player.play()
         }
-        logger.info("Resumed all video (\(self.channels.count) channels)")
+        logger.info("Resumed all requested video channels")
     }
 
     public func stopAll() {
@@ -608,6 +750,16 @@ public class VideoPlaybackManager {
             if let entity = videoEntityRegistry["skybox"] {
                 logger.info("[video.immersive] binding to 'skybox' entity (parent=\(entity.parent?.name ?? "nil"))")
                 entity.isEnabled = true
+                // A previous preheat may have left the skybox at opacity 0
+                // (prepareAsync dials the bound entity down after attach).
+                // The immersive gate never touches OpacityComponent, so
+                // without this reset a cold backdrop play rendered its
+                // video fully transparent — an all-black immersive space.
+                // Preheat callers re-apply opacity 0 right after this
+                // returns, same as the flat-panel branch.
+                if entity.components.has(OpacityComponent.self) {
+                    entity.components[OpacityComponent.self]?.opacity = 1
+                }
                 channel.entity = entity
                 #if canImport(RealityKit)
                 Task { @MainActor [weak self, weak entity, weak player] in

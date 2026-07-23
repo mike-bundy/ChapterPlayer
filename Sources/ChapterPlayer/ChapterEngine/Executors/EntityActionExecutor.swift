@@ -106,6 +106,16 @@ public final class EntityActionExecutor: EntityActionExecutorProtocol {
             return
         }
         entity.isEnabled = true
+        // A stale fully-transparent OpacityComponent (video preheat, a
+        // gated video start that never revealed, or a fadeEntity-to-0 used
+        // as a hide) makes "show" a silent no-op — the entity is enabled
+        // but renders nothing. Show means visible: snap effectively-zero
+        // opacity back to 1. Partial opacities are authored state and are
+        // left alone.
+        if let opacity = entity.components[OpacityComponent.self]?.opacity,
+           opacity <= 0.001 {
+            entity.components[OpacityComponent.self]?.opacity = 1
+        }
         logger.debug("Show entity: \(name)")
     }
 
