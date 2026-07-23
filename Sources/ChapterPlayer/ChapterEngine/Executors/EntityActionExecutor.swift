@@ -116,7 +116,18 @@ public final class EntityActionExecutor: EntityActionExecutorProtocol {
            opacity <= 0.001 {
             entity.components[OpacityComponent.self]?.opacity = 1
         }
+        triggerParticleBurstIfNeeded(on: entity)
         logger.debug("Show entity: \(name)")
+    }
+
+    /// Non-looping particle entities (`ParticleBurstOnRevealComponent`)
+    /// are built idle with a preset-sized `burstCount`; showing/revealing
+    /// them fires the one-shot burst. Re-revealing re-bursts.
+    private func triggerParticleBurstIfNeeded(on entity: Entity) {
+        guard entity.components.has(ParticleBurstOnRevealComponent.self),
+              var emitter = entity.components[ParticleEmitterComponent.self] else { return }
+        emitter.burst()
+        entity.components.set(emitter)
     }
 
     public func hideEntity(named name: String) {
@@ -280,6 +291,9 @@ public final class EntityActionExecutor: EntityActionExecutorProtocol {
         if action.manipulable {
             ManipulationComponent.configureEntity(entity)
         }
+
+        // 7. Non-looping particle emitters fire their one-shot burst now.
+        triggerParticleBurstIfNeeded(on: entity)
 
         logger.debug("Reveal entity: \(action.entity) fadeIn=\(String(format: "%.1f", action.fadeIn))s manipulable=\(action.manipulable)")
     }

@@ -14,9 +14,10 @@
 //  ImmersiveView still pre-registers the four rich SharedVisions primitives via
 //  `PrimitiveEntities.create*()` because they include hand-tuned per-primitive
 //  particle systems beyond what `EntityDefinition` currently expresses.
-//  When the editor learns to author particle presets (Phase 3+ via Maestro's
-//  Afterburn → ParticleEmitterPreset migration), those primitives migrate into
-//  `EntityDefinition`-backed builds.
+//
+//  `.particles` entities resolve their `particlePresetId` against the
+//  document's `particlePresets` and render a real `ParticleEmitterComponent`
+//  (see ParticleEmitterEntity.swift for the format → RealityKit mapping).
 //
 
 import Foundation
@@ -28,12 +29,20 @@ import ChapterScript
 @MainActor
 public final class EntityFactory {
 
-    public init() {}
+    public init() {
+        ParticleBurstOnRevealComponent.registerComponent()
+    }
 
     /// Resolver used to locate on-disk URLs for image entities (so an
     /// "Add Image" reveal renders as an in-scene textured plane). Set by
     /// `DocumentEntityLoader.materialize` from the loaded experience.
     public var mediaResolver: MediaResolver?
+
+    /// `ParticleEmitterPreset.id` → preset, for `.particles` entities. Set
+    /// by `DocumentEntityLoader.materialize` from the loaded document's
+    /// `particlePresets` on every (re)materialization, so live-sync preset
+    /// upserts re-render on the next document swap.
+    public var particlePresets: [String: ParticleEmitterPreset] = [:]
 
     /// `customFactoryId` → factory closure. Populate at app launch with whatever
     /// custom procedural entities the player supports.
@@ -61,7 +70,7 @@ public final class EntityFactory {
         case .videoPanel:
             entity = makeVideoPanel(definition)
         case .particles:
-            entity = Entity() // ParticleEmitterPreset binding is Phase 3+
+            entity = makeParticleEmitter(definition)
         case .custom:
             if let id = definition.customFactoryId, let make = customFactories[id] {
                 entity = make(definition)

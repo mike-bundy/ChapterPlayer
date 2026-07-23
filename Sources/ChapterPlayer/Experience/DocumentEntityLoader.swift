@@ -68,6 +68,15 @@ public final class DocumentEntityLoader {
         // reveals) can locate their files and render as textured planes.
         factory.mediaResolver = mediaResolver
 
+        // Preset lookup for `.particles` entities. Rebuilt on every
+        // materialize so a live-sync preset upsert (or a changed entity
+        // binding) re-renders with the fresh values — materialize rebuilds
+        // all document entities from scratch, nothing here is cached.
+        factory.particlePresets = Dictionary(
+            document.particlePresets.map { ($0.id, $0) },
+            uniquingKeysWith: { _, newest in newest }
+        )
+
         guard let entityExecutor, let videoManager else { return }
         guard let root = sceneRoot else {
             docEntityLogger.warning("materialize called before sceneRoot was wired; skipping")
