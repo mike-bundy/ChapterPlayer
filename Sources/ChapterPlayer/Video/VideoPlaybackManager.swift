@@ -62,6 +62,16 @@ public class VideoPlaybackManager {
 
     private var channels: [String: VideoChannel] = [:]
 
+    /// Monotonic teardown counter, bumped by every `stop(channel:)` /
+    /// `stopAll()`. `prepareAsync` snapshots it right after its own entry
+    /// teardown and abandons the preheat if ANY stop landed while it was
+    /// suspended. Without this, a preheat awaiting its asset load across
+    /// `SegmentEngine.play()`'s stopAll could re-store a half-built muted
+    /// channel in the gap before step 0's `playVideo` executes — and the
+    /// engine's supposedly-cold start would silently adopt that zombie
+    /// (skipping the cue discipline the cold path guarantees).
+    private var stopEpoch: Int = 0
+
     /// Video entity registry — entities with VideoPlayerComponent, set up by ImmersiveView
     public var videoEntityRegistry: [String: Entity] = [:]
 
@@ -96,7 +106,24 @@ public class VideoPlaybackManager {
                     player: ch.player, item: item, sourceIn: action.sourceIn
                 )
             }
-            if ch.isPrepared, let entity = ch.entity {
+            // The preheat's entity binding must still be the LIVE registry
+            // entity — an editor re-materialize replaces every scene
+            // entity, and enabling/revealing the stale capture here would
+            // light up a detached orphan while the real panel stays
+            // invisible. A stale binding falls through to the attach path
+            // below, which re-binds against the current registry.
+            let boundIsLive: Bool = {
+                guard let bound = ch.entity else { return false }
+                switch action.presentation {
+                case .entity(let name, _, _):
+                    return bound === videoEntityRegistry[name]
+                case .immersive:
+                    return bound === videoEntityRegistry["skybox"]
+                case .attachment:
+                    return true
+                }
+            }()
+            if ch.isPrepared, boundIsLive, let entity = ch.entity {
                 entity.isEnabled = true
                 // The warm fast path only works when the player is still
                 // parked at the clip's start (preheat leaves it ~60ms in).
@@ -130,14 +157,21 @@ public class VideoPlaybackManager {
             // Preheat hasn't completed yet (or this play() is running cold
             // over a half-built channel). Do the full attach now, then gate
             // the actual start on item readiness so the panel never shows
-            // black while audio runs ahead.
+            // black while audio runs ahead. Same discipline as the warm
+            // path: if the player isn't parked at the clip's start (an
+            // editor scrub seeked it mid-preheat), cue back to sourceIn
+            // behind the gate instead of resuming from a foreign position.
             attachToPresentation(
                 player: ch.player,
                 presentation: action.presentation,
                 channel: &ch
             )
             channels[action.channel] = ch
-            startGatedPlayback(player: ch.player, action: action, awaitSourceIn: false)
+            let sourceIn = max(0, action.sourceIn ?? 0)
+            let current = ch.player.currentItem.map { $0.currentTime().seconds } ?? sourceIn
+            let needsCue = !current.isFinite || abs(current - sourceIn) > 0.75
+            startGatedPlayback(player: ch.player, action: action,
+                               awaitSourceIn: needsCue, forceCue: needsCue)
             return
         }
 
@@ -330,10 +364,45 @@ public class VideoPlaybackManager {
                 // upload before revealing; inaudible, invisible.
                 try? await Task.sleep(nanoseconds: 25_000_000)
                 guard self.channels[action.channel]?.player === player else { return }
-                self.channels[action.channel]?.entity?
-                    .components.set(OpacityComponent(opacity: 1))
+                // Reveal the entity the registry names NOW — not the one
+                // captured when the gate armed. A long gate can outlive
+                // the captured binding (editor re-materialize replaces
+                // every scene entity; or the attach found no registry
+                // entry because play() raced the registry's population).
+                // Revealing the stale capture flips opacity on a detached
+                // orphan while the REAL panel stays invisible forever —
+                // the "video at t=0 never appears" terminal state.
+                if let entity = self.resolveLivePanelEntity(for: action) {
+                    entity.isEnabled = true
+                    entity.components.set(OpacityComponent(opacity: 1))
+                }
             }
         }
+    }
+
+    /// The panel entity a gated reveal should target: the CURRENT registry
+    /// entity for `.entity` presentations. When the channel's stored
+    /// binding is missing (attach ran before the registry was populated)
+    /// or stale (a re-materialize swapped the scene's entities under the
+    /// gate), re-run the attach against the live registry entity so the
+    /// video material lands on the panel that is actually in the scene.
+    private func resolveLivePanelEntity(for action: VideoAction) -> Entity? {
+        guard var ch = channels[action.channel] else { return nil }
+        guard case .entity(let name, _, _) = action.presentation else {
+            return ch.entity
+        }
+        guard let live = videoEntityRegistry[name] else {
+            // Nothing registered under this name — the stored binding
+            // (possibly nil) is the best we have.
+            return ch.entity
+        }
+        if let bound = ch.entity, bound === live {
+            return bound
+        }
+        logger.warning("[video] gated reveal: channel '\(action.channel)' bound entity was \(ch.entity == nil ? "nil" : "stale") — re-attaching to live registry entity '\(name)'")
+        attachToPresentation(player: ch.player, presentation: action.presentation, channel: &ch)
+        channels[action.channel] = ch
+        return ch.entity
     }
 
     // MARK: - Channel reuse validation
@@ -421,6 +490,12 @@ public class VideoPlaybackManager {
         // a black box" race when preheat overlaps a cold play).
         if channels[action.channel]?.isPlayRequested == true { return }
         stop(channel: action.channel)
+        // Snapshot AFTER the entry teardown (which bumps the epoch
+        // itself). Any stop that lands during the awaits below means the
+        // world moved on — a segment start, a jump, a project switch —
+        // and this preheat must abandon rather than re-store a channel
+        // the engine just tore down.
+        let epoch = stopEpoch
 
         guard let url = findVideoURL(file: action.file) else {
             logger.warning("Video file not found for prepare: \(action.file)")
@@ -447,8 +522,11 @@ public class VideoPlaybackManager {
         // the asset loaded (it saw no channel and went cold). Storing the
         // preheat channel now would clobber the LIVE player with a muted,
         // paused one — the exact-same-moment "first video is a black box"
-        // race. The play path owns the channel; stand down.
+        // race. The play path owns the channel; stand down. Likewise a
+        // stop/stopAll while we awaited: the next play must be genuinely
+        // cold, not run over a zombie preheat stored after its teardown.
         if channels[action.channel]?.isPlayRequested == true { return }
+        guard stopEpoch == epoch else { return }
 
         let playerItem = AVPlayerItem(asset: asset)
         let player = AVPlayer(playerItem: playerItem)
@@ -501,12 +579,17 @@ public class VideoPlaybackManager {
             logger.warning("Player never reached .readyToPlay for channel '\(action.channel)' — skipping preroll")
             return
         }
+        // A stop while we waited removed this channel — do NOT run the
+        // warmup play() below on the orphaned player (it would keep
+        // decoding, muted and unbound, forever).
+        guard channels[action.channel]?.player === player else { return }
 
         // 2) Preroll the player so AVPlayer has buffered enough to start
         //    at rate 1.0 without stalling.
         await withCheckedContinuation { (cont: CheckedContinuation<Void, Never>) in
             player.preroll(atRate: 1.0) { _ in cont.resume() }
         }
+        guard channels[action.channel]?.player === player else { return }
 
         // 2) Force visionOS to actually decode + render the first frame.
         //    The trick: play() then pause(), and rely on AVPlayer's
@@ -606,6 +689,11 @@ public class VideoPlaybackManager {
     // MARK: - Stop
 
     public func stop(channel: String) {
+        // Every teardown invalidates in-flight preheats (see `stopEpoch`)
+        // — even when the channel doesn't exist yet: a prepareAsync that
+        // hasn't stored its channel is exactly the one that must not
+        // re-store it after this stop.
+        stopEpoch += 1
         guard var ch = channels.removeValue(forKey: channel) else { return }
         ch.player.pause()
         ch.looper = nil
@@ -680,6 +768,10 @@ public class VideoPlaybackManager {
         // `applySegmentBackdrop` was getting wiped out the moment the
         // engine started the segment's step loop (because the engine
         // calls stop() before running steps).
+        // Bump once even when no channels exist yet: preheats still in
+        // their asset-load await (channel not stored) must also observe
+        // this teardown and stand down.
+        stopEpoch += 1
         for key in channels.keys where !protectedChannels.contains(key) {
             stop(channel: key)
         }

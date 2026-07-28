@@ -194,7 +194,17 @@ open class ChapterPlayerCore {
     }
 
     public var immersiveSpaceState: ImmersiveSpaceState = .closed
-    public var immersionStyle: ImmersionStyle = .full
+    public var immersionStyle: ImmersionStyle = .full {
+        didSet { immersionRevision &+= 1 }
+    }
+    /// Equatable pulse for `immersionStyle` (which isn't Equatable).
+    /// Scene bodies do NOT track @Observable reads, so a computed Binding
+    /// inside `.immersionStyle(selection:)` never re-evaluates when the
+    /// model changes the style mid-session (segment presentation
+    /// switches while the space is open silently no-op). Apps must keep
+    /// the selection in scene @State and sync it from a VIEW via
+    /// `.onChange(of: core.immersionRevision)`.
+    public private(set) var immersionRevision: Int = 0
 
     /// Kaiser pattern: openSpace / dismissSpace injected from the
     /// consumer app's `.task` where `@Environment(\.openImmersiveSpace)`
