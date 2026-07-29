@@ -118,7 +118,14 @@ public class VideoPlaybackManager {
                 case .entity(let name, _, _):
                     return bound === videoEntityRegistry[name]
                 case .immersive:
+                    // The skybox binding is only live if the deferred
+                    // VideoPlayerComponent attach actually LANDED. A
+                    // channel whose VPC was refused by RE/ECS ("no video
+                    // asset") or stripped by a stop must fall through to
+                    // the attach path below, which re-runs the hardened
+                    // attach with verification + retry.
                     return bound === videoEntityRegistry["skybox"]
+                        && bound.components.has(VideoPlayerComponent.self)
                 case .attachment:
                     return true
                 }
@@ -164,6 +171,7 @@ public class VideoPlaybackManager {
             attachToPresentation(
                 player: ch.player,
                 presentation: action.presentation,
+                channelKey: action.channel,
                 channel: &ch
             )
             channels[action.channel] = ch
@@ -192,6 +200,11 @@ public class VideoPlaybackManager {
         // and refuses to render. Eagerly loading `.isPlayable` and
         // `.tracks` forces the asset to resolve so the player item's
         // status can transition to `.readyToPlay` quickly.
+        //
+        // This detached kick only FRONT-RUNS the load (AVAsset coalesces
+        // concurrent loads). The load the attach actually depends on is
+        // AWAITED in `attachImmersiveComponent` before the VPC is set —
+        // do not treat this one as the ordering guarantee.
         let asset = AVURLAsset(url: url)
         if case .immersive = action.presentation {
             Task.detached {
@@ -250,7 +263,7 @@ public class VideoPlaybackManager {
                 sourceOut: action.sourceOut,
                 loop: action.loop
             )
-            attachToPresentation(player: queuePlayer, presentation: action.presentation, channel: &channel)
+            attachToPresentation(player: queuePlayer, presentation: action.presentation, channelKey: action.channel, channel: &channel)
             channels[action.channel] = channel
             // The looper already restricts playback to the source window,
             // so no cue seek is needed — just gate the start on readiness.
@@ -282,7 +295,7 @@ public class VideoPlaybackManager {
                     player: player, item: playerItem, sourceIn: action.sourceIn
                 )
             }
-            attachToPresentation(player: player, presentation: action.presentation, channel: &channel)
+            attachToPresentation(player: player, presentation: action.presentation, channelKey: action.channel, channel: &channel)
             channels[action.channel] = channel
             startGatedPlayback(player: player, action: action, awaitSourceIn: true)
         }
@@ -320,6 +333,29 @@ public class VideoPlaybackManager {
         awaitSourceIn: Bool,
         forceCue: Bool = false
     ) {
+        // Immersive presentations do NOT gate. The skybox shows nothing
+        // until the deferred VideoPlayerComponent attach lands, so there
+        // is no "black panel with audible audio" window to hide — and
+        // gating actively BROKE immersive playback: holding the player
+        // paused and prerolling it before RealityKit has bound its video
+        // target made the VPC attach land on a parked pipeline
+        // (FigVideoTargetRemoteXPC err=-15562 → RE/ECS "skipping newly
+        // added VPC b/c it has no video asset" → permanently black
+        // skybox). The original, working immersive path called play()
+        // immediately and let the attach task catch up — restore exactly
+        // that: cue if the source window needs it, then start rolling.
+        if case .immersive = action.presentation {
+            let sourceIn = max(0, action.sourceIn ?? 0)
+            if awaitSourceIn, sourceIn > 0 || forceCue {
+                player.seek(
+                    to: CMTime(seconds: sourceIn, preferredTimescale: 600),
+                    toleranceBefore: .zero, toleranceAfter: .zero
+                )
+            }
+            player.play()
+            logger.info("[video.immersive] playback started ungated on channel '\(action.channel)' (VPC attach follows item readiness)")
+            return
+        }
         if case .entity = action.presentation, let entity = channels[action.channel]?.entity {
             entity.components.set(OpacityComponent(opacity: 0))
         }
@@ -400,7 +436,7 @@ public class VideoPlaybackManager {
             return bound
         }
         logger.warning("[video] gated reveal: channel '\(action.channel)' bound entity was \(ch.entity == nil ? "nil" : "stale") — re-attaching to live registry entity '\(name)'")
-        attachToPresentation(player: ch.player, presentation: action.presentation, channel: &ch)
+        attachToPresentation(player: ch.player, presentation: action.presentation, channelKey: action.channel, channel: &ch)
         channels[action.channel] = ch
         return ch.entity
     }
@@ -550,7 +586,7 @@ public class VideoPlaybackManager {
 
         // Bind VideoMaterial onto the target entity NOW so RealityKit
         // uploads the texture binding before segment time.
-        attachToPresentation(player: player, presentation: action.presentation, channel: &channel)
+        attachToPresentation(player: player, presentation: action.presentation, channelKey: action.channel, channel: &channel)
         channels[action.channel] = channel
 
         // Keep the entity ENABLED during preheat — disabling it removes
@@ -786,7 +822,7 @@ public class VideoPlaybackManager {
 
     // MARK: - Presentation Attachment
 
-    private func attachToPresentation(player: AVPlayer, presentation: VideoPresentation, channel: inout VideoChannel) {
+    private func attachToPresentation(player: AVPlayer, presentation: VideoPresentation, channelKey: String, channel: inout VideoChannel) {
         switch presentation {
         case .attachment:
             // SwiftUI attachment handles video display — just need the player reference
@@ -838,7 +874,11 @@ public class VideoPlaybackManager {
             // `.readyToPlay` at the moment the component is added.
             // The play() path constructs the player and immediately
             // attaches synchronously — too early. We wait for the
-            // item to become decodable, then set the component.
+            // item to become decodable, then set the component —
+            // and VERIFY RealityKit actually accepted it (see
+            // `attachImmersiveComponent`): a skipped VPC never
+            // re-evaluates on its own, so refusal without retry left
+            // the skybox permanently black (AIVU regression).
             if let entity = videoEntityRegistry["skybox"] {
                 logger.info("[video.immersive] binding to 'skybox' entity (parent=\(entity.parent?.name ?? "nil"))")
                 entity.isEnabled = true
@@ -855,26 +895,105 @@ public class VideoPlaybackManager {
                 channel.entity = entity
                 #if canImport(RealityKit)
                 Task { @MainActor [weak self, weak entity, weak player] in
-                    guard let self, let entity, let player else { return }
-                    // Wait on the *item*, not the player. AVPlayer.status
-                    // flips early; AVPlayerItem.status is what RE/ECS
-                    // checks when deciding "VPC has a video asset."
-                    let isReady = await self.awaitCurrentItemReadyToPlay(player: player, timeout: 8.0)
-                    guard isReady else {
-                        logger.warning("[video.immersive] AVPlayerItem never reached .readyToPlay — skipping VPC attach (item.status=\(player.currentItem?.status.rawValue ?? -1) error=\(player.currentItem?.error?.localizedDescription ?? "none") player.status=\(player.status.rawValue))")
+                    guard let self, let entity, let player else {
+                        logger.warning("[video.immersive] deferred attach abandoned before running — manager/entity/player deallocated (channel '\(channelKey)')")
                         return
                     }
-                    var component = VideoPlayerComponent(avPlayer: player)
-                    component.desiredImmersiveViewingMode = .full
-                    component.desiredViewingMode = .stereo
-                    entity.components.set(component)
-                    logger.info("[video.immersive] VideoPlayerComponent set after item.readyToPlay; player.status=\(player.status.rawValue) currentItem.status=\(player.currentItem?.status.rawValue ?? -1) duration=\(player.currentItem.map { CMTimeGetSeconds($0.duration) } ?? .nan)")
+                    await self.attachImmersiveComponent(
+                        channelKey: channelKey, player: player, entity: entity
+                    )
                 }
                 #endif
             } else {
                 logger.error("[video.immersive] 'skybox' entity NOT registered — ImmersiveView.createSkyboxShell never ran or its registration call was lost. videoEntityRegistry keys: \(self.videoEntityRegistry.keys.sorted())")
             }
         }
+    }
+
+    /// The hardened immersive VPC attach. Every stage logs, every exit is
+    /// loud — the AIVU regression hid behind silent returns.
+    ///
+    ///   1. AWAIT the asset's `.isPlayable/.tracks/.duration` load (the
+    ///      old fire-and-forget `Task.detached` eager load gave RE/ECS no
+    ///      ordering guarantee) and verify a video track exists. AIVU /
+    ///      MV-HEVC assets sit at `.unknown` for seconds without this.
+    ///   2. Wait for the AVPlayerItem (not the player — its status flips
+    ///      early) to reach `.readyToPlay`. On timeout we attach anyway:
+    ///      visionOS 26's VPC tolerates a not-yet-ready item, and the
+    ///      verify+retry below recovers if it doesn't. The old code
+    ///      *skipped* the attach on timeout — a guaranteed-black skybox.
+    ///   3. Liveness guard by PLAYER IDENTITY, not stop-epoch: the epoch
+    ///      bumps on every `stopAll()`, including the segment-transition
+    ///      one that PROTECTED channels (the segment backdrop) survive —
+    ///      an epoch guard here would kill the backdrop's own in-flight
+    ///      attach. Identity survives protected stops and fails for
+    ///      genuinely stopped/replaced channels.
+    ///   4. Attach and VERIFY. RE/ECS refuses a VPC whose player it can't
+    ///      bind a video target to ("skipping newly added VPC … b/c it
+    ///      has no video asset", FigVideoTargetRemoteXPC err=-15562) and
+    ///      a skipped component never re-evaluates. We poll
+    ///      `currentRenderingStatus` and, if it never reaches `.ready`,
+    ///      remove + re-add a FRESH component (a skipped instance is
+    ///      dead) up to three times.
+    private func attachImmersiveComponent(
+        channelKey: String, player: AVPlayer, entity: Entity
+    ) async {
+        // 1) Eager load, awaited.
+        if let asset = player.currentItem?.asset as? AVURLAsset {
+            do {
+                let (isPlayable, tracks, duration) = try await asset.load(.isPlayable, .tracks, .duration)
+                let videoTrackCount = tracks.filter { $0.mediaType == .video }.count
+                logger.info("[video.immersive] asset loaded: playable=\(isPlayable) tracks=\(tracks.count) videoTracks=\(videoTrackCount) duration=\(CMTimeGetSeconds(duration), format: .fixed(precision: 2))s (channel '\(channelKey)')")
+                if videoTrackCount == 0 {
+                    logger.error("[video.immersive] asset has NO video track — RealityKit will refuse the VPC (channel '\(channelKey)', url=\(asset.url.lastPathComponent))")
+                }
+            } catch {
+                logger.error("[video.immersive] asset load FAILED for channel '\(channelKey)': \(error.localizedDescription) — attempting attach anyway")
+            }
+        }
+
+        // 2) Item readiness (attach proceeds either way).
+        let isReady = await awaitCurrentItemReadyToPlay(player: player, timeout: 8.0)
+        if !isReady {
+            logger.warning("[video.immersive] AVPlayerItem not .readyToPlay after 8s (item.status=\(player.currentItem?.status.rawValue ?? -1) error=\(player.currentItem?.error?.localizedDescription ?? "none") player.status=\(player.status.rawValue)) — attaching anyway; verify/retry below recovers if RealityKit refuses")
+        }
+
+        // 3) Protection-aware liveness.
+        guard channels[channelKey]?.player === player else {
+            logger.info("[video.immersive] channel '\(channelKey)' was stopped or rebuilt while waiting — abandoning attach")
+            return
+        }
+
+        // 4) Attach + verify + retry.
+        let maxAttempts = 3
+        for attempt in 1...maxAttempts {
+            var component = VideoPlayerComponent(avPlayer: player)
+            component.desiredImmersiveViewingMode = .full
+            component.desiredViewingMode = .stereo
+            entity.components.remove(VideoPlayerComponent.self)
+            entity.components.set(component)
+            logger.info("[video.immersive] VideoPlayerComponent set (attempt \(attempt)/\(maxAttempts)); player.status=\(player.status.rawValue) currentItem.status=\(player.currentItem?.status.rawValue ?? -1) duration=\(player.currentItem.map { CMTimeGetSeconds($0.duration) } ?? .nan)")
+
+            // RealityKit flips `currentRenderingStatus` to `.ready` once
+            // the video target is bound and producing; a refused VPC
+            // stays `.loading` forever.
+            let deadline = Date().addingTimeInterval(2.5)
+            while Date() < deadline {
+                if entity.components[VideoPlayerComponent.self]?.currentRenderingStatus == .ready {
+                    logger.info("[video.immersive] VPC rendering .ready on attempt \(attempt) (channel '\(channelKey)')")
+                    return
+                }
+                try? await Task.sleep(nanoseconds: 50_000_000)
+            }
+            guard channels[channelKey]?.player === player else {
+                logger.info("[video.immersive] channel '\(channelKey)' torn down mid-verify — abandoning attach")
+                return
+            }
+            if attempt < maxAttempts {
+                logger.warning("[video.immersive] VPC not rendering after 2.5s (attempt \(attempt)/\(maxAttempts)) — RealityKit likely skipped it ('no video asset'); re-attaching a fresh component")
+            }
+        }
+        logger.error("[video.immersive] VPC never reached .ready after \(maxAttempts) attempts — skybox will stay black (channel '\(channelKey)', item.status=\(player.currentItem?.status.rawValue ?? -1) item.error=\(player.currentItem?.error?.localizedDescription ?? "none"))")
     }
 
     // MARK: - Helpers

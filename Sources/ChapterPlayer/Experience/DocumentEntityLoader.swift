@@ -126,6 +126,60 @@ public final class DocumentEntityLoader {
         docEntityLogger.info("Materialized \(built) document entit\(built == 1 ? "y" : "ies") into the scene")
     }
 
+    /// Incrementally build (or rebuild) ONE entity from a live-edit
+    /// upsert without tearing down the whole document scene. A full
+    /// `materialize` re-loads every USDZ (`Entity(contentsOf:)` per
+    /// asset) and re-binds every video panel — far too heavy, and far
+    /// too memory-spiky, to run once per imported media file: the old
+    /// and new copies of every loaded model are resident simultaneously
+    /// during the rebuild.
+    ///
+    /// Returns `false` when no prior `materialize` pass has run (no
+    /// anchor to parent under) or the factory can't build the
+    /// definition — callers fall back to the full pass.
+    @discardableResult
+    public func materializeOne(
+        _ definition: EntityDefinition,
+        document: ChapterDocument,
+        mediaResolver: MediaResolver? = nil
+    ) -> Bool {
+        guard let entityExecutor, let videoManager, let anchor else { return false }
+
+        if let mediaResolver { factory.mediaResolver = mediaResolver }
+
+        // Presets may have changed since the last full pass; `.particles`
+        // entities resolve against this map at build time.
+        factory.particlePresets = Dictionary(
+            document.particlePresets.map { ($0.id, $0) },
+            uniquingKeysWith: { _, newest in newest }
+        )
+
+        guard let entity = factory.build(definition) else {
+            docEntityLogger.warning("materializeOne could not build '\(definition.id)' (kind=\(String(describing: definition.kind)))")
+            return false
+        }
+
+        // Replace any previous incarnation of this entity.
+        if registeredNames.contains(definition.id) {
+            anchor.children.first(where: { $0.name == definition.id })?.removeFromParent()
+            entityExecutor.unregister(name: definition.id)
+            videoManager.videoEntityRegistry.removeValue(forKey: definition.id)
+            registeredNames.remove(definition.id)
+        }
+
+        // Same contract as the full pass: disabled by default, segment
+        // actions reveal what they want visible.
+        entity.isEnabled = false
+        anchor.addChild(entity)
+        entityExecutor.register(entity, name: definition.id)
+        registeredNames.insert(definition.id)
+        if definition.kind == .videoPanel {
+            videoManager.videoEntityRegistry[definition.id] = entity
+        }
+        docEntityLogger.info("Incrementally materialized '\(definition.id)'")
+        return true
+    }
+
     /// Tear down the previous batch of document-spawned entities. Called
     /// before re-materializing on a new document, and on phase transition
     /// out of the immersive space. Re-enables the optional ambient
