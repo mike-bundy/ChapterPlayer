@@ -78,7 +78,7 @@ public enum SegmentPresentation: String, Sendable, Equatable {
 /// enums from `StepAction` so AppModel can hand them straight to
 /// `VideoAction` without converting.
 public enum SegmentBackdrop: Sendable, Equatable {
-    case video(file: String, layout: VideoLayout, field: ImmersiveField, radius: Float, loop: Bool)
+    case video(file: String, layout: VideoLayout, field: ImmersiveField, radius: Float, loop: Bool, audioEnabled: Bool)
     case image(file: String, field: ImmersiveField, radius: Float)
     case usdz(assetId: String)
 }

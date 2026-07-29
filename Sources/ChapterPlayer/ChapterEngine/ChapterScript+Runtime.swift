@@ -457,13 +457,14 @@ extension SegmentPresentation {
 extension SegmentBackdrop {
     public init(_ dto: ImmersiveBackdropSpec) {
         switch dto {
-        case .video(let file, let layout, let field, let radius, let loop):
+        case .video(let file, let layout, let field, let radius, let loop, let audioEnabled):
             self = .video(
                 file: file,
                 layout: VideoLayout(dtoLayout: layout),
                 field: ImmersiveField(dtoField: field),
                 radius: radius,
-                loop: loop
+                loop: loop,
+                audioEnabled: audioEnabled
             )
         case .image(let file, let field, let radius):
             self = .image(

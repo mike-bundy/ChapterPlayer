@@ -29,6 +29,8 @@ private let logger = Logger(
     category: "ChapterPlayerCore"
 )
 
+@MainActor private var _lastVideoBackdropSignatureStore: String?
+
 @MainActor
 @Observable
 open class ChapterPlayerCore {
@@ -289,16 +291,28 @@ open class ChapterPlayerCore {
             switch completion {
             case .autoAdvance(let nextId):
                 Task { @MainActor in
-                    guard let next = self.segmentFromLoadedDocument(id: nextId) else { return }
-                    // Respect the next segment's presentation +
-                    // backdrop. Auto-advance crosses segment boundaries
-                    // so this is exactly where immersive → windowed (or
-                    // vice versa) transitions need to fire and where
-                    // the previous segment's skybox / USDZ environment
-                    // is torn down before the new one binds.
-                    await self.applySegmentPresentation(next)
-                    self.applySegmentBackdrop(next)
-                    _ = await self.segmentEngine.playAndAwait(segment: next)
+                    // Follow the WHOLE chain here: `playAndAwait` returns
+                    // the next segment's completion action instead of
+                    // re-firing this callback, so seg1 → seg2 → seg3 only
+                    // works if this loop keeps walking.
+                    var targetId = nextId
+                    while true {
+                        guard let next = self.segmentFromLoadedDocument(id: targetId) else {
+                            logger.info("[auto-advance] target segment '\(targetId)' not found in loaded document — stopping")
+                            break
+                        }
+                        // Respect the next segment's presentation +
+                        // backdrop. Auto-advance crosses segment boundaries
+                        // so this is exactly where immersive → windowed (or
+                        // vice versa) transitions need to fire and where
+                        // the previous segment's skybox / USDZ environment
+                        // is torn down before the new one binds.
+                        await self.applySegmentPresentation(next)
+                        self.applySegmentBackdrop(next)
+                        let chained = await self.segmentEngine.playAndAwait(segment: next)
+                        guard case .autoAdvance(let chainedId) = chained else { break }
+                        targetId = chainedId
+                    }
                 }
             case .holdOnLastStep, .transitionTo, .dismissToHome:
                 break
@@ -316,6 +330,20 @@ open class ChapterPlayerCore {
     /// mis-presented stage.
     public func playSegment(_ segment: SegmentDefinition) async {
         await applySegmentPresentation(segment)
+        // The FIRST play of a session races the ImmersiveSpace open:
+        // openSpace returns when the system creates the scene, but the
+        // consumer's RealityView registers the skybox shell a beat later
+        // — and a backdrop dispatched into an empty registry gives up
+        // ("skybox NOT registered" → black surround until the next play).
+        // Wait briefly for registration before binding the backdrop.
+        if segment.presentation == .immersive, segment.immersiveBackdrop != nil,
+           videoManager.videoEntityRegistry["skybox"] == nil {
+            let deadline = Date().addingTimeInterval(5.0)
+            while Date() < deadline, videoManager.videoEntityRegistry["skybox"] == nil {
+                try? await Task.sleep(nanoseconds: 100_000_000)
+            }
+            logger.info("[backdrop] skybox registration wait finished (registered=\(self.videoManager.videoEntityRegistry["skybox"] != nil))")
+        }
         applySegmentBackdrop(segment)
         segmentEngine.play(segment: segment)
     }
@@ -323,8 +351,41 @@ open class ChapterPlayerCore {
     /// Bind / swap / tear down the segment's immersive backdrop. Called
     /// from the user-initiated play path and from auto-advance. No-op
     /// for `.windowed` segments (the immersive space isn't open).
+    /// Signature of the video backdrop currently bound (nil = none).
+    /// Drives the replay fast path below.
+    private static var lastVideoBackdropSignature: String? {
+        get { _lastVideoBackdropSignatureStore }
+        set { _lastVideoBackdropSignatureStore = newValue }
+    }
+
     public func applySegmentBackdrop(_ segment: SegmentDefinition) {
         logger.info("[backdrop] applySegmentBackdrop segment=\(segment.id) presentation=\(String(describing: segment.presentation)) backdrop=\(String(describing: segment.immersiveBackdrop))")
+        // REPLAY FAST PATH — the single most important rule this pipeline
+        // has learned on device: re-attaching a VideoPlayerComponent after
+        // a stop strips it is FLAKY (same logs, sometimes renders,
+        // sometimes ready-but-black). A replay of the IDENTICAL video
+        // backdrop therefore never touches the component: verify the
+        // live binding (same config, live player + item, skybox mounted
+        // in a scene and still hosting its component) and just seek to
+        // the start and play. Any mismatch or dead binding falls through
+        // to the normal teardown + rebuild.
+        if case .video(let file, let layout, let field, let radius, let loop, let audioEnabled)? = segment.immersiveBackdrop,
+           segment.presentation == .immersive,
+           currentBackdropUSDZ == nil {
+            let signature = "\(file)|\(layout)|\(field)|\(radius)|\(loop)|\(audioEnabled)"
+            if signature == Self.lastVideoBackdropSignature,
+               let player = videoManager.player(for: Self.backdropVideoChannel),
+               let item = player.currentItem, item.status != .failed,
+               let skybox = videoManager.videoEntityRegistry["skybox"],
+               skybox.scene != nil,
+               skybox.components.has(VideoPlayerComponent.self) {
+                skybox.isEnabled = true
+                player.seek(to: .zero, toleranceBefore: .zero, toleranceAfter: .zero)
+                player.play()
+                logger.info("[backdrop] REPLAY fast path: identical backdrop, live binding verified — seek+play, component untouched")
+                return
+            }
+        }
         // First, drop whatever was bound for the previous segment so
         // the new segment starts from a clean slate.
         videoManager.stop(channel: Self.backdropVideoChannel)
@@ -333,6 +394,7 @@ open class ChapterPlayerCore {
         tearDownImageSkybox()
 
         // Backdrops only make sense for immersive / mixed segments.
+        Self.lastVideoBackdropSignature = nil
         guard segment.presentation != .windowed,
               let backdrop = segment.immersiveBackdrop
         else {
@@ -341,7 +403,7 @@ open class ChapterPlayerCore {
         }
 
         switch backdrop {
-        case .video(let file, let layout, let field, let radius, let loop):
+        case .video(let file, let layout, let field, let radius, let loop, let audioEnabled):
             // Video backdrop = stereoscopic-capable VideoPlayerComponent
             // wrapping the camera. Would block the user's mixed-reality
             // view, so reject in mixed mode.
@@ -349,11 +411,12 @@ open class ChapterPlayerCore {
                 logger.info("Skipping video backdrop on \(String(describing: segment.presentation)) segment — would occlude passthrough.")
                 return
             }
-            logger.info("[backdrop] dispatching video backdrop file='\(file)' layout=\(String(describing: layout)) field=\(String(describing: field)) radius=\(radius) loop=\(loop)")
+            logger.info("[backdrop] dispatching video backdrop file='\(file)' layout=\(String(describing: layout)) field=\(String(describing: field)) radius=\(radius) loop=\(loop) audio=\(audioEnabled)")
+            Self.lastVideoBackdropSignature = "\(file)|\(layout)|\(field)|\(radius)|\(loop)|\(audioEnabled)"
             videoManager.play(action: VideoAction(
                 file: file,
                 channel: Self.backdropVideoChannel,
-                volume: 0,
+                volume: audioEnabled ? 1 : 0,
                 loop: loop,
                 presentation: .immersive(radius: radius, field: field),
                 layout: layout
@@ -532,13 +595,23 @@ open class ChapterPlayerCore {
 
     public func stopSegment(fullReset: Bool = false) {
         segmentEngine.stop(resetEntities: true, fullReset: fullReset)
+        // The backdrop video channel is PROTECTED from stopAll() so its
+        // VideoPlayerComponent survives segment-to-segment rebinds
+        // (re-attaching the component after a strip is flaky on device).
+        // Protection must not mean the transport can't silence it: PAUSE
+        // the player — picture freezes, audio stops, the component stays
+        // attached, and the replay fast path resumes it on the next play.
+        videoManager.player(for: Self.backdropVideoChannel)?.pause()
         activeSegmentId = nil
     }
 
     /// Look up `id` in the currently-loaded ChapterScript document,
     /// converting the matching DTO into a runtime `SegmentDefinition`.
     /// Returns nil if no document is loaded or the id isn't present.
-    public func segmentFromLoadedDocument(id: String) -> SegmentDefinition? {
+    /// `open` so live editors whose working document diverges from the
+    /// load-time snapshot (MaestroVision) can resolve auto-advance
+    /// targets against their CURRENT document instead.
+    open func segmentFromLoadedDocument(id: String) -> SegmentDefinition? {
         guard let document = loadedExperience?.document else { return nil }
         return try? SegmentDefinition.from(document: document, segmentId: id)
     }

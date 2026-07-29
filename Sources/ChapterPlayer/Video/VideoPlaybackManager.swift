@@ -820,6 +820,36 @@ public class VideoPlaybackManager {
         ch.player.seek(to: CMTime(seconds: time, preferredTimescale: 600))
     }
 
+    /// In-flight scrub seeks per channel, with the latest requested time
+    /// parked until the current one lands (coalescing — a scrub drag emits
+    /// dozens of seeks a second and issuing each directly thrashes the
+    /// decoder into showing stale frames).
+    private var scrubSeekInFlight: Set<String> = []
+    private var scrubSeekPending: [String: TimeInterval] = [:]
+
+    /// Frame-accurate park for editor scrubbing: zero-tolerance seek with
+    /// per-channel coalescing. The latest requested time always lands last.
+    public func scrubSeek(channel: String, to time: TimeInterval) {
+        guard let ch = channels[channel] else { return }
+        if scrubSeekInFlight.contains(channel) {
+            scrubSeekPending[channel] = time
+            return
+        }
+        scrubSeekInFlight.insert(channel)
+        ch.player.seek(
+            to: CMTime(seconds: time, preferredTimescale: 600),
+            toleranceBefore: .zero, toleranceAfter: .zero
+        ) { _ in
+            Task { @MainActor [weak self] in
+                guard let self else { return }
+                self.scrubSeekInFlight.remove(channel)
+                if let next = self.scrubSeekPending.removeValue(forKey: channel) {
+                    self.scrubSeek(channel: channel, to: next)
+                }
+            }
+        }
+    }
+
     // MARK: - Presentation Attachment
 
     private func attachToPresentation(player: AVPlayer, presentation: VideoPresentation, channelKey: String, channel: inout VideoChannel) {
