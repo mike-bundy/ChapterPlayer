@@ -100,6 +100,17 @@ public final class EntityActionExecutor: EntityActionExecutorProtocol {
         originalTransforms.removeValue(forKey: name)
     }
 
+    /// Re-baseline the reset pose for `name` to a new AUTHORED transform.
+    /// Live editors call this when a committed edit changes the entity's
+    /// base transform (the snapshot is otherwise captured only at
+    /// materialize, so every replay's `resetAllEntities` would snap the
+    /// entity back to its materialize-time pose — the "default placement"
+    /// for assets imported and then positioned in-session).
+    public func setOriginalTransform(_ transform: Transform, name: String) {
+        guard originalTransforms[name] != nil else { return }
+        originalTransforms[name] = transform
+    }
+
     public func showEntity(named name: String) {
         guard let entity = entityRegistry[name] else {
             logger.warning("showEntity: '\(name)' not found in registry")

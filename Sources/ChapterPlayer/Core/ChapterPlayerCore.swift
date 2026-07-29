@@ -436,9 +436,11 @@ open class ChapterPlayerCore {
             // USDZ backdrops work in BOTH immersive and mixed modes —
             // a 3D set piece floating in space is fine over
             // passthrough.
-            guard let sceneRoot = immersiveSceneRoot,
-                  let url = resolveBackdropAssetURL(file: assetId, kind: .usdz)
-            else {
+            guard let sceneRoot = immersiveSceneRoot else {
+                logger.warning("Backdrop USDZ '\(assetId)' skipped — immersive scene root not mounted.")
+                return
+            }
+            guard let url = resolveBackdropAssetURL(file: assetId, kind: .usdz) else {
                 logger.warning("Backdrop USDZ '\(assetId)' could not be located on disk.")
                 return
             }
@@ -515,8 +517,11 @@ open class ChapterPlayerCore {
     /// Resolve an asset id to a file URL. Consults the loaded
     /// experience's media resolver first (so live / packaged
     /// experiences shadow the app bundle), then falls back to the main
-    /// bundle.
-    private func resolveBackdropAssetURL(file: String, kind: MediaKind) -> URL? {
+    /// bundle. `open` so live editors with a local-first resolver
+    /// (MaestroVision — in-session imports exist only in its device
+    /// cache, invisible to the frozen load-time resolver) can route
+    /// backdrop lookups the same way as every other asset path.
+    open func resolveBackdropAssetURL(file: String, kind: MediaKind) -> URL? {
         if let resolved = loadedExperience?.mediaResolver.url(for: file, kind: kind) {
             return resolved
         }
