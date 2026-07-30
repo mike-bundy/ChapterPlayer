@@ -262,13 +262,17 @@ public final class EntityFactory {
         // for setting the ModelComponent (plane mesh + VideoMaterial) on
         // the entity when playVideo fires. Until then the entity is just
         // an invisible transform anchor — exactly what authoring expects.
-        //
-        // `spec` is intentionally unused for now; future revisions could
-        // honor `placeholderColor` by drawing a thin rim or label, but
-        // never on the video plane itself.
-        _ = def.videoPanel
-        return Entity()
+        let entity = Entity()
+        // Panel styling rides on the entity so the manager (which only
+        // knows the presentation's width/height) can honor it when it
+        // generates the plane at bind time.
+        if let radius = def.videoPanel?.cornerRadius, radius > 0 {
+            entity.components.set(VideoPanelStyleComponent(cornerRadius: radius))
+        }
+        return entity
     }
+
+    // MARK: - Panel styling
 
     private func uiColor(_ c: ColorRGBA) -> UIColor {
         UIColor(
@@ -288,5 +292,19 @@ public final class EntityFactory {
             iz: transform.rotation.z,
             r: transform.rotation.w
         )
+    }
+}
+
+/// Styling for a video panel entity that the plane-generating code can't
+/// derive from the presentation alone. Stamped by `EntityFactory` from
+/// `VideoPanelSpec` at materialize; read by
+/// `VideoPlaybackManager.attachToPresentation` when it builds the plane.
+public struct VideoPanelStyleComponent: Component {
+    /// Rounded corner radius in meters (the plane's geometry is clipped;
+    /// the video texture stays rect-mapped).
+    public var cornerRadius: Float
+
+    public init(cornerRadius: Float) {
+        self.cornerRadius = cornerRadius
     }
 }

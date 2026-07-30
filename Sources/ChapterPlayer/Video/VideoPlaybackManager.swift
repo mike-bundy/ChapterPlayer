@@ -871,7 +871,14 @@ public class VideoPlaybackManager {
                 // placeholder, which on visionOS left the gray placeholder
                 // visible and never reliably swapped in the video texture
                 // before the segment step ended.
-                let mesh = MeshResource.generatePlane(width: width, height: height)
+                // Rounded corners ride on the entity (stamped from
+                // VideoPanelSpec at materialize) — the geometry clips,
+                // the video texture stays rect-mapped.
+                let radius = entity.components[VideoPanelStyleComponent.self]?.cornerRadius ?? 0
+                let mesh = MeshResource.generatePlane(
+                    width: width, height: height,
+                    cornerRadius: min(radius, min(width, height) / 2)
+                )
                 let material = VideoMaterial(avPlayer: player)
                 entity.components.set(ModelComponent(mesh: mesh, materials: [material]))
                 // Default to fully visible — preheat callers will dial
