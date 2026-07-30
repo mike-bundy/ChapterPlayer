@@ -111,18 +111,46 @@ public final class EntityFactory {
             // Fall back to the main bundle so apps that ship USDZs as
             // resources still resolve.
             if let bundled = Bundle.main.url(forResource: (assetId as NSString).deletingPathExtension, withExtension: "usdz") {
-                loadUSDZ(from: bundled, into: container)
+                loadUSDZ(from: bundled, into: container, animation: def.usdzAnimation)
             }
             return container
         }
-        loadUSDZ(from: url, into: container)
+        loadUSDZ(from: url, into: container, animation: def.usdzAnimation)
         return container
     }
 
-    private func loadUSDZ(from url: URL, into container: Entity) {
+    private func loadUSDZ(from url: URL, into container: Entity, animation: UsdzAnimationSpec? = nil) {
         Task { @MainActor in
             guard let loaded = try? await Entity(contentsOf: url) else { return }
             container.addChild(loaded)
+            if let animation, animation.enabled {
+                Self.playEmbeddedAnimations(on: loaded, spec: animation)
+            }
+        }
+    }
+
+    /// Play every embedded animation clip in a loaded USDZ's subtree
+    /// (clips live on whichever node defines them, not the root).
+    /// Public: editors reuse this for live toggling.
+    public static func playEmbeddedAnimations(on entity: Entity, spec: UsdzAnimationSpec) {
+        var stack: [Entity] = [entity]
+        while let e = stack.popLast() {
+            for animation in e.availableAnimations {
+                let resource = spec.loop ? animation.repeat() : animation
+                let controller = e.playAnimation(resource, transitionDuration: 0, startsPaused: false)
+                controller.speed = spec.speed
+            }
+            stack.append(contentsOf: e.children)
+        }
+    }
+
+    /// Reverse of `playEmbeddedAnimations` — stop every clip in the
+    /// subtree (the model holds its current pose).
+    public static func stopEmbeddedAnimations(on entity: Entity) {
+        var stack: [Entity] = [entity]
+        while let e = stack.popLast() {
+            e.stopAllAnimations()
+            stack.append(contentsOf: e.children)
         }
     }
 
