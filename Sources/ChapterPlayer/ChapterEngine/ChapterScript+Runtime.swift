@@ -78,6 +78,9 @@ private extension GateType {
         case .tap:          self = .tap
         case .orchestrator: self = .orchestrator
         case .any:          self = .any
+        case .gaze:         self = .gaze
+        case .proximity:    self = .proximity
+        case .grab:         self = .grab
         }
     }
 }
@@ -379,7 +382,13 @@ extension StepAction {
 
 private extension StepGate {
     public init(_ dto: StepGateDTO) {
-        self.init(type: GateType(dto.type), timeout: dto.timeout, prompt: dto.prompt)
+        self.init(
+            type: GateType(dto.type),
+            timeout: dto.timeout,
+            prompt: dto.prompt,
+            targetEntity: dto.targetEntity,
+            radius: dto.radius
+        )
     }
 }
 

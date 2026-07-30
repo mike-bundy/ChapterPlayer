@@ -116,17 +116,33 @@ public enum GateType: String, Sendable {
     case tap          // User interaction on headset
     case orchestrator // External controller
     case any          // Either works
+    case gaze         // Look at targetEntity (dwell)
+    case proximity    // Come within radius meters of targetEntity
+    case grab         // Pinch-grab targetEntity
 }
 
 public struct StepGate: Sendable {
     public let type: GateType
     public let timeout: TimeInterval?
     public let prompt: String?
+    /// Entity the gate watches (gaze / proximity / grab). Advisory — the
+    /// consumer wires the matching detection to `satisfyGate()`.
+    public let targetEntity: String?
+    /// Trigger distance in meters for `.proximity` (default ~1 m).
+    public let radius: Float?
 
-    public init(type: GateType, timeout: TimeInterval? = nil, prompt: String? = nil) {
+    public init(
+        type: GateType,
+        timeout: TimeInterval? = nil,
+        prompt: String? = nil,
+        targetEntity: String? = nil,
+        radius: Float? = nil
+    ) {
         self.type = type
         self.timeout = timeout
         self.prompt = prompt
+        self.targetEntity = targetEntity
+        self.radius = radius
     }
 }
 
