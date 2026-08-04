@@ -50,6 +50,10 @@ open class ChapterPlayerCore {
     public let attachmentExecutor = AttachmentActionExecutor()
     public let effectExecutor = EffectActionExecutor()
 
+    /// Runtime detection for the spatial gate types (gaze / proximity /
+    /// grab). Tap/orchestrator gates stay consumer-wired to `satisfyGate()`.
+    public let gateDetection = GateDetectionController()
+
     // MARK: - Segment routing
 
     public var activeSegmentId: String?
@@ -142,6 +146,11 @@ open class ChapterPlayerCore {
                 // action mode (older documents that still use it).
                 self.entityExecutor.headTransformProvider = { [weak provider] in
                     provider?.sampleDeviceTransform(leveled: true)
+                }
+                // Spatial gates need the FULL head orientation — gaze aim
+                // uses pitch, which the leveled sample above strips.
+                self.gateDetection.headTransformProvider = { [weak provider] in
+                    provider?.sampleDeviceTransform(leveled: false)
                 }
             } catch {
                 logger.warning("ARKit world tracking failed to start: \(error.localizedDescription)")
@@ -266,6 +275,14 @@ open class ChapterPlayerCore {
         segmentEngine.videoExecutor = videoExecutor
         segmentEngine.attachmentExecutor = attachmentExecutor
         segmentEngine.effectExecutor = effectExecutor
+
+        // Spatial gate detection: resolve gate targets out of the entity
+        // registry; the head provider is wired when world tracking starts
+        // (`rebaseSceneRootToHead`).
+        segmentEngine.gateDetector = gateDetection
+        gateDetection.entityProvider = { [weak self] name in
+            self?.entityExecutor.entityRegistry[name]
+        }
 
         // DocumentEntityLoader needs the two executors it registers
         // entities with. Constructed after self is fully initialized so

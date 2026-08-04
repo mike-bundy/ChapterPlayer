@@ -109,6 +109,11 @@ public final class SegmentEngine {
     /// Called when a gate is satisfied — lets ImmersiveView hide the prompt
     public var onGateEnded: (() -> Void)?
 
+    /// Runtime spatial-gate detection (gaze / proximity / grab). Wired by
+    /// `ChapterPlayerCore`; runs alongside `onGateStarted`/`onGateEnded`,
+    /// which stay reserved for the consumer's prompt UI.
+    public weak var gateDetector: GateDetecting?
+
     // MARK: - Computed
 
     public var currentStep: StepDefinition? {
@@ -515,6 +520,9 @@ public final class SegmentEngine {
 
         sendStatus()
         onGateStarted?(gate)
+        gateDetector?.gateDidStart(gate) { [weak self] in
+            self?.satisfyGate()
+        }
 
         if let timeout = gate.timeout {
             gateTimeoutTask = Task { @MainActor in
