@@ -223,6 +223,12 @@ public final class SegmentEngine {
             tracks: segment.animationTracks,
             clock: { [weak self] in self?.segmentAnimationTime ?? 0 }
         )
+        // Audio volume rides on the SAME authored clock, so a gate holds a
+        // fade exactly where it holds a transform curve.
+        audioExecutor?.setSegmentAudioAutomation(
+            tracks: segment.audioTracks,
+            clock: { [weak self] in self?.segmentAnimationTime ?? 0 }
+        )
     }
 
     /// The authored segment clock: absolute seconds along the segment's

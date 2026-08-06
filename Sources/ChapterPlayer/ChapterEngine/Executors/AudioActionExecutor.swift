@@ -6,6 +6,7 @@
 //
 
 import OSLog
+import ChapterScript
 
 private let logger = Logger(
     subsystem: Bundle.main.bundleIdentifier ?? "com.shellcorp.sharedvisions",
@@ -28,6 +29,11 @@ public protocol AudioActionExecutorProtocol {
     func setMasterVolume(_ volume: Float)
     func setCategoryVolume(category: String, volume: Float)
     var onChannelFinished: ((String) -> Void)? { get set }
+    /// Bind the segment's authored volume automation, clocked by the same
+    /// authored segment time the animation tracks use.
+    func setSegmentAudioAutomation(
+        tracks: [AudioAutomationTrack], clock: (@MainActor () -> TimeInterval)?
+    )
     // Audio Zones
     func addAudioZone(_ zone: AudioZone)
     func removeAudioZone(id: String)
@@ -36,6 +42,15 @@ public protocol AudioActionExecutorProtocol {
     func setBusVolume(busId: String, volume: Float)
     func setBusEffect(busId: String, effect: AudioEffect)
     func removeBusEffect(busId: String, effect: AudioEffect)
+}
+
+/// Default no-op so conformers outside this package keep compiling; the real
+/// executor forwards to its `SpatialAudioManager`. Same precedent as
+/// `EntityActionExecutorProtocol.setSegmentAnimation`.
+public extension AudioActionExecutorProtocol {
+    func setSegmentAudioAutomation(
+        tracks: [AudioAutomationTrack], clock: (@MainActor () -> TimeInterval)?
+    ) {}
 }
 
 // MARK: - Implementation
@@ -61,6 +76,12 @@ public final class AudioActionExecutor: AudioActionExecutorProtocol {
     public var onChannelFinished: ((String) -> Void)? {
         get { self.audioManager.onChannelFinished }
         set { self.audioManager.onChannelFinished = newValue }
+    }
+
+    public func setSegmentAudioAutomation(
+        tracks: [AudioAutomationTrack], clock: (@MainActor () -> TimeInterval)?
+    ) {
+        audioManager.setSegmentAudioAutomation(tracks: tracks, clock: clock)
     }
 
     public init(audioManager: SpatialAudioManager) {

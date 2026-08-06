@@ -11,6 +11,7 @@
 import AudioToolbox
 import RealityKit
 import OSLog
+import ChapterScript
 
 private let logger = Logger(
     subsystem: Bundle.main.bundleIdentifier ?? "com.shellcorp.sharedvisions",
@@ -558,7 +559,76 @@ public class SpatialAudioManager {
         let category = categoryForChannel(channel)
         let categoryVol = mixState.categoryVolumes[category] ?? 1.0
         let duckMul = duckMultipliers[channel] ?? 1.0
-        return requested * busVol * categoryVol * mixState.masterVolume * duckMul
+        // Authored volume automation rides here, as one more multiplier in the
+        // existing pipeline rather than a competing notion of "how loud". It
+        // is 1.0 for every channel in a document with no automation.
+        let automation = automationMultipliers[channel] ?? 1.0
+        return requested * busVol * categoryVol * mixState.masterVolume * duckMul * automation
+    }
+
+    // MARK: - Segment volume automation
+
+    /// Per-channel multiplier sampled from the segment's `audioTracks`.
+    /// Mirrors `duckMultipliers`: one more factor in `effectiveVolume`, so
+    /// automation composes with buses, categories and ducking instead of
+    /// fighting them.
+    private var automationMultipliers: [String: Float] = [:]
+    private var audioAutomationTracks: [AudioAutomationTrack] = []
+    private var audioAutomationClock: (@MainActor () -> TimeInterval)?
+    private var audioAutomationTask: Task<Void, Never>?
+
+    /// Bind the segment's automation. Sampling only runs while a segment
+    /// actually carries keys, so an un-automated chapter pays nothing.
+    public func setSegmentAudioAutomation(
+        tracks: [AudioAutomationTrack],
+        clock: (@MainActor () -> TimeInterval)?
+    ) {
+        audioAutomationTask?.cancel()
+        audioAutomationTask = nil
+        audioAutomationTracks = tracks
+        audioAutomationClock = clock
+
+        guard SegmentAudioAutomation.hasAutomation(tracks), clock != nil else {
+            // Release every channel back to unity, or a segment WITHOUT
+            // automation would inherit the last ride of the one before it.
+            if !automationMultipliers.isEmpty {
+                automationMultipliers.removeAll()
+                applyMixToAllChannels()
+            }
+            return
+        }
+
+        // 20 Hz. Volume automation is a control signal, not audio-rate: the
+        // node volumes this drives are already smoothed, and sampling per
+        // frame would burn main-thread time for a ride nobody can hear the
+        // difference in.
+        audioAutomationTask = Task { @MainActor [weak self] in
+            while !Task.isCancelled {
+                self?.sampleAudioAutomation()
+                try? await Task.sleep(for: .milliseconds(50))
+            }
+        }
+    }
+
+    private func sampleAudioAutomation() {
+        guard let clock = audioAutomationClock else { return }
+        let time = clock()
+        var changed = false
+        // Every channel that currently has a voice, so the master bus reaches
+        // channels with no track of their own.
+        let channels = Set(ambientChannels.keys).union(spatialChannels.keys)
+        for channel in channels {
+            let value = SegmentAudioAutomation.volumeMultiplier(
+                for: channel, at: time, in: audioAutomationTracks
+            )
+            // Only write on a real change: this runs 20x a second and each
+            // write touches an AVAudioPlayerNode.
+            if abs((automationMultipliers[channel] ?? 1.0) - value) > 0.001 {
+                automationMultipliers[channel] = value
+                changed = true
+            }
+        }
+        if changed { applyMixToAllChannels() }
     }
 
     private func applyMixToAllChannels() {

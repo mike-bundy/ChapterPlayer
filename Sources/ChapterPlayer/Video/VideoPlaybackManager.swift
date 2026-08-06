@@ -75,6 +75,77 @@ public class VideoPlaybackManager {
     /// Video entity registry — entities with VideoPlayerComponent, set up by ImmersiveView
     public var videoEntityRegistry: [String: Entity] = [:]
 
+    // MARK: - Immersive shells
+
+    /// Registry key of the immersive shell entity a channel owns.
+    ///
+    /// MULTIPLE SIMULTANEOUS IMMERSIVE VIDEOS ARE A PRODUCT FEATURE.
+    ///
+    /// Every immersive channel used to bind to the ONE `videoEntityRegistry
+    /// ["skybox"]` entity. `VideoPlayerComponent` is a single component per
+    /// entity, so starting a second AIVU did `components.set(...)` over the
+    /// first one's — silently replacing it — and stopping either channel
+    /// removed the component both were relying on. Nothing declared "one
+    /// immersive video at a time"; the shared host entity enforced it.
+    ///
+    /// Each channel now owns a shell. The first immersive channel claims the
+    /// host-built skybox (so the backdrop path and its careful readiness
+    /// handling are untouched); every additional concurrent channel gets its
+    /// own sibling shell, released when that channel stops.
+    public static func immersiveShellKey(for channel: String) -> String {
+        "skybox#\(channel)"
+    }
+
+    /// The shell this channel binds its `VideoPlayerComponent` to, creating
+    /// one if the base skybox is already claimed by a different live channel.
+    private func immersiveShell(for channelKey: String) -> Entity? {
+        if let existing = videoEntityRegistry[Self.immersiveShellKey(for: channelKey)] {
+            return existing
+        }
+        guard let base = videoEntityRegistry["skybox"] else { return nil }
+
+        let baseIsClaimed = channels.contains { $0.key != channelKey && $0.value.entity === base }
+        if !baseIsClaimed {
+            videoEntityRegistry[Self.immersiveShellKey(for: channelKey)] = base
+            return base
+        }
+
+        // A second concurrent immersive video. Same empty-entity +
+        // VideoPlayerComponent recipe as the base shell — RealityKit does the
+        // spherical projection, so the shell needs no mesh and no material,
+        // and the two videos composite as authored rather than one erasing
+        // the other.
+        let shell = Entity()
+        shell.name = "skybox.\(channelKey)"
+        shell.transform = base.transform
+        if let parent = base.parent {
+            parent.addChild(shell)
+        } else {
+            logger.warning("[video.immersive] base skybox has no parent — shell for '\(channelKey)' is detached and will not render")
+        }
+        videoEntityRegistry[Self.immersiveShellKey(for: channelKey)] = shell
+        logger.info("[video.immersive] minted a dedicated shell for channel '\(channelKey)' (base skybox already owned by another live channel)")
+        return shell
+    }
+
+    /// Give up this channel's shell. A cloned shell leaves the scene
+    /// entirely; the shared base skybox is only disabled and unbound, exactly
+    /// as before. Critically, this touches ONE channel's host — stopping A no
+    /// longer strips the component B is rendering through.
+    private func releaseImmersiveShell(for channelKey: String) {
+        let key = Self.immersiveShellKey(for: channelKey)
+        guard let shell = videoEntityRegistry.removeValue(forKey: key) else { return }
+        shell.components.remove(VideoPlayerComponent.self)
+        if shell === videoEntityRegistry["skybox"] {
+            shell.isEnabled = false
+            if shell.components.has(OpacityComponent.self) {
+                shell.components[OpacityComponent.self]?.opacity = 1
+            }
+        } else {
+            shell.removeFromParent()
+        }
+    }
+
     /// Channels that survive `stopAll()` — they're managed at a higher
     /// scope than the segment (e.g. `AppModel.backdropVideoChannel`)
     /// and must not be torn down when `SegmentEngine.stop()` resets
@@ -124,7 +195,10 @@ public class VideoPlaybackManager {
                     // asset") or stripped by a stop must fall through to
                     // the attach path below, which re-runs the hardened
                     // attach with verification + retry.
-                    return bound === videoEntityRegistry["skybox"]
+                    // Against THIS channel's shell, not the global skybox —
+                    // with concurrent immersive channels the base skybox
+                    // belongs to whichever channel claimed it first.
+                    return bound === videoEntityRegistry[Self.immersiveShellKey(for: action.channel)]
                         && bound.components.has(VideoPlayerComponent.self)
                 case .attachment:
                     return true
@@ -761,13 +835,7 @@ public class VideoPlaybackManager {
                 }
             }
         case .immersive(_, _):
-            if let entity = videoEntityRegistry["skybox"] {
-                entity.components.remove(VideoPlayerComponent.self)
-                entity.isEnabled = false
-                if entity.components.has(OpacityComponent.self) {
-                    entity.components[OpacityComponent.self]?.opacity = 1
-                }
-            }
+            releaseImmersiveShell(for: channel)
         case .attachment:
             break
         }
@@ -916,8 +984,8 @@ public class VideoPlaybackManager {
             // `attachImmersiveComponent`): a skipped VPC never
             // re-evaluates on its own, so refusal without retry left
             // the skybox permanently black (AIVU regression).
-            if let entity = videoEntityRegistry["skybox"] {
-                logger.info("[video.immersive] binding to 'skybox' entity (parent=\(entity.parent?.name ?? "nil"))")
+            if let entity = immersiveShell(for: channelKey) {
+                logger.info("[video.immersive] channel '\(channelKey)' binding to shell '\(entity.name)' (parent=\(entity.parent?.name ?? "nil"))")
                 entity.isEnabled = true
                 // A previous preheat may have left the skybox at opacity 0
                 // (prepareAsync dials the bound entity down after attach).

@@ -494,14 +494,22 @@ open class ChapterPlayerCore {
                 switch field {
                 case .equirect360:
                     mesh = MeshResource.generateSphere(radius: radius)
-                case .equirect180:
-                    // Half-sphere — approximate via a full sphere;
+                case .equirect180, .appleImmersive, .custom:
+                    // Partial shell — still approximated by a full sphere;
                     // visionOS doesn't ship a hemisphere generator.
                     // For most VR180 matte paintings this still looks
                     // correct because the texture's "back half" maps
                     // to a duplicate of the front when the image is
                     // encoded that way. For true 180° images, scale
                     // the texture differently in materials.
+                    //
+                    // KNOWN GAP: this is now wrong for Apple Immersive and
+                    // custom fields in a way it was only arguably wrong for
+                    // 180° — their sweep is neither π nor 2π, so no
+                    // full-sphere mapping approximates them. The correct fix
+                    // is to build the shell from `field.horizontalDegrees`,
+                    // the way the Mac's `BackdropMesh` does via
+                    // `MaestroKit.BackdropGeometry`. Tracked in STATUS.
                     mesh = MeshResource.generateSphere(radius: radius)
                 }
                 var material = UnlitMaterial()

@@ -366,9 +366,33 @@ public enum VideoPresentation: Sendable {
     case immersive(radius: Float, field: ImmersiveField)
 }
 
-public enum ImmersiveField: String, Sendable {
+/// Runtime mirror of `ChapterScript.ImmersiveField`.
+///
+/// Carries degrees for the same reason the DTO does: Apple Immersive Video is
+/// NOT 180° — Apple's parametric projection reaches past the ±90° plane, so a
+/// hemisphere clips real picture at both edges. `horizontalDegrees` is the one
+/// place a field becomes an angle; build shells from it, never from a
+/// hard-coded π.
+public enum ImmersiveField: Sendable, Equatable, Hashable {
     case equirect360
     case equirect180
+    case appleImmersive(degrees: Float)
+    case custom(degrees: Float)
+
+    public var horizontalDegrees: Float {
+        switch self {
+        case .equirect360: return 360
+        case .equirect180: return 180
+        case .appleImmersive(let degrees), .custom(let degrees):
+            return min(max(degrees, 1), 360)
+        }
+    }
+
+    /// Apple's parametric projection rather than a plain equirectangular map.
+    public var isAppleParametric: Bool {
+        if case .appleImmersive = self { return true }
+        return false
+    }
 }
 
 /// How a video file packs its eye(s) on disk.

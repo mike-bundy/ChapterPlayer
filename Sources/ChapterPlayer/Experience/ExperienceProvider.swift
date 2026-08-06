@@ -23,7 +23,7 @@ public struct LoadedExperience: Sendable {
     public let rootURL: URL?
 }
 
-public enum ExperienceLoaderError: Error, CustomStringConvertible {
+public enum ExperienceLoaderError: Error, CustomStringConvertible, LocalizedError {
     case missingDocument(String)
     case malformedDocument(reason: String)
     case unreadable(URL, underlying: Error)
@@ -38,6 +38,14 @@ public enum ExperienceLoaderError: Error, CustomStringConvertible {
             return "Could not read experience at \(url.path): \(err.localizedDescription)"
         }
     }
+
+    /// WITHOUT this, `error.localizedDescription` — which is what every caller
+    /// actually shows a user — ignores `description` entirely and produces
+    /// "The operation couldn't be completed. (ChapterPlayer.ExperienceLoaderError
+    /// error 0.)". That is how a missing `chapter.json` reached a headset as
+    /// the word "0". `CustomStringConvertible` alone is not enough; Foundation
+    /// only consults `LocalizedError`.
+    public var errorDescription: String? { description }
 }
 
 public protocol ExperienceProvider: Sendable {
@@ -55,11 +63,60 @@ public struct LocalFolderExperienceProvider: ExperienceProvider {
         self.folderURL = folderURL
     }
 
-    public func load() async throws -> LoadedExperience {
-        let docURL = folderURL.appending(path: ChapterScriptFormat.documentFileName)
-        guard FileManager.default.fileExists(atPath: docURL.path()) else {
-            throw ExperienceLoaderError.missingDocument(docURL.path())
+    /// Find the directory that actually holds `chapter.json`.
+    ///
+    /// The picked URL is usually the `.chapterscript` bundle itself, but on
+    /// device it very often is not: Files hands back the ENCLOSING folder when
+    /// a package is browsed into rather than selected, and AirDrop / iCloud
+    /// commonly deliver the bundle nested inside a folder of the same name.
+    /// Both cases produced a bare "missing document" against a path the author
+    /// could see was right, which is unhelpful bordering on untrue.
+    ///
+    /// So: check the URL, then its immediate children, and only then give up —
+    /// naming what was actually there.
+    static func resolveBundleRoot(_ url: URL) throws -> URL {
+        let fm = FileManager.default
+        let documentName = ChapterScriptFormat.documentFileName
+
+        // `path(percentEncoded: false)`, NOT `path()`.
+        //
+        // `URL.path()` defaults to percentEncoded: true, so an iCloud Drive
+        // path arrives as ".../Mobile%20Documents/..." and `FileManager`,
+        // which speaks raw filesystem paths, reports the file missing. Any
+        // path containing a space fails — and iCloud Drive's real directory
+        // is literally "Mobile Documents". The directory LISTING still worked
+        // because it goes through URLs, which is how a bundle could report
+        // "no chapter.json here … Found: chapter.json".
+        if fm.fileExists(atPath: url.appending(path: documentName).path(percentEncoded: false)) {
+            return url
         }
+
+        let children = (try? fm.contentsOfDirectory(
+            at: url, includingPropertiesForKeys: nil, options: [.skipsHiddenFiles]
+        )) ?? []
+
+        // Prefer a real `.chapterscript` child, then any child that holds a
+        // document — a folder that merely contains one is still openable.
+        let ordered = children.sorted { a, b in
+            (a.pathExtension == "chapterscript" ? 0 : 1)
+                < (b.pathExtension == "chapterscript" ? 0 : 1)
+        }
+        for child in ordered
+        where fm.fileExists(atPath: child.appending(path: documentName).path(percentEncoded: false)) {
+            return child
+        }
+
+        let found = children.map(\.lastPathComponent).sorted().prefix(8).joined(separator: ", ")
+        throw ExperienceLoaderError.missingDocument(
+            found.isEmpty
+                ? "\(url.path(percentEncoded: false)) — the folder is empty or could not be read (no security-scoped access?)"
+                : "\(url.path(percentEncoded: false)) — no \(documentName) here or one level down. Found: \(found)"
+        )
+    }
+
+    public func load() async throws -> LoadedExperience {
+        let root = try Self.resolveBundleRoot(folderURL)
+        let docURL = root.appending(path: ChapterScriptFormat.documentFileName)
 
         let data: Data
         do {
@@ -77,12 +134,12 @@ public struct LocalFolderExperienceProvider: ExperienceProvider {
             throw ExperienceLoaderError.malformedDocument(reason: String(describing: error))
         }
 
-        let assetsRoot = folderURL.appending(path: ChapterScriptFormat.assetsFolderName)
+        let assetsRoot = root.appending(path: ChapterScriptFormat.assetsFolderName)
         let pathMap = Dictionary(
             uniqueKeysWithValues: document.manifest.entries.map { ($0.id, $0.relativePath) }
         )
         let resolver = LocalFolderMediaResolver(assetsRoot: assetsRoot, pathById: pathMap)
-        return LoadedExperience(document: document, mediaResolver: resolver, rootURL: folderURL)
+        return LoadedExperience(document: document, mediaResolver: resolver, rootURL: root)
     }
 }
 

@@ -28,6 +28,11 @@ public struct SegmentDefinition: Sendable {
     /// the curves are pure data sampled by `SegmentAnimationEvaluator`).
     /// Keys sit at absolute seconds on the segment's authored step grid.
     public let animationTracks: [EntityAnimationTrack]
+    /// Segment-level audio volume automation, one track per channel plus an
+    /// optional `master` bus. Sampled on the same authored clock as
+    /// `animationTracks`, so a volume ride holds at a gate exactly like a
+    /// transform curve does.
+    public let audioTracks: [AudioAutomationTrack]
     public let visibility: VisibilityState
     public let onComplete: CompletionAction
 
@@ -39,6 +44,7 @@ public struct SegmentDefinition: Sendable {
         immersiveBackdrop: SegmentBackdrop? = nil,
         steps: [StepDefinition],
         animationTracks: [EntityAnimationTrack] = [],
+        audioTracks: [AudioAutomationTrack] = [],
         visibility: VisibilityState = VisibilityState(),
         onComplete: CompletionAction = .holdOnLastStep
     ) {
@@ -49,6 +55,7 @@ public struct SegmentDefinition: Sendable {
         self.immersiveBackdrop = immersiveBackdrop
         self.steps = steps
         self.animationTracks = animationTracks
+        self.audioTracks = audioTracks
         self.visibility = visibility
         self.onComplete = onComplete
     }

@@ -103,6 +103,8 @@ private extension ImmersiveField {
         switch dto {
         case .equirect360: self = .equirect360
         case .equirect180: self = .equirect180
+        case .appleImmersive(let degrees): self = .appleImmersive(degrees: degrees)
+        case .custom(let degrees): self = .custom(degrees: degrees)
         }
     }
 }
@@ -447,6 +449,7 @@ extension SegmentDefinition {
             immersiveBackdrop: dto.immersiveBackdrop.map { SegmentBackdrop($0) },
             steps: try dto.steps.map { try StepDefinition(dto: $0) },
             animationTracks: dto.animationTracks,
+            audioTracks: dto.audioTracks,
             visibility: VisibilityState(dto.visibility),
             onComplete: CompletionAction(dto.onComplete)
         )
@@ -503,6 +506,8 @@ extension ImmersiveField {
         switch dtoField {
         case .equirect360: self = .equirect360
         case .equirect180: self = .equirect180
+        case .appleImmersive(let degrees): self = .appleImmersive(degrees: degrees)
+        case .custom(let degrees): self = .custom(degrees: degrees)
         }
     }
 }

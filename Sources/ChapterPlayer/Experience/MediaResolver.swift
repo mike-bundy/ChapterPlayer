@@ -54,6 +54,11 @@ public struct LocalFolderMediaResolver: MediaResolver {
     public func url(for assetId: String, kind: MediaKind) -> URL? {
         guard let rel = pathById[assetId] else { return nil }
         let candidate = assetsRoot.appending(path: rel)
-        return FileManager.default.fileExists(atPath: candidate.path()) ? candidate : nil
+        // Decoded path — see `LocalFolderExperienceProvider.resolveBundleRoot`.
+        // `path()` is percent-encoded and silently fails for any path with a
+        // space, which would have made every asset in an iCloud Drive bundle
+        // unresolvable even once the document itself loaded.
+        return FileManager.default.fileExists(atPath: candidate.path(percentEncoded: false))
+            ? candidate : nil
     }
 }
