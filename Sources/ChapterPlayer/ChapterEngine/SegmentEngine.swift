@@ -114,6 +114,13 @@ public final class SegmentEngine {
     /// which stay reserved for the consumer's prompt UI.
     public weak var gateDetector: GateDetecting?
 
+    /// Follows the segment's timed backdrop track. Hung off the engine rather
+    /// than owned by it: the engine's business is steps, gates and actions,
+    /// and a backdrop is none of those. It is driven from the same places the
+    /// animation and audio-automation clocks are, so a gate holds a backdrop
+    /// cue exactly where it holds a curve.
+    public weak var backdropDriver: BackdropCueDriver?
+
     // MARK: - Computed
 
     public var currentStep: StepDefinition? {
@@ -229,6 +236,15 @@ public final class SegmentEngine {
             tracks: segment.audioTracks,
             clock: { [weak self] in self?.segmentAnimationTime ?? 0 }
         )
+        // Backdrop cues ride the SAME authored clock. On wall time a viewer
+        // held at a gate would watch the backdrop cut ahead of the step they
+        // are still waiting on.
+        backdropDriver?.begin(
+            track: segment.backdropTrack,
+            legacy: segment.immersiveBackdrop,
+            presentation: segment.presentation,
+            clock: { [weak self] in self?.segmentAnimationTime ?? 0 }
+        )
     }
 
     /// The authored segment clock: absolute seconds along the segment's
@@ -254,6 +270,11 @@ public final class SegmentEngine {
         playTask = nil
         cancelScheduledActions()
         stopStatusReporting()
+        // Stop following cues, but leave the backdrop standing: a segment SWAP
+        // stops the old engine before the new segment applies its own cue
+        // zero, and blanking in between is a black flash between segments.
+        // A full reset is the case that genuinely wants it gone.
+        backdropDriver?.stop(tearDown: fullReset)
         isPaused = false
         isPlaying = false
         stepPausedDuration = 0

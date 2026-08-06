@@ -23,6 +23,7 @@ import SwiftUI
 import OSLog
 import ChapterScript
 import ARKit
+import CoreMedia
 
 private let logger = Logger(
     subsystem: Bundle.main.bundleIdentifier ?? "com.shellcorp.chapterplayer",
@@ -53,6 +54,12 @@ open class ChapterPlayerCore {
     /// Runtime detection for the spatial gate types (gaze / proximity /
     /// grab). Tap/orchestrator gates stay consumer-wired to `satisfyGate()`.
     public let gateDetection = GateDetectionController()
+    /// Follows the active segment's timed backdrop track. Lazy because it
+    /// needs `self` as its presenter, and observation-ignored because it is a
+    /// driver, not rendered state — tracking it would invalidate every view
+    /// on each cue swap.
+    @ObservationIgnored
+    public private(set) lazy var backdropCues = BackdropCueDriver(presenter: self)
 
     // MARK: - Segment routing
 
@@ -280,6 +287,7 @@ open class ChapterPlayerCore {
         // registry; the head provider is wired when world tracking starts
         // (`rebaseSceneRootToHead`).
         segmentEngine.gateDetector = gateDetection
+        segmentEngine.backdropDriver = backdropCues
         gateDetection.entityProvider = { [weak self] name in
             self?.entityExecutor.entityRegistry[name]
         }
@@ -375,8 +383,41 @@ open class ChapterPlayerCore {
         set { _lastVideoBackdropSignatureStore = newValue }
     }
 
+    /// Apply the backdrop showing at the START of `segment`.
+    ///
+    /// Cue zero, not "the segment's backdrop" — with a track authored, the
+    /// segment does not have ONE backdrop, and `BackdropCueDriver` takes over
+    /// from here to follow the rest. Kept as the entry point the play path
+    /// already calls so the pre-track behaviour is unchanged for documents
+    /// with no cues.
     public func applySegmentBackdrop(_ segment: SegmentDefinition) {
-        logger.info("[backdrop] applySegmentBackdrop segment=\(segment.id) presentation=\(String(describing: segment.presentation)) backdrop=\(String(describing: segment.immersiveBackdrop))")
+        let cue = SegmentBackdropTimeline.activeCue(
+            at: 0,
+            track: segment.backdropTrack,
+            legacy: segment.immersiveBackdrop.map { ImmersiveBackdropSpec(runtime: $0) }
+        )
+        presentBackdrop(cue?.spec.map { SegmentBackdrop($0) },
+                        sourceRange: cue?.sourceRange ?? .full,
+                        presentation: segment.presentation,
+                        segmentId: segment.id)
+    }
+
+    public func presentBackdrop(
+        _ spec: SegmentBackdrop?,
+        sourceRange: MediaSourceRange,
+        presentation: SegmentPresentation
+    ) {
+        presentBackdrop(spec, sourceRange: sourceRange,
+                        presentation: presentation, segmentId: activeSegmentId ?? "")
+    }
+
+    private func presentBackdrop(
+        _ backdropSpec: SegmentBackdrop?,
+        sourceRange: MediaSourceRange,
+        presentation segmentPresentation: SegmentPresentation,
+        segmentId: String
+    ) {
+        logger.info("[backdrop] present segment=\(segmentId) presentation=\(String(describing: segmentPresentation)) backdrop=\(String(describing: backdropSpec))")
         // REPLAY FAST PATH — the single most important rule this pipeline
         // has learned on device: re-attaching a VideoPlayerComponent after
         // a stop strips it is FLAKY (same logs, sometimes renders,
@@ -386,10 +427,14 @@ open class ChapterPlayerCore {
         // in a scene and still hosting its component) and just seek to
         // the start and play. Any mismatch or dead binding falls through
         // to the normal teardown + rebuild.
-        if case .video(let file, let layout, let field, let radius, let loop, let audioEnabled)? = segment.immersiveBackdrop,
-           segment.presentation == .immersive,
+        if case .video(let file, let layout, let field, let radius, let loop, let audioEnabled)? = backdropSpec,
+           segmentPresentation == .immersive,
            currentBackdropUSDZ == nil {
-            let signature = "\(file)|\(layout)|\(field)|\(radius)|\(loop)|\(audioEnabled)"
+            // The source window is part of the signature: the same file cut
+            // 0-6 and cut 20-26 are two different backdrops, and treating
+            // them as identical would replay the first window for the second
+            // cue.
+            let signature = "\(file)|\(layout)|\(field)|\(radius)|\(loop)|\(audioEnabled)|\(sourceRange.resolvedIn)|\(String(describing: sourceRange.sourceOut))"
             if signature == Self.lastVideoBackdropSignature,
                let player = videoManager.player(for: Self.backdropVideoChannel),
                let item = player.currentItem, item.status != .failed,
@@ -397,7 +442,9 @@ open class ChapterPlayerCore {
                skybox.scene != nil,
                skybox.components.has(VideoPlayerComponent.self) {
                 skybox.isEnabled = true
-                player.seek(to: .zero, toleranceBefore: .zero, toleranceAfter: .zero)
+                // Back to the WINDOW's start, not the file's.
+                player.seek(to: CMTime(seconds: sourceRange.resolvedIn, preferredTimescale: 600),
+                            toleranceBefore: .zero, toleranceAfter: .zero)
                 player.play()
                 logger.info("[backdrop] REPLAY fast path: identical backdrop, live binding verified — seek+play, component untouched")
                 return
@@ -412,10 +459,8 @@ open class ChapterPlayerCore {
 
         // Backdrops only make sense for immersive / mixed segments.
         Self.lastVideoBackdropSignature = nil
-        guard segment.presentation != .windowed,
-              let backdrop = segment.immersiveBackdrop
-        else {
-            logger.info("[backdrop] no backdrop to apply (presentation=\(String(describing: segment.presentation)), spec=\(segment.immersiveBackdrop == nil ? "nil" : "set"))")
+        guard segmentPresentation != .windowed, let backdrop = backdropSpec else {
+            logger.info("[backdrop] nothing to apply (presentation=\(String(describing: segmentPresentation)), spec=\(backdropSpec == nil ? "nil" : "set"))")
             return
         }
 
@@ -424,30 +469,32 @@ open class ChapterPlayerCore {
             // Video backdrop = stereoscopic-capable VideoPlayerComponent
             // wrapping the camera. Would block the user's mixed-reality
             // view, so reject in mixed mode.
-            guard segment.presentation == .immersive else {
-                logger.info("Skipping video backdrop on \(String(describing: segment.presentation)) segment — would occlude passthrough.")
+            guard segmentPresentation == .immersive else {
+                logger.info("Skipping video backdrop on \(String(describing: segmentPresentation)) segment — would occlude passthrough.")
                 return
             }
             logger.info("[backdrop] dispatching video backdrop file='\(file)' layout=\(String(describing: layout)) field=\(String(describing: field)) radius=\(radius) loop=\(loop) audio=\(audioEnabled)")
-            Self.lastVideoBackdropSignature = "\(file)|\(layout)|\(field)|\(radius)|\(loop)|\(audioEnabled)"
+            Self.lastVideoBackdropSignature = "\(file)|\(layout)|\(field)|\(radius)|\(loop)|\(audioEnabled)|\(sourceRange.resolvedIn)|\(String(describing: sourceRange.sourceOut))"
             videoManager.play(action: VideoAction(
                 file: file,
                 channel: Self.backdropVideoChannel,
                 volume: audioEnabled ? 1 : 0,
                 loop: loop,
                 presentation: .immersive(radius: radius, field: field),
-                layout: layout
+                layout: layout,
+                sourceIn: sourceRange.sourceIn,
+                sourceOut: sourceRange.sourceOut
             ))
 
         case .image(let file, let field, let radius):
             // Static equirectangular image skybox. Same occlusion
             // concern as video — sphere wraps the user — so reject in
             // mixed mode.
-            guard segment.presentation == .immersive else {
-                logger.info("Skipping image backdrop on \(String(describing: segment.presentation)) segment — would occlude passthrough.")
+            guard segmentPresentation == .immersive else {
+                logger.info("Skipping image backdrop on \(String(describing: segmentPresentation)) segment — would occlude passthrough.")
                 return
             }
-            bindImageSkybox(file: file, field: field, radius: radius, segmentId: segment.id)
+            bindImageSkybox(file: file, field: field, radius: radius, segmentId: segmentId)
 
         case .usdz(let assetId):
             // USDZ backdrops work in BOTH immersive and mixed modes —
@@ -464,7 +511,7 @@ open class ChapterPlayerCore {
             Task { @MainActor in
                 do {
                     let entity = try await Entity(contentsOf: url)
-                    guard self.activeSegmentId == segment.id else { return }
+                    guard self.activeSegmentId == segmentId else { return }
                     sceneRoot.addChild(entity)
                     self.currentBackdropUSDZ = entity
                 } catch {

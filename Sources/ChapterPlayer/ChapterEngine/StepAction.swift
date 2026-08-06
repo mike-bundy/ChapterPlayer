@@ -251,6 +251,12 @@ public struct AudioAction: Sendable {
     public let category: String?
     public let crossfade: TimeInterval?
     public let loopConfig: LoopConfig?
+    /// Non-destructive source window into the master file, in master-file
+    /// seconds. `.full` (the default) plays the whole file, which is what
+    /// every document written before audio had marks means.
+    ///
+    /// Looping loops the WINDOW, not the file. See `MediaSourceRange`.
+    public let sourceRange: MediaSourceRange
 
     public init(
         file: String,
@@ -262,7 +268,8 @@ public struct AudioAction: Sendable {
         spatial: SpatialAudioConfig? = nil,
         category: String? = nil,
         crossfade: TimeInterval? = nil,
-        loopConfig: LoopConfig? = nil
+        loopConfig: LoopConfig? = nil,
+        sourceRange: MediaSourceRange = .full
     ) {
         self.file = file
         self.channel = channel
@@ -274,6 +281,7 @@ public struct AudioAction: Sendable {
         self.category = category
         self.crossfade = crossfade
         self.loopConfig = loopConfig
+        self.sourceRange = sourceRange
     }
 }
 

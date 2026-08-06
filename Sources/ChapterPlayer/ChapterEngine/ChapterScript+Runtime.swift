@@ -220,7 +220,8 @@ private extension AudioAction {
             spatial: dto.spatial.map { SpatialAudioConfig($0) },
             category: dto.category,
             crossfade: dto.crossfade,
-            loopConfig: dto.loopConfig.map { LoopConfig($0) }
+            loopConfig: dto.loopConfig.map { LoopConfig($0) },
+            sourceRange: dto.sourceRange
         )
     }
 }
@@ -447,6 +448,7 @@ extension SegmentDefinition {
             phase: dto.phase,
             presentation: SegmentPresentation(dto.presentation),
             immersiveBackdrop: dto.immersiveBackdrop.map { SegmentBackdrop($0) },
+            backdropTrack: dto.backdropTrack,
             steps: try dto.steps.map { try StepDefinition(dto: $0) },
             animationTracks: dto.animationTracks,
             audioTracks: dto.audioTracks,
@@ -508,6 +510,55 @@ extension ImmersiveField {
         case .equirect180: self = .equirect180
         case .appleImmersive(let degrees): self = .appleImmersive(degrees: degrees)
         case .custom(let degrees): self = .custom(degrees: degrees)
+        }
+    }
+}
+
+//  THE REVERSE DIRECTION.
+//
+//  Backdrop CUES carry format-level specs (`backdropTrack` is stored as
+//  ChapterScript data, like `animationTracks`), while the player speaks
+//  runtime types. Resolving a cue therefore needs DTO → runtime, which the
+//  inits above already do — and folding the LEGACY single backdrop into the
+//  same cue list needs runtime → DTO, which is these. One resolution path is
+//  worth two small switches.
+
+extension ChapterScript.VideoLayout {
+    public init(runtime: VideoLayout) {
+        switch runtime {
+        case .mono: self = .mono
+        case .sideBySide: self = .sideBySide
+        case .overUnder: self = .overUnder
+        case .multiviewHEVC: self = .multiviewHEVC
+        }
+    }
+}
+
+extension ChapterScript.ImmersiveField {
+    public init(runtime: ImmersiveField) {
+        switch runtime {
+        case .equirect360: self = .equirect360
+        case .equirect180: self = .equirect180
+        case .appleImmersive(let degrees): self = .appleImmersive(degrees: degrees)
+        case .custom(let degrees): self = .custom(degrees: degrees)
+        }
+    }
+}
+
+extension ImmersiveBackdropSpec {
+    public init(runtime: SegmentBackdrop) {
+        switch runtime {
+        case let .video(file, layout, field, radius, loop, audioEnabled):
+            self = .video(file: file,
+                          layout: ChapterScript.VideoLayout(runtime: layout),
+                          field: ChapterScript.ImmersiveField(runtime: field),
+                          radius: radius, loop: loop, audioEnabled: audioEnabled)
+        case let .image(file, field, radius):
+            self = .image(file: file,
+                          field: ChapterScript.ImmersiveField(runtime: field),
+                          radius: radius)
+        case let .usdz(assetId):
+            self = .usdz(assetId: assetId)
         }
     }
 }

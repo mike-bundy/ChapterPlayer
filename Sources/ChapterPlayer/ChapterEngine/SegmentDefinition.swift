@@ -23,6 +23,19 @@ public struct SegmentDefinition: Sendable {
     /// Optional immersive backdrop (skybox video or USDZ scene) loaded
     /// while this segment plays. Mirrors `ChapterScript.ImmersiveBackdropSpec`.
     public let immersiveBackdrop: SegmentBackdrop?
+    /// Timed backdrop changes along the segment. Each cue starts at an
+    /// absolute segment second and runs until the next one (or the segment's
+    /// end) — a cue has no end time by construction, which is what makes
+    /// overlap unwritable.
+    ///
+    /// Empty means "use `immersiveBackdrop` for the whole segment", i.e.
+    /// exactly the behaviour of every document written before the track
+    /// existed. `SegmentBackdropTimeline.effectiveCues` folds the two shapes
+    /// into one so there is a single resolution path.
+    ///
+    /// Format types used directly (like `animationTracks`): these are pure
+    /// data the backdrop driver resolves, not something the engine models.
+    public let backdropTrack: [BackdropCue]
     public let steps: [StepDefinition]
     /// Segment-level keyframe animation tracks (format types used directly —
     /// the curves are pure data sampled by `SegmentAnimationEvaluator`).
@@ -42,6 +55,7 @@ public struct SegmentDefinition: Sendable {
         phase: String,
         presentation: SegmentPresentation = .immersive,
         immersiveBackdrop: SegmentBackdrop? = nil,
+        backdropTrack: [BackdropCue] = [],
         steps: [StepDefinition],
         animationTracks: [EntityAnimationTrack] = [],
         audioTracks: [AudioAutomationTrack] = [],
@@ -53,6 +67,7 @@ public struct SegmentDefinition: Sendable {
         self.phase = phase
         self.presentation = presentation
         self.immersiveBackdrop = immersiveBackdrop
+        self.backdropTrack = backdropTrack
         self.steps = steps
         self.animationTracks = animationTracks
         self.audioTracks = audioTracks

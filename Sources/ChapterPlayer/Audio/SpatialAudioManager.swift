@@ -430,10 +430,11 @@ public class SpatialAudioManager {
 
             if action.loop {
                 // loopConfig == nil guard above ensures this is a simple loop, not intro/loop/outro
-                let buffer = try loadBuffer(from: audioFile)
+                let buffer = try loadBuffer(from: audioFile, sourceRange: action.sourceRange)
                 playerNode.scheduleBuffer(buffer, at: nil, options: .loops)
             } else {
-                scheduleAmbientFile(playerNode, file: audioFile, channel: action.channel)
+                scheduleAmbientFile(playerNode, file: audioFile, channel: action.channel,
+                                    sourceRange: action.sourceRange)
             }
 
             prewarmedChannels[action.channel] = AmbientChannel(
@@ -881,10 +882,11 @@ public class SpatialAudioManager {
             let vol = effectiveVolume(requested: action.volume, channel: action.channel)
 
             if action.loop {
-                let buffer = try loadBuffer(from: audioFile)
+                let buffer = try loadBuffer(from: audioFile, sourceRange: action.sourceRange)
                 playerNode.scheduleBuffer(buffer, at: nil, options: .loops)
             } else {
-                scheduleAmbientFile(playerNode, file: audioFile, channel: action.channel)
+                scheduleAmbientFile(playerNode, file: audioFile, channel: action.channel,
+                                    sourceRange: action.sourceRange)
             }
 
             ambientChannels[action.channel] = AmbientChannel(
@@ -912,15 +914,75 @@ public class SpatialAudioManager {
 
     // MARK: - AVAudioEngine Scheduling Helpers (3B)
 
-    private func scheduleAmbientFile(_ node: AVAudioPlayerNode, file: AVAudioFile, channel: String) {
-        node.scheduleFile(file, at: nil, completionCallbackType: .dataPlayedBack) { [weak self] _ in
+    private func scheduleAmbientFile(
+        _ node: AVAudioPlayerNode,
+        file: AVAudioFile,
+        channel: String,
+        sourceRange: MediaSourceRange = .full
+    ) {
+        let completion: (AVAudioPlayerNodeCompletionCallbackType) -> Void = { [weak self] _ in
             Task { @MainActor [weak self] in
                 guard let self else { return }
                 guard let ch = self.ambientChannels[channel], ch.playerNode === node else { return }
                 self.handleAmbientFinished(channel: channel)
             }
         }
+        // A marked cue schedules only its window. `scheduleSegment` is the
+        // whole reason audio ranges are cheap here — the node plays frames
+        // [in, out) and reports completion at the OUT point, so a clip that
+        // ends at source 12 fires `onAudioComplete` at 12 rather than at the
+        // end of a three-minute master.
+        if let segment = frameRange(of: sourceRange, in: file) {
+            node.scheduleSegment(file,
+                                 startingFrame: segment.start,
+                                 frameCount: segment.count,
+                                 at: nil,
+                                 completionCallbackType: .dataPlayedBack,
+                                 completionHandler: completion)
+        } else {
+            node.scheduleFile(file, at: nil, completionCallbackType: .dataPlayedBack,
+                              completionHandler: completion)
+        }
     }
+
+    /// The marked window as whole sample frames, or nil for "the whole file".
+    ///
+    /// Seconds → frames uses the file's OWN sample rate, not the engine's:
+    /// a 48 kHz master inside a 44.1 kHz graph would otherwise seek to the
+    /// wrong place, and the error scales with how far into the file the mark
+    /// is — the classic "it's fine at the start and drifts later" bug.
+    ///
+    /// Returns nil rather than a full-file range so the untouched path stays
+    /// `scheduleFile`, exactly as before this feature existed.
+    private func frameRange(
+        of range: MediaSourceRange,
+        in file: AVAudioFile
+    ) -> (start: AVAudioFramePosition, count: AVAudioFrameCount)? {
+        guard range.isMarked else { return nil }
+        let rate = file.processingFormat.sampleRate
+        guard rate > 0, file.length > 0 else { return nil }
+
+        let masterDuration = Double(file.length) / rate
+        let start = min(max(0, range.resolvedIn), masterDuration)
+        let end = range.resolvedOut(masterDuration: masterDuration) ?? masterDuration
+
+        let startFrame = AVAudioFramePosition((start * rate).rounded())
+        let endFrame = AVAudioFramePosition((min(end, masterDuration) * rate).rounded())
+        guard endFrame > startFrame, startFrame < file.length else { return nil }
+        let count = AVAudioFrameCount(min(endFrame, file.length) - startFrame)
+        guard count > 0 else { return nil }
+        return (startFrame, count)
+    }
+
+    //  INTRO / LOOP / OUTRO CUES DELIBERATELY IGNORE THE PARENT'S RANGE.
+    //
+    //  `loopConfig` names three SEPARATE files. A source range marked on the
+    //  `playAudio` describes a window into `action.file`, which is not any of
+    //  them — applying it to `loop.wav` would cut a window out of the wrong
+    //  master and produce a loop the author never marked. Those three
+    //  scheduling sites therefore stay whole-file on purpose; if per-segment
+    //  trimming of an intro/loop/outro is ever wanted it needs its own marks,
+    //  not a borrowed one.
 
     private func handleAmbientFinished(channel: String) {
         // Handle loop state transitions (2C)
@@ -941,13 +1003,33 @@ public class SpatialAudioManager {
         onChannelFinished?(channel)
     }
 
-    private func loadBuffer(from audioFile: AVAudioFile) throws -> AVAudioPCMBuffer {
-        let frameCount = AVAudioFrameCount(audioFile.length)
-        guard let buffer = AVAudioPCMBuffer(pcmFormat: audioFile.processingFormat, frameCapacity: frameCount) else {
+    /// Load the frames a looping cue should repeat.
+    ///
+    /// With a marked range this reads ONLY the window, so
+    /// `scheduleBuffer(options: .loops)` loops the selection rather than the
+    /// whole master — the buffer IS the loop, so there is no second place
+    /// where looping could disagree about its boundaries.
+    private func loadBuffer(
+        from audioFile: AVAudioFile,
+        sourceRange: MediaSourceRange = .full
+    ) throws -> AVAudioPCMBuffer {
+        let segment = frameRange(of: sourceRange, in: audioFile)
+        let frameCount = segment?.count ?? AVAudioFrameCount(audioFile.length)
+        guard frameCount > 0,
+              let buffer = AVAudioPCMBuffer(pcmFormat: audioFile.processingFormat,
+                                            frameCapacity: frameCount) else {
             throw NSError(domain: "SpatialAudioManager", code: -1,
                           userInfo: [NSLocalizedDescriptionKey: "Failed to create audio buffer"])
         }
-        try audioFile.read(into: buffer)
+        if let segment {
+            // `read(into:frameCount:)` reads from the file's current
+            // position, so the seek must happen first. No need to restore it:
+            // each cue opens its own AVAudioFile.
+            audioFile.framePosition = segment.start
+            try audioFile.read(into: buffer, frameCount: segment.count)
+        } else {
+            try audioFile.read(into: buffer)
+        }
         return buffer
     }
 
@@ -981,10 +1063,11 @@ public class SpatialAudioManager {
             connectPlayerToBus(newNode, format: audioFile.processingFormat, busId: busId)
 
             if action.loop {
-                let buffer = try loadBuffer(from: audioFile)
+                let buffer = try loadBuffer(from: audioFile, sourceRange: action.sourceRange)
                 newNode.scheduleBuffer(buffer, at: nil, options: .loops)
             } else {
-                scheduleAmbientFile(newNode, file: audioFile, channel: action.channel)
+                scheduleAmbientFile(newNode, file: audioFile, channel: action.channel,
+                                    sourceRange: action.sourceRange)
             }
 
             newNode.volume = 0
