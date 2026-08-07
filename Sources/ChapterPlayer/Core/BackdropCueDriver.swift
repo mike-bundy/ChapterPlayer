@@ -167,7 +167,7 @@ public final class BackdropCueDriver {
             spec=\(cue?.spec == nil ? "nil" : "set")
             """)
         presenter?.presentBackdrop(
-            cue?.spec.map { SegmentBackdrop($0) },
+            cue?.spec.flatMap { SegmentBackdrop($0) },
             sourceRange: cue?.sourceRange ?? .full,
             presentation: presentation
         )

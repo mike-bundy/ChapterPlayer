@@ -71,6 +71,17 @@ public final class EntityFactory {
             entity = makeVideoPanel(definition)
         case .particles:
             entity = makeParticleEmitter(definition)
+        case .placeholder:
+            // BLOCKING CONTENT BUILDS NOTHING AT RUNTIME.
+            //
+            // A placeholder stands in for media that does not exist yet. The
+            // authoring tools draw a neutral proxy so the shot can be framed;
+            // the player must not, because a grey box on device is
+            // indistinguishable from a bug and could reach an audience. An
+            // entity that isn't built simply never appears, and every action
+            // naming it is a no-op — which is the truth about an unfinished
+            // shot.
+            return nil
         case .custom:
             if let id = definition.customFactoryId, let make = customFactories[id] {
                 entity = make(definition)

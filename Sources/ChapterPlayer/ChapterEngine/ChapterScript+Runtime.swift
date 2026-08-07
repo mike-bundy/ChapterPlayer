@@ -447,7 +447,7 @@ extension SegmentDefinition {
             name: dto.name,
             phase: dto.phase,
             presentation: SegmentPresentation(dto.presentation),
-            immersiveBackdrop: dto.immersiveBackdrop.map { SegmentBackdrop($0) },
+            immersiveBackdrop: dto.immersiveBackdrop.flatMap { SegmentBackdrop($0) },
             backdropTrack: dto.backdropTrack,
             steps: try dto.steps.map { try StepDefinition(dto: $0) },
             animationTracks: dto.animationTracks,
@@ -469,7 +469,13 @@ extension SegmentPresentation {
 }
 
 extension SegmentBackdrop {
-    public init(_ dto: ImmersiveBackdropSpec) {
+    /// FAILABLE, because one authored backdrop kind has no runtime form at
+    /// all: a `.placeholder` is blocking for a plate that has not been shot,
+    /// and the honest runtime reading of "no file yet" is NO BACKDROP. The
+    /// runtime deliberately gains no concept of blocking content — that
+    /// belongs to the editors — so this returns nil and the caller's
+    /// `flatMap` shows nothing, exactly as an unset backdrop does.
+    public init?(_ dto: ImmersiveBackdropSpec) {
         switch dto {
         case .video(let file, let layout, let field, let radius, let loop, let audioEnabled):
             self = .video(
@@ -488,6 +494,8 @@ extension SegmentBackdrop {
             )
         case .usdz(let assetId):
             self = .usdz(assetId: assetId)
+        case .placeholder:
+            return nil
         }
     }
 }

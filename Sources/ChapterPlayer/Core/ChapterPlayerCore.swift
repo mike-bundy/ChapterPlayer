@@ -396,7 +396,7 @@ open class ChapterPlayerCore {
             track: segment.backdropTrack,
             legacy: segment.immersiveBackdrop.map { ImmersiveBackdropSpec(runtime: $0) }
         )
-        presentBackdrop(cue?.spec.map { SegmentBackdrop($0) },
+        presentBackdrop(cue?.spec.flatMap { SegmentBackdrop($0) },
                         sourceRange: cue?.sourceRange ?? .full,
                         presentation: segment.presentation,
                         segmentId: segment.id)
