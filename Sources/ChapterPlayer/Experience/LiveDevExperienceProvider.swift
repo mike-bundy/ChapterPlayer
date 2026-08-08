@@ -104,10 +104,20 @@ public struct LiveDevExperienceProvider: ExperienceProvider {
     /// Optional progress sink for the asset prefetch pass. UI binds to this so
     /// authors see "streaming N/M" while the player pulls files from the Mac.
     public let prefetchProgress: LivePrefetchProgress?
+    /// Called with the server's `X-Chapter-Rev` header when the fetched
+    /// document carried one. Editor peers use it to adopt document and
+    /// sync revision atomically — the revision of the exact bytes fetched,
+    /// not of the last broadcast they happened to hear.
+    public let onDocumentRevision: (@Sendable (Int) -> Void)?
 
-    public init(descriptor: LiveServerDescriptor, prefetchProgress: LivePrefetchProgress? = nil) {
+    public init(
+        descriptor: LiveServerDescriptor,
+        prefetchProgress: LivePrefetchProgress? = nil,
+        onDocumentRevision: (@Sendable (Int) -> Void)? = nil
+    ) {
         self.descriptor = descriptor
         self.prefetchProgress = prefetchProgress
+        self.onDocumentRevision = onDocumentRevision
     }
 
     public func load() async throws -> LoadedExperience {
@@ -123,6 +133,10 @@ public struct LiveDevExperienceProvider: ExperienceProvider {
             guard let http = response as? HTTPURLResponse, (200...299).contains(http.statusCode) else {
                 let code = (response as? HTTPURLResponse)?.statusCode ?? -1
                 throw ExperienceLoaderError.malformedDocument(reason: "HTTP \(code) from \(docURL.path())")
+            }
+            if let revString = http.value(forHTTPHeaderField: "X-Chapter-Rev"),
+               let rev = Int(revString) {
+                onDocumentRevision?(rev)
             }
             let migrated = try Migrator.migrate(data)
             document = try ChapterScriptFormat.makeDecoder().decode(ChapterDocument.self, from: migrated)
