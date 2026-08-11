@@ -136,46 +136,53 @@ open class ChapterPlayerCore {
     /// `headRelativePosition` action mode.
     private var arkitSession: ARKitSession?
     private var worldTracking: WorldTrackingProvider?
+    /// Last eye height a plausibility-checked sample produced. The rebase
+    /// falls back to it when a fresh mount's poll window expires without
+    /// a believable pose.
+    private var lastKnownEyeHeight: Float?
 
-    /// Start head tracking (if not already running), wire the executor's
-    /// head provider, then sample once and set the scene root's transform
-    /// to match — making world (0,0,0) = the viewer's head.
+    /// Start head tracking, wire the executor's head provider, then sample
+    /// once and set the scene root's transform to match — making world
+    /// (0,0,0) = the viewer's head.
+    ///
+    /// A FRESH session runs on every mount: ARKit suspends providers when
+    /// the immersive space closes and re-establishes the world origin when
+    /// a new one opens — a provider kept from the previous space can
+    /// return confidently-TRACKED poses in the stale coordinate frame
+    /// (head at y≈0.1 "eye height", content on the floor). Session-per-
+    /// mount keeps every sample in the current space's frame.
     private func rebaseSceneRootToHead() async {
         guard let root = immersiveSceneRoot else { return }
-        if worldTracking == nil {
-            let session = ARKitSession()
-            let provider = WorldTrackingProvider()
-            do {
-                try await session.run([provider])
-                self.arkitSession = session
-                self.worldTracking = provider
-                // Forward to the executor for the legacy head-relative
-                // action mode (older documents that still use it).
-                self.entityExecutor.headTransformProvider = { [weak provider] in
-                    provider?.sampleDeviceTransform(leveled: true)
-                }
-                // Spatial gates need the FULL head orientation — gaze aim
-                // uses pitch, which the leveled sample above strips.
-                self.gateDetection.headTransformProvider = { [weak provider] in
-                    provider?.sampleDeviceTransform(leveled: false)
-                }
-            } catch {
-                logger.warning("ARKit world tracking failed to start: \(error.localizedDescription)")
-                return
+        let session = ARKitSession()
+        let provider = WorldTrackingProvider()
+        do {
+            try await session.run([provider])
+            self.arkitSession?.stop()
+            self.arkitSession = session
+            self.worldTracking = provider
+            // Forward to the executor for the legacy head-relative
+            // action mode (older documents that still use it).
+            self.entityExecutor.headTransformProvider = { [weak provider] in
+                provider?.sampleDeviceTransform(leveled: true)
             }
-        }
-        guard let provider = worldTracking else {
-            logger.warning("World tracking provider not running; scene root left at origin.")
+            // Spatial gates need the FULL head orientation — gaze aim
+            // uses pitch, which the leveled sample above strips.
+            self.gateDetection.headTransformProvider = { [weak provider] in
+                provider?.sampleDeviceTransform(leveled: false)
+            }
+        } catch {
+            logger.warning("ARKit world tracking failed to start: \(error.localizedDescription)")
             return
         }
         // `session.run` returning doesn't guarantee an anchor is ready —
-        // queryDeviceAnchor frequently returns nil for the first frame
-        // or two after start. Poll up to 3s before giving up so the
-        // rebase actually fires when the user first enters the
-        // immersive space.
-        let deadline = Date().addingTimeInterval(3.0)
+        // queryDeviceAnchor frequently returns nil (or, mid-relocalization,
+        // an implausible pose) for the first frames. Poll, and only accept
+        // a height a human head can actually be at: 0.5–2.5 m. y≈0.1 is
+        // never an eye — it's an origin that hasn't settled.
+        let deadline = Date().addingTimeInterval(4.0)
         while Date() < deadline {
-            if let head = provider.sampleDeviceTransform(leveled: true) {
+            if let head = provider.sampleDeviceTransform(leveled: true),
+               (0.5...2.5).contains(head.translation.y) {
                 // Take ONLY the head's height (Y) — the viewer's eye
                 // level. X / Z / yaw are intentionally NOT taken from
                 // the head: an entity authored at (0, 0, -2) should
@@ -183,6 +190,7 @@ open class ChapterPlayerCore {
                 // of where in the room the viewer is standing or which
                 // way they're facing. Otherwise content would slide
                 // with the user.
+                lastKnownEyeHeight = head.translation.y
                 root.transform = Transform(
                     scale: .one,
                     rotation: simd_quatf(angle: 0, axis: SIMD3<Float>(0, 1, 0)),
@@ -193,7 +201,16 @@ open class ChapterPlayerCore {
             }
             try? await Task.sleep(nanoseconds: 80_000_000) // 80ms
         }
-        logger.warning("Head anchor never became available within 3s; scene root left at origin. Check NSWorldSensingUsageDescription in the app's Info.plist.")
+        if let fallback = lastKnownEyeHeight {
+            root.transform = Transform(
+                scale: .one,
+                rotation: simd_quatf(angle: 0, axis: SIMD3<Float>(0, 1, 0)),
+                translation: SIMD3<Float>(0, fallback, 0)
+            )
+            logger.warning("No plausible head pose within 4s; reusing last known eye height y=\(fallback).")
+        } else {
+            logger.warning("Head anchor never became available within 4s; scene root left at origin. Check NSWorldSensingUsageDescription in the app's Info.plist.")
+        }
     }
 
     // MARK: - Window / Space IDs
