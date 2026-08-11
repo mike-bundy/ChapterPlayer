@@ -1,9 +1,9 @@
 //
-//  SegmentEngine.swift
+//  SequenceEngine.swift
 //  SharedVisions
 //
 //  Generic step choreographer.
-//  Reads SegmentDefinitions and executes StepActions through pluggable executors.
+//  Reads SequenceDefinitions and executes StepActions through pluggable executors.
 //  Handles timing, pause/resume/skip/goto/restart.
 //
 
@@ -12,7 +12,7 @@ import OSLog
 
 private let logger = Logger(
     subsystem: Bundle.main.bundleIdentifier ?? "com.shellcorp.sharedvisions",
-    category: "SegmentEngine"
+    category: "SequenceEngine"
 )
 
 #if DEBUG
@@ -26,8 +26,8 @@ private let stepSignposter = OSSignposter(
 
 // MARK: - Status (internal reporting struct)
 
-public struct SegmentStatus: Sendable {
-    public let segmentId: String
+public struct SequenceStatus: Sendable {
+    public let sequenceId: String
     public let stepId: String
     public let stepIndex: Int
     public let stepName: String
@@ -47,13 +47,13 @@ public struct SegmentStatus: Sendable {
 
 @MainActor
 @Observable
-public final class SegmentEngine {
+public final class SequenceEngine {
 
 
     public init() {}
     // MARK: - State
 
-    public private(set) var currentSegment: SegmentDefinition?
+    public private(set) var currentSequence: SequenceDefinition?
     public private(set) var currentStepIndex: Int = 0
     public private(set) var isPaused: Bool = false
     public private(set) var isPlaying: Bool = false
@@ -67,9 +67,9 @@ public final class SegmentEngine {
     // MARK: - Timing
 
     private var stepStartTime: Date = .now
-    private var segmentStartTime: Date = .now
+    private var sequenceStartTime: Date = .now
     private var stepPausedDuration: TimeInterval = 0
-    private var segmentPausedDuration: TimeInterval = 0
+    private var sequencePausedDuration: TimeInterval = 0
     private var pauseStartTime: Date?
 
     // MARK: - Internal
@@ -98,12 +98,12 @@ public final class SegmentEngine {
 
     /// Called when a step changes — lets AppModel/ImmersiveView react
     public var onStepChanged: ((StepDefinition, Int) -> Void)?
-    /// Called when segment completes
-    public var onSegmentComplete: ((CompletionAction) -> Void)?
+    /// Called when sequence completes
+    public var onSequenceComplete: ((CompletionAction) -> Void)?
     /// Called to send step status (observers / utility window)
-    public var onStatusUpdate: ((SegmentStatus) -> Void)?
-    /// Called when a segment starts playing
-    public var onSegmentStarted: ((String) -> Void)?
+    public var onStatusUpdate: ((SequenceStatus) -> Void)?
+    /// Called when a sequence starts playing
+    public var onSequenceStarted: ((String) -> Void)?
     /// Called when a gate activates — lets ImmersiveView show a prompt
     public var onGateStarted: ((StepGate) -> Void)?
     /// Called when a gate is satisfied — lets ImmersiveView hide the prompt
@@ -114,7 +114,7 @@ public final class SegmentEngine {
     /// which stay reserved for the consumer's prompt UI.
     public weak var gateDetector: GateDetecting?
 
-    /// Follows the segment's timed backdrop track. Hung off the engine rather
+    /// Follows the sequence's timed backdrop track. Hung off the engine rather
     /// than owned by it: the engine's business is steps, gates and actions,
     /// and a backdrop is none of those. It is driven from the same places the
     /// animation and audio-automation clocks are, so a gate holds a backdrop
@@ -124,14 +124,14 @@ public final class SegmentEngine {
     // MARK: - Computed
 
     public var currentStep: StepDefinition? {
-        guard let segment = currentSegment,
+        guard let sequence = currentSequence,
               currentStepIndex >= 0,
-              currentStepIndex < segment.steps.count else { return nil }
-        return segment.steps[currentStepIndex]
+              currentStepIndex < sequence.steps.count else { return nil }
+        return sequence.steps[currentStepIndex]
     }
 
-    public var currentSegmentId: String {
-        currentSegment?.id ?? ""
+    public var currentSequenceId: String {
+        currentSequence?.id ?? ""
     }
 
     public var currentStepId: String {
@@ -139,7 +139,7 @@ public final class SegmentEngine {
     }
 
     public var totalDuration: TimeInterval {
-        currentSegment?.totalDuration ?? 0
+        currentSequence?.totalDuration ?? 0
     }
 
     public var stepElapsed: TimeInterval {
@@ -153,110 +153,110 @@ public final class SegmentEngine {
     public var totalElapsed: TimeInterval {
         guard isPlaying else { return 0 }
         let now = Date.now
-        let raw = now.timeIntervalSince(segmentStartTime)
+        let raw = now.timeIntervalSince(sequenceStartTime)
         let activePause = pauseStartTime.map { now.timeIntervalSince($0) } ?? 0
-        return raw - segmentPausedDuration - activePause
+        return raw - sequencePausedDuration - activePause
     }
 
     // MARK: - Play
 
-    /// Starts segment playback. Use `startingAtStepIndex` to skip earlier steps.
+    /// Starts sequence playback. Use `startingAtStepIndex` to skip earlier steps.
     /// Always resets entities, attachments, and effects to their canonical defaults so
-    /// switching segments starts from a clean slate (SharedVisions policy: safe full reset).
-    public func play(segment: SegmentDefinition, startingAtStepIndex startIndex: Int = 0) {
+    /// switching sequences starts from a clean slate (SharedVisions policy: safe full reset).
+    public func play(sequence: SequenceDefinition, startingAtStepIndex startIndex: Int = 0) {
         stop(resetEntities: true)
 
-        currentSegment = segment
-        let stepCount = segment.steps.count
+        currentSequence = sequence
+        let stepCount = sequence.steps.count
         let clampedStart = max(0, min(startIndex, stepCount > 0 ? stepCount - 1 : 0))
         currentStepIndex = clampedStart
         isPaused = false
         isPlaying = true
         stepPausedDuration = 0
-        segmentPausedDuration = 0
+        sequencePausedDuration = 0
         pauseStartTime = nil
 
         var elapsed: TimeInterval = 0
         for i in 0..<clampedStart {
-            elapsed += segment.steps[i].duration
+            elapsed += sequence.steps[i].duration
         }
-        segmentStartTime = Date.now.addingTimeInterval(-elapsed)
+        sequenceStartTime = Date.now.addingTimeInterval(-elapsed)
 
-        logger.info("Playing segment: \(segment.id) from step index \(clampedStart)/\(stepCount) (\(String(format: "%.1f", segment.totalDuration))s total)")
+        logger.info("Playing sequence: \(sequence.id) from step index \(clampedStart)/\(stepCount) (\(String(format: "%.1f", sequence.totalDuration))s total)")
 
-        registerSegmentAnimation(segment)
+        registerSequenceAnimation(sequence)
         startStatusReporting()
-        onSegmentStarted?(segment.id)
+        onSequenceStarted?(sequence.id)
 
-        logger.notice("▶ play() creating playTask for segment=\(segment.id) stepIndex=\(clampedStart)")
-        startPlayTask(segment: segment, startIndex: clampedStart)
+        logger.notice("▶ play() creating playTask for sequence=\(sequence.id) stepIndex=\(clampedStart)")
+        startPlayTask(sequence: sequence, startIndex: clampedStart)
     }
 
     /// Async variant: runs the step loop in the caller's Task context instead of
     /// creating a new fire-and-forget Task. Use from auto-advance chains.
     /// Always resets entities/attachments/effects (SharedVisions policy).
-    public func playAndAwait(segment: SegmentDefinition, startingAtStepIndex startIndex: Int = 0) async -> CompletionAction? {
+    public func playAndAwait(sequence: SequenceDefinition, startingAtStepIndex startIndex: Int = 0) async -> CompletionAction? {
         stop(resetEntities: true)
 
-        currentSegment = segment
-        let stepCount = segment.steps.count
+        currentSequence = sequence
+        let stepCount = sequence.steps.count
         let clampedStart = max(0, min(startIndex, stepCount > 0 ? stepCount - 1 : 0))
         currentStepIndex = clampedStart
         isPaused = false
         isPlaying = true
         stepPausedDuration = 0
-        segmentPausedDuration = 0
+        sequencePausedDuration = 0
         pauseStartTime = nil
 
         var elapsed: TimeInterval = 0
         for i in 0..<clampedStart {
-            elapsed += segment.steps[i].duration
+            elapsed += sequence.steps[i].duration
         }
-        segmentStartTime = Date.now.addingTimeInterval(-elapsed)
+        sequenceStartTime = Date.now.addingTimeInterval(-elapsed)
 
-        logger.info("Playing segment (await): \(segment.id) from step index \(clampedStart)/\(stepCount) (\(String(format: "%.1f", segment.totalDuration))s total)")
+        logger.info("Playing sequence (await): \(sequence.id) from step index \(clampedStart)/\(stepCount) (\(String(format: "%.1f", sequence.totalDuration))s total)")
 
-        registerSegmentAnimation(segment)
+        registerSequenceAnimation(sequence)
         startStatusReporting()
-        onSegmentStarted?(segment.id)
+        onSequenceStarted?(sequence.id)
 
-        return await runStepsFrom(index: clampedStart, in: segment)
+        return await runStepsFrom(index: clampedStart, in: sequence)
     }
 
-    /// Hand the segment's animation tracks to the entity executor, clocked
-    /// by the authored segment time so gates/pauses hold curves in place.
-    private func registerSegmentAnimation(_ segment: SegmentDefinition) {
-        entityExecutor?.setSegmentAnimation(
-            tracks: segment.animationTracks,
-            clock: { [weak self] in self?.segmentAnimationTime ?? 0 }
+    /// Hand the sequence's animation tracks to the entity executor, clocked
+    /// by the authored sequence time so gates/pauses hold curves in place.
+    private func registerSequenceAnimation(_ sequence: SequenceDefinition) {
+        entityExecutor?.setSequenceAnimation(
+            tracks: sequence.animationTracks,
+            clock: { [weak self] in self?.sequenceAnimationTime ?? 0 }
         )
         // Audio volume rides on the SAME authored clock, so a gate holds a
         // fade exactly where it holds a transform curve.
-        audioExecutor?.setSegmentAudioAutomation(
-            tracks: segment.audioTracks,
-            clock: { [weak self] in self?.segmentAnimationTime ?? 0 }
+        audioExecutor?.setSequenceAudioAutomation(
+            tracks: sequence.audioTracks,
+            clock: { [weak self] in self?.sequenceAnimationTime ?? 0 }
         )
         // Backdrop cues ride the SAME authored clock. On wall time a viewer
         // held at a gate would watch the backdrop cut ahead of the step they
         // are still waiting on.
         backdropDriver?.begin(
-            track: segment.backdropTrack,
-            legacy: segment.immersiveBackdrop,
-            presentation: segment.presentation,
-            clock: { [weak self] in self?.segmentAnimationTime ?? 0 }
+            track: sequence.backdropTrack,
+            legacy: sequence.immersiveBackdrop,
+            presentation: sequence.presentation,
+            clock: { [weak self] in self?.sequenceAnimationTime ?? 0 }
         )
     }
 
-    /// The authored segment clock: absolute seconds along the segment's
+    /// The authored sequence clock: absolute seconds along the sequence's
     /// step grid — the domain animation-track keys live in. Unlike
     /// `totalElapsed` (wall time minus pauses), this clock stops at a
     /// gated step's end and never drifts when gates stretch real time.
-    public var segmentAnimationTime: TimeInterval {
-        guard let segment = currentSegment, isPlaying else { return 0 }
-        let index = max(0, min(currentStepIndex, segment.steps.count - 1))
+    public var sequenceAnimationTime: TimeInterval {
+        guard let sequence = currentSequence, isPlaying else { return 0 }
+        let index = max(0, min(currentStepIndex, sequence.steps.count - 1))
         var start: TimeInterval = 0
-        for i in 0..<index { start += segment.steps[i].duration }
-        let stepDuration = segment.steps.indices.contains(index) ? segment.steps[index].duration : 0
+        for i in 0..<index { start += sequence.steps[i].duration }
+        let stepDuration = sequence.steps.indices.contains(index) ? sequence.steps[index].duration : 0
         return start + min(max(stepElapsed, 0), stepDuration)
     }
 
@@ -264,21 +264,21 @@ public final class SegmentEngine {
 
     public func stop(resetEntities: Bool = true, fullReset: Bool = false) {
         if playTask != nil {
-            logger.notice("⏹ stop() cancelling playTask for segment=\(self.currentSegmentId) resetEntities=\(resetEntities) fullReset=\(fullReset)")
+            logger.notice("⏹ stop() cancelling playTask for sequence=\(self.currentSequenceId) resetEntities=\(resetEntities) fullReset=\(fullReset)")
         }
         playTask?.cancel()
         playTask = nil
         cancelScheduledActions()
         stopStatusReporting()
-        // Stop following cues, but leave the backdrop standing: a segment SWAP
-        // stops the old engine before the new segment applies its own cue
-        // zero, and blanking in between is a black flash between segments.
+        // Stop following cues, but leave the backdrop standing: a sequence SWAP
+        // stops the old engine before the new sequence applies its own cue
+        // zero, and blanking in between is a black flash between sequences.
         // A full reset is the case that genuinely wants it gone.
         backdropDriver?.stop(tearDown: fullReset)
         isPaused = false
         isPlaying = false
         stepPausedDuration = 0
-        segmentPausedDuration = 0
+        sequencePausedDuration = 0
         pauseStartTime = nil
         resumeIfPaused()
         clearGate()
@@ -294,7 +294,7 @@ public final class SegmentEngine {
             audioExecutor?.stopAll()
         }
         videoExecutor?.stopAll()
-        entityExecutor?.setSegmentAnimation(tracks: [], clock: nil)
+        entityExecutor?.setSequenceAnimation(tracks: [], clock: nil)
 
         cleanup(resetEntities: resetEntities)
     }
@@ -325,7 +325,7 @@ public final class SegmentEngine {
         if let start = pauseStartTime {
             let elapsed = Date.now.timeIntervalSince(start)
             stepPausedDuration += elapsed
-            segmentPausedDuration += elapsed
+            sequencePausedDuration += elapsed
         }
         pauseStartTime = nil
         isPaused = false
@@ -342,9 +342,9 @@ public final class SegmentEngine {
     }
 
     public func skip() {
-        guard let segment = currentSegment else { return }
+        guard let sequence = currentSequence else { return }
         let nextIndex = currentStepIndex + 1
-        guard nextIndex < segment.steps.count else {
+        guard nextIndex < sequence.steps.count else {
             logger.info("Already at last step — cannot skip")
             return
         }
@@ -360,8 +360,8 @@ public final class SegmentEngine {
     }
 
     public func jumpToStep(_ stepId: String) {
-        guard let segment = currentSegment,
-              let index = segment.steps.firstIndex(where: { $0.id == stepId }) else {
+        guard let sequence = currentSequence,
+              let index = sequence.steps.firstIndex(where: { $0.id == stepId }) else {
             logger.warning("Unknown step ID: \(stepId)")
             return
         }
@@ -369,10 +369,10 @@ public final class SegmentEngine {
     }
 
     public func jumpToStep(index: Int) {
-        guard let segment = currentSegment,
-              index >= 0, index < segment.steps.count else { return }
+        guard let sequence = currentSequence,
+              index >= 0, index < sequence.steps.count else { return }
 
-        logger.info("Jumping to step index \(index): \(segment.steps[index].id)")
+        logger.info("Jumping to step index \(index): \(sequence.steps[index].id)")
 
         playTask?.cancel()
         playTask = nil
@@ -381,7 +381,7 @@ public final class SegmentEngine {
         clearGate()
         isPaused = false
         stepPausedDuration = 0
-        segmentPausedDuration = 0
+        sequencePausedDuration = 0
         pauseStartTime = nil
 
         audioExecutor?.stopAll()
@@ -390,37 +390,37 @@ public final class SegmentEngine {
 
         var elapsed: TimeInterval = 0
         for i in 0..<index {
-            elapsed += segment.steps[i].duration
+            elapsed += sequence.steps[i].duration
         }
-        segmentStartTime = Date.now.addingTimeInterval(-elapsed)
+        sequenceStartTime = Date.now.addingTimeInterval(-elapsed)
 
         isPlaying = true
-        // Re-register the segment's animation tracks: a natural completion
+        // Re-register the sequence's animation tracks: a natural completion
         // deregisters them, so a jump after completion (or after stop)
         // must restore per-frame track sampling like play() does.
-        registerSegmentAnimation(segment)
+        registerSequenceAnimation(sequence)
         startStatusReporting()
 
-        startPlayTask(segment: segment, startIndex: index)
+        startPlayTask(sequence: sequence, startIndex: index)
     }
 
     public func restart() {
-        guard let segment = currentSegment else { return }
-        play(segment: segment)
+        guard let sequence = currentSequence else { return }
+        play(sequence: sequence)
     }
 
     // MARK: - Step Loop
 
     /// Shared step-iteration loop used by play(), jumpToStep(), and playAndAwait().
-    /// Returns the segment completion only when playback reaches its natural end.
-    private func runStepsFrom(index startIndex: Int, in segment: SegmentDefinition) async -> CompletionAction? {
-        let stepCount = segment.steps.count
-        logger.notice("▶ runStepsFrom: segment=\(segment.id) startIndex=\(startIndex) stepCount=\(stepCount) isCancelled=\(Task.isCancelled)")
+    /// Returns the sequence completion only when playback reaches its natural end.
+    private func runStepsFrom(index startIndex: Int, in sequence: SequenceDefinition) async -> CompletionAction? {
+        let stepCount = sequence.steps.count
+        logger.notice("▶ runStepsFrom: sequence=\(sequence.id) startIndex=\(startIndex) stepCount=\(stepCount) isCancelled=\(Task.isCancelled)")
 
         for index in startIndex..<stepCount {
-            let step = segment.steps[index]
+            let step = sequence.steps[index]
             guard !Task.isCancelled else {
-                logger.warning("⚠️ Segment \(segment.id) cancelled at step \(step.id) — playTask was cancelled before step could start")
+                logger.warning("⚠️ Sequence \(sequence.id) cancelled at step \(step.id) — playTask was cancelled before step could start")
                 return nil
             }
 
@@ -492,29 +492,29 @@ public final class SegmentEngine {
 
         guard !Task.isCancelled else { return nil }
 
-        logger.info("Segment \(segment.id) complete")
+        logger.info("Sequence \(sequence.id) complete")
 
-        if case .holdOnLastStep = segment.onComplete {
+        if case .holdOnLastStep = sequence.onComplete {
             sendStatus(isComplete: true)
         } else {
             isPlaying = false
             stopStatusReporting()
             sendStatus(playing: false)
-            // Deregister the segment's animation tracks: with isPlaying
+            // Deregister the sequence's animation tracks: with isPlaying
             // false the animation clock reads 0, so a still-registered
             // track would slam every keyed entity back to its t=0 pose on
             // the next per-frame sample. Entities keep the final sampled
             // transforms; a subsequent play/jump re-registers.
-            entityExecutor?.setSegmentAnimation(tracks: [], clock: nil)
+            entityExecutor?.setSequenceAnimation(tracks: [], clock: nil)
         }
 
-        return segment.onComplete
+        return sequence.onComplete
     }
 
-    private func startPlayTask(segment: SegmentDefinition, startIndex: Int) {
+    private func startPlayTask(sequence: SequenceDefinition, startIndex: Int) {
         playTask = Task { @MainActor in
-            guard let completion = await self.runStepsFrom(index: startIndex, in: segment) else { return }
-            self.onSegmentComplete?(completion)
+            guard let completion = await self.runStepsFrom(index: startIndex, in: sequence) else { return }
+            self.onSequenceComplete?(completion)
         }
     }
 
@@ -655,7 +655,7 @@ public final class SegmentEngine {
 
         // Audio
         case .playAudio(let audioAction):
-            audioExecutor?.play(audioAction, stepContext: "\(currentSegmentId)/\(currentStepId)")
+            audioExecutor?.play(audioAction, stepContext: "\(currentSequenceId)/\(currentStepId)")
         case .stopAudio(let channel):
             audioExecutor?.stop(channel: channel)
         case .fadeAudio(let channel, let to, let duration):
@@ -742,10 +742,10 @@ public final class SegmentEngine {
     // MARK: - Status Reporting
 
     private func sendStatus(playing: Bool? = nil, isComplete: Bool = false) {
-        guard let segment = currentSegment, let step = currentStep else { return }
+        guard let sequence = currentSequence, let step = currentStep else { return }
 
-        let status = SegmentStatus(
-            segmentId: segment.id,
+        let status = SequenceStatus(
+            sequenceId: sequence.id,
             stepId: step.id,
             stepIndex: currentStepIndex,
             stepName: step.name,
@@ -753,7 +753,7 @@ public final class SegmentEngine {
             stepDuration: step.duration,
             totalElapsed: totalElapsed,
             totalDuration: totalDuration,
-            totalSteps: segment.steps.count,
+            totalSteps: sequence.steps.count,
             isPlaying: playing ?? (isPlaying && !isPaused),
             isWaiting: isWaiting,
             isComplete: isComplete,

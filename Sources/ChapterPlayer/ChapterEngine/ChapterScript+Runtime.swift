@@ -3,7 +3,7 @@
 //  SharedVisions
 //
 //  Conversions between the open ChapterScript format DTOs and the runtime
-//  SegmentEngine types. All mappings are forward-only (DTO → runtime) for now;
+//  SequenceEngine types. All mappings are forward-only (DTO → runtime) for now;
 //  reverse direction added when an authoring/export pass needs it.
 //
 
@@ -56,7 +56,7 @@ private extension StepTimingFunction {
 private extension AudioScope {
     public init(_ dto: ChapterScript.AudioScope) {
         switch dto {
-        case .segment: self = .segment
+        case .sequence: self = .sequence
         case .ambient: self = .ambient
         }
     }
@@ -228,7 +228,7 @@ private extension AudioAction {
 
 extension VideoAction {
     /// Public DTO bridge used by `AppModel.preheatVideos` to stage AVPlayer
-    /// items before segment playback. Other internal call sites continue
+    /// items before sequence playback. Other internal call sites continue
     /// to construct VideoAction directly via this same init.
     public init(_ dto: VideoActionDTO) {
         self.init(
@@ -413,13 +413,13 @@ private extension CompletionAction {
         switch dto {
         case .holdOnLastStep:                         self = .holdOnLastStep
         case .transitionTo(let phase, let visibility): self = .transitionTo(phase: phase, visibility: VisibilityState(visibility))
-        case .autoAdvance(let nextSegmentId):          self = .autoAdvance(nextSegmentId: nextSegmentId)
+        case .autoAdvance(let nextSequenceId):          self = .autoAdvance(nextSequenceId: nextSequenceId)
         case .dismissToHome:                           self = .dismissToHome
         }
     }
 }
 
-// MARK: - ScheduledAction / StepDefinition / SegmentDefinition
+// MARK: - ScheduledAction / StepDefinition / SequenceDefinition
 
 private extension ScheduledAction {
     public init(_ dto: ScheduledActionDTO) throws {
@@ -440,14 +440,14 @@ extension StepDefinition {
     }
 }
 
-extension SegmentDefinition {
-    public init(dto: SegmentDefinitionDTO) throws {
+extension SequenceDefinition {
+    public init(dto: SequenceDefinitionDTO) throws {
         self.init(
             id: dto.id,
             name: dto.name,
             phase: dto.phase,
-            presentation: SegmentPresentation(dto.presentation),
-            immersiveBackdrop: dto.immersiveBackdrop.flatMap { SegmentBackdrop($0) },
+            presentation: SequencePresentation(dto.presentation),
+            immersiveBackdrop: dto.immersiveBackdrop.flatMap { SequenceBackdrop($0) },
             backdropTrack: dto.backdropTrack,
             steps: try dto.steps.map { try StepDefinition(dto: $0) },
             animationTracks: dto.animationTracks,
@@ -458,8 +458,8 @@ extension SegmentDefinition {
     }
 }
 
-extension SegmentPresentation {
-    public init(_ dto: ChapterScript.SegmentPresentation) {
+extension SequencePresentation {
+    public init(_ dto: ChapterScript.SequencePresentation) {
         switch dto {
         case .immersive: self = .immersive
         case .mixed:     self = .mixed
@@ -468,7 +468,7 @@ extension SegmentPresentation {
     }
 }
 
-extension SegmentBackdrop {
+extension SequenceBackdrop {
     /// FAILABLE, because one authored backdrop kind has no runtime form at
     /// all: a `.placeholder` is blocking for a plate that has not been shot,
     /// and the honest runtime reading of "no file yet" is NO BACKDROP. The
@@ -554,7 +554,7 @@ extension ChapterScript.ImmersiveField {
 }
 
 extension ImmersiveBackdropSpec {
-    public init(runtime: SegmentBackdrop) {
+    public init(runtime: SequenceBackdrop) {
         switch runtime {
         case let .video(file, layout, field, radius, loop, audioEnabled):
             self = .video(file: file,
@@ -573,14 +573,14 @@ extension ImmersiveBackdropSpec {
 
 // MARK: - ChapterDocument loading
 
-extension SegmentDefinition {
-    /// Find `segmentId` in `document.segments` and convert it to a runtime segment.
-    static public func from(document: ChapterDocument, segmentId: String) throws -> SegmentDefinition {
-        guard let dto = document.segments.first(where: { $0.id == segmentId }) else {
+extension SequenceDefinition {
+    /// Find `sequenceId` in `document.sequences` and convert it to a runtime sequence.
+    static public func from(document: ChapterDocument, sequenceId: String) throws -> SequenceDefinition {
+        guard let dto = document.sequences.first(where: { $0.id == sequenceId }) else {
             throw ChapterScriptRuntimeError.unsupportedDocument(
-                reason: "segment id '\(segmentId)' not found in document '\(document.id)'"
+                reason: "sequence id '\(sequenceId)' not found in document '\(document.id)'"
             )
         }
-        return try SegmentDefinition(dto: dto)
+        return try SequenceDefinition(dto: dto)
     }
 }

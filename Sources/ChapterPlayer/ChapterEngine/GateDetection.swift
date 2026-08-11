@@ -2,7 +2,7 @@
 //  GateDetection.swift
 //  ChapterPlayer
 //
-//  Runtime detection for the spatial gate types. `SegmentEngine.waitAtGate`
+//  Runtime detection for the spatial gate types. `SequenceEngine.waitAtGate`
 //  notifies the wired `GateDetecting` when a gate activates; the controller
 //  starts the matching watcher and calls back into `satisfyGate()` when the
 //  user meets it:
@@ -31,7 +31,7 @@ private let logger = Logger(
 
 // MARK: - Protocol
 
-/// Engine-side hook for spatial gate detection. `SegmentEngine` calls
+/// Engine-side hook for spatial gate detection. `SequenceEngine` calls
 /// `gateDidStart` when a gate begins waiting and `gateDidEnd` when the gate
 /// resolves for any reason (satisfied, timed out, step loop cancelled).
 @MainActor

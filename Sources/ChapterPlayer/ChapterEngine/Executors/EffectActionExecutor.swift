@@ -4,7 +4,7 @@
 //
 //  Slim effect executor for SharedVisions. Implements the example VFX
 //  (PulseRing, SparkBurst) and provides a `handleCustomAction(id:)` escape hatch
-//  for segment authors. Extend this executor with new effect types as content grows.
+//  for sequence authors. Extend this executor with new effect types as content grows.
 //
 
 import RealityKit
@@ -51,7 +51,7 @@ public final class EffectActionExecutor: EffectActionExecutorProtocol {
 
     /// id → handler closure for `.custom(id:)` step actions. Consumers
     /// register handlers at app launch; the engine looks them up here
-    /// when a segment step fires `.custom(id:)`.
+    /// when a sequence step fires `.custom(id:)`.
     private var customHandlers: [String: @MainActor () -> Void] = [:]
 
     // MARK: - Pulse Ring
@@ -114,7 +114,7 @@ public final class EffectActionExecutor: EffectActionExecutorProtocol {
 
     // MARK: - Custom
 
-    /// Register a handler that fires when a segment step's `.custom(id:)`
+    /// Register a handler that fires when a sequence step's `.custom(id:)`
     /// action runs. Overwrites any previous handler for the same id.
     public func registerCustomAction(id: String, _ handler: @escaping @MainActor () -> Void) {
         customHandlers[id] = handler

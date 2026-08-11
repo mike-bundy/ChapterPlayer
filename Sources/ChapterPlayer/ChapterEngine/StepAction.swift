@@ -230,11 +230,11 @@ public struct RevealAction: Sendable {
 
 // MARK: - Audio Scope
 
-/// Determines audio lifecycle during segment transitions.
-/// - `.segment`: killed automatically on segment change (default).
-/// - `.ambient`: persists across segment changes until explicitly stopped.
+/// Determines audio lifecycle during sequence transitions.
+/// - `.sequence`: killed automatically on sequence change (default).
+/// - `.ambient`: persists across sequence changes until explicitly stopped.
 public enum AudioScope: Sendable {
-    case segment
+    case sequence
     case ambient
 }
 
@@ -261,7 +261,7 @@ public struct AudioAction: Sendable {
     public init(
         file: String,
         channel: String,
-        scope: AudioScope = .segment,
+        scope: AudioScope = .sequence,
         volume: Float = 1.0,
         loop: Bool = false,
         fadeIn: TimeInterval? = nil,
@@ -477,7 +477,7 @@ public struct DuckingRule: Sendable {
 }
 
 public struct DuckTarget: Sendable {
-    public let channel: String          // Channel to duck (e.g. "ambient", "segment_audio")
+    public let channel: String          // Channel to duck (e.g. "ambient", "sequence_audio")
     public let duckLevel: Float         // Volume multiplier when ducked (0.2 = duck to 20% of current volume)
     public let fadeInDuration: TimeInterval   // How fast to duck down
     public let fadeOutDuration: TimeInterval  // How fast to restore

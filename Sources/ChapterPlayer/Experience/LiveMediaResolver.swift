@@ -134,7 +134,7 @@ public struct LiveMediaResolver: MediaResolver {
     /// that AVPlayer's HTTP range requests would handle large files
     /// gracefully. In practice, even after preroll + first-frame warmup,
     /// AVPlayer over the LAN to MaestroStudio's NWListener-based server
-    /// still introduces a multi-second first-frame delay at segment step
+    /// still introduces a multi-second first-frame delay at sequence step
     /// time. The author's expectation is sub-frame timing accuracy, so
     /// we now download videos to disk too and play from the local file
     /// URL. The loading overlay already binds to `LivePrefetchProgress`

@@ -105,9 +105,23 @@ public struct LiveDevExperienceProvider: ExperienceProvider {
     /// authors see "streaming N/M" while the player pulls files from the Mac.
     public let prefetchProgress: LivePrefetchProgress?
 
-    public init(descriptor: LiveServerDescriptor, prefetchProgress: LivePrefetchProgress? = nil) {
+    /// Reports the revision of the exact document bytes this load fetched, read
+    /// from the Mac's `X-Chapter-Rev` response header.
+    ///
+    /// A tethered peer needs this to SEED its revision counter. Without it the
+    /// peer starts at 0 while the Mac is at N, so the first `POST /ops` it sends
+    /// carries a stale base revision and is rejected — stale-op protection firing
+    /// on an edit that was never actually stale.
+    public let onDocumentRevision: (@Sendable (Int) -> Void)?
+
+    public init(
+        descriptor: LiveServerDescriptor,
+        prefetchProgress: LivePrefetchProgress? = nil,
+        onDocumentRevision: (@Sendable (Int) -> Void)? = nil
+    ) {
         self.descriptor = descriptor
         self.prefetchProgress = prefetchProgress
+        self.onDocumentRevision = onDocumentRevision
     }
 
     public func load() async throws -> LoadedExperience {
@@ -123,6 +137,12 @@ public struct LiveDevExperienceProvider: ExperienceProvider {
             guard let http = response as? HTTPURLResponse, (200...299).contains(http.statusCode) else {
                 let code = (response as? HTTPURLResponse)?.statusCode ?? -1
                 throw ExperienceLoaderError.malformedDocument(reason: "HTTP \(code) from \(docURL.path())")
+            }
+            // Report the revision of THESE bytes before decoding, so the peer
+            // seeds from the document it actually received rather than from
+            // whatever the Mac has moved on to by the time decoding finishes.
+            if let raw = http.value(forHTTPHeaderField: "X-Chapter-Rev"), let revision = Int(raw) {
+                onDocumentRevision?(revision)
             }
             let migrated = try Migrator.migrate(data)
             document = try ChapterScriptFormat.makeDecoder().decode(ChapterDocument.self, from: migrated)

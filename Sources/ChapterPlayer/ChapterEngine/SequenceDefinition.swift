@@ -1,47 +1,47 @@
 //
-//  SegmentDefinition.swift
+//  SequenceDefinition.swift
 //  SharedVisions
 //
-//  Declarative segment and step definitions for the SegmentEngine.
-//  Segments are defined as data — the engine handles timing, controls, and reporting.
+//  Declarative sequence and step definitions for the SequenceEngine.
+//  Sequences are defined as data — the engine handles timing, controls, and reporting.
 //
 
 import Foundation
 import simd
 import ChapterScript
 
-// MARK: - Segment Definition
+// MARK: - Sequence Definition
 
-public struct SegmentDefinition: Sendable {
+public struct SequenceDefinition: Sendable {
     public let id: String
     public let name: String
     public let phase: String
-    /// Whether this segment expects the immersive space open or a flat
-    /// windowed scene. `AppModel.applySegmentPresentation` toggles the
-    /// space lifecycle in response to this when segments switch.
-    public let presentation: SegmentPresentation
+    /// Whether this sequence expects the immersive space open or a flat
+    /// windowed scene. `AppModel.applySequencePresentation` toggles the
+    /// space lifecycle in response to this when sequences switch.
+    public let presentation: SequencePresentation
     /// Optional immersive backdrop (skybox video or USDZ scene) loaded
-    /// while this segment plays. Mirrors `ChapterScript.ImmersiveBackdropSpec`.
-    public let immersiveBackdrop: SegmentBackdrop?
-    /// Timed backdrop changes along the segment. Each cue starts at an
-    /// absolute segment second and runs until the next one (or the segment's
+    /// while this sequence plays. Mirrors `ChapterScript.ImmersiveBackdropSpec`.
+    public let immersiveBackdrop: SequenceBackdrop?
+    /// Timed backdrop changes along the sequence. Each cue starts at an
+    /// absolute sequence second and runs until the next one (or the sequence's
     /// end) — a cue has no end time by construction, which is what makes
     /// overlap unwritable.
     ///
-    /// Empty means "use `immersiveBackdrop` for the whole segment", i.e.
+    /// Empty means "use `immersiveBackdrop` for the whole sequence", i.e.
     /// exactly the behaviour of every document written before the track
-    /// existed. `SegmentBackdropTimeline.effectiveCues` folds the two shapes
+    /// existed. `SequenceBackdropTimeline.effectiveCues` folds the two shapes
     /// into one so there is a single resolution path.
     ///
     /// Format types used directly (like `animationTracks`): these are pure
     /// data the backdrop driver resolves, not something the engine models.
     public let backdropTrack: [BackdropCue]
     public let steps: [StepDefinition]
-    /// Segment-level keyframe animation tracks (format types used directly —
-    /// the curves are pure data sampled by `SegmentAnimationEvaluator`).
-    /// Keys sit at absolute seconds on the segment's authored step grid.
+    /// Sequence-level keyframe animation tracks (format types used directly —
+    /// the curves are pure data sampled by `SequenceAnimationEvaluator`).
+    /// Keys sit at absolute seconds on the sequence's authored step grid.
     public let animationTracks: [EntityAnimationTrack]
-    /// Segment-level audio volume automation, one track per channel plus an
+    /// Sequence-level audio volume automation, one track per channel plus an
     /// optional `master` bus. Sampled on the same authored clock as
     /// `animationTracks`, so a volume ride holds at a gate exactly like a
     /// transform curve does.
@@ -53,8 +53,8 @@ public struct SegmentDefinition: Sendable {
         id: String,
         name: String,
         phase: String,
-        presentation: SegmentPresentation = .immersive,
-        immersiveBackdrop: SegmentBackdrop? = nil,
+        presentation: SequencePresentation = .immersive,
+        immersiveBackdrop: SequenceBackdrop? = nil,
         backdropTrack: [BackdropCue] = [],
         steps: [StepDefinition],
         animationTracks: [EntityAnimationTrack] = [],
@@ -80,12 +80,12 @@ public struct SegmentDefinition: Sendable {
     }
 }
 
-public enum SegmentPresentation: String, Sendable, Equatable {
+public enum SequencePresentation: String, Sendable, Equatable {
     /// Full immersion — passthrough hidden, ideal for skyboxes and
     /// fully-authored 3D backdrops.
     case immersive
     /// Mixed reality — passthrough visible, with RealityKit content
-    /// placing into world space. Use when a segment wants 3D depth
+    /// placing into world space. Use when a sequence wants 3D depth
     /// (anchored entities, USDZ setpieces) without replacing the
     /// user's real environment.
     case mixed
@@ -96,10 +96,10 @@ public enum SegmentPresentation: String, Sendable, Equatable {
 /// Runtime-side mirror of `ChapterScript.ImmersiveBackdropSpec`. Carries the
 /// fields needed by `VideoPlaybackManager` (for `.video`), the static-image
 /// skybox path (for `.image`), or the document entity loader (for `.usdz`)
-/// when the segment activates. Reuses the `VideoLayout` and `ImmersiveField`
+/// when the sequence activates. Reuses the `VideoLayout` and `ImmersiveField`
 /// enums from `StepAction` so AppModel can hand them straight to
 /// `VideoAction` without converting.
-public enum SegmentBackdrop: Sendable, Equatable {
+public enum SequenceBackdrop: Sendable, Equatable {
     case video(file: String, layout: VideoLayout, field: ImmersiveField, radius: Float, loop: Bool, audioEnabled: Bool)
     case image(file: String, field: ImmersiveField, radius: Float)
     case usdz(assetId: String)
@@ -171,7 +171,7 @@ public struct StepGate: Sendable {
 // MARK: - Visibility State
 
 /// Declarative entity visibility snapshot for SharedVisions primitives and example VFX.
-/// Segments declare their target visibility; the engine applies it on transition.
+/// Sequences declare their target visibility; the engine applies it on transition.
 public struct VisibilityState: Sendable, Equatable {
     public var orb: Bool = false
     public var cube: Bool = false
@@ -202,7 +202,7 @@ public struct VisibilityState: Sendable, Equatable {
 public enum CompletionAction: Sendable, Equatable {
     case holdOnLastStep
     case transitionTo(phase: String, visibility: VisibilityState)
-    case autoAdvance(nextSegmentId: String)
+    case autoAdvance(nextSequenceId: String)
     case dismissToHome
 }
 

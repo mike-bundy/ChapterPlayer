@@ -9,7 +9,7 @@
 //  Conventions
 //  -----------
 //  - `t` is normalized step progress, clamped to [0, 1].
-//  - `absoluteTime` is seconds since segment start; `oscillate` and `rotate`
+//  - `absoluteTime` is seconds since sequence start; `oscillate` and `rotate`
 //    use it where they need real-time-locked behavior.
 //  - `oscillate.frequency` is in Hz (cycles per second of absoluteTime).
 //  - `rotate(axis, revolutions)` returns axis * angleInRadians where

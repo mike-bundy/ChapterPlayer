@@ -3,8 +3,8 @@
 //  ChapterPlayer
 //
 //  Walks a `ChapterScript.ChapterDocument`'s entities, builds them via
-//  `EntityFactory`, and registers each one with the segment engine's
-//  entity executor + the video manager's video-entity registry so segment
+//  `EntityFactory`, and registers each one with the sequence engine's
+//  entity executor + the video manager's video-entity registry so sequence
 //  actions can resolve them by id.
 //
 //  Decoupled from any consumer-side AppModel: the consumer supplies the
@@ -103,7 +103,7 @@ public final class DocumentEntityLoader {
                 continue
             }
 
-            // Disable by default — segment actions reveal what they want
+            // Disable by default — sequence actions reveal what they want
             // visible. Matches the engine's `stop(resetEntities: true)`
             // semantics so the doc's entities behave like pre-registered
             // ones.
@@ -167,7 +167,7 @@ public final class DocumentEntityLoader {
             registeredNames.remove(definition.id)
         }
 
-        // Same contract as the full pass: disabled by default, segment
+        // Same contract as the full pass: disabled by default, sequence
         // actions reveal what they want visible.
         entity.isEnabled = false
         anchor.addChild(entity)

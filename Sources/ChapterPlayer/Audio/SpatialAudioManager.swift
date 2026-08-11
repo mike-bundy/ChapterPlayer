@@ -567,9 +567,9 @@ public class SpatialAudioManager {
         return requested * busVol * categoryVol * mixState.masterVolume * duckMul * automation
     }
 
-    // MARK: - Segment volume automation
+    // MARK: - Sequence volume automation
 
-    /// Per-channel multiplier sampled from the segment's `audioTracks`.
+    /// Per-channel multiplier sampled from the sequence's `audioTracks`.
     /// Mirrors `duckMultipliers`: one more factor in `effectiveVolume`, so
     /// automation composes with buses, categories and ducking instead of
     /// fighting them.
@@ -578,9 +578,9 @@ public class SpatialAudioManager {
     private var audioAutomationClock: (@MainActor () -> TimeInterval)?
     private var audioAutomationTask: Task<Void, Never>?
 
-    /// Bind the segment's automation. Sampling only runs while a segment
+    /// Bind the sequence's automation. Sampling only runs while a sequence
     /// actually carries keys, so an un-automated chapter pays nothing.
-    public func setSegmentAudioAutomation(
+    public func setSequenceAudioAutomation(
         tracks: [AudioAutomationTrack],
         clock: (@MainActor () -> TimeInterval)?
     ) {
@@ -589,8 +589,8 @@ public class SpatialAudioManager {
         audioAutomationTracks = tracks
         audioAutomationClock = clock
 
-        guard SegmentAudioAutomation.hasAutomation(tracks), clock != nil else {
-            // Release every channel back to unity, or a segment WITHOUT
+        guard SequenceAudioAutomation.hasAutomation(tracks), clock != nil else {
+            // Release every channel back to unity, or a sequence WITHOUT
             // automation would inherit the last ride of the one before it.
             if !automationMultipliers.isEmpty {
                 automationMultipliers.removeAll()
@@ -619,7 +619,7 @@ public class SpatialAudioManager {
         // channels with no track of their own.
         let channels = Set(ambientChannels.keys).union(spatialChannels.keys)
         for channel in channels {
-            let value = SegmentAudioAutomation.volumeMultiplier(
+            let value = SequenceAudioAutomation.volumeMultiplier(
                 for: channel, at: time, in: audioAutomationTracks
             )
             // Only write on a real change: this runs 20x a second and each
@@ -932,10 +932,10 @@ public class SpatialAudioManager {
         // [in, out) and reports completion at the OUT point, so a clip that
         // ends at source 12 fires `onAudioComplete` at 12 rather than at the
         // end of a three-minute master.
-        if let segment = frameRange(of: sourceRange, in: file) {
+        if let sequence = frameRange(of: sourceRange, in: file) {
             node.scheduleSegment(file,
-                                 startingFrame: segment.start,
-                                 frameCount: segment.count,
+                                 startingFrame: sequence.start,
+                                 frameCount: sequence.count,
                                  at: nil,
                                  completionCallbackType: .dataPlayedBack,
                                  completionHandler: completion)
@@ -980,7 +980,7 @@ public class SpatialAudioManager {
     //  `playAudio` describes a window into `action.file`, which is not any of
     //  them — applying it to `loop.wav` would cut a window out of the wrong
     //  master and produce a loop the author never marked. Those three
-    //  scheduling sites therefore stay whole-file on purpose; if per-segment
+    //  scheduling sites therefore stay whole-file on purpose; if per-sequence
     //  trimming of an intro/loop/outro is ever wanted it needs its own marks,
     //  not a borrowed one.
 
@@ -1013,20 +1013,20 @@ public class SpatialAudioManager {
         from audioFile: AVAudioFile,
         sourceRange: MediaSourceRange = .full
     ) throws -> AVAudioPCMBuffer {
-        let segment = frameRange(of: sourceRange, in: audioFile)
-        let frameCount = segment?.count ?? AVAudioFrameCount(audioFile.length)
+        let sequence = frameRange(of: sourceRange, in: audioFile)
+        let frameCount = sequence?.count ?? AVAudioFrameCount(audioFile.length)
         guard frameCount > 0,
               let buffer = AVAudioPCMBuffer(pcmFormat: audioFile.processingFormat,
                                             frameCapacity: frameCount) else {
             throw NSError(domain: "SpatialAudioManager", code: -1,
                           userInfo: [NSLocalizedDescriptionKey: "Failed to create audio buffer"])
         }
-        if let segment {
+        if let sequence {
             // `read(into:frameCount:)` reads from the file's current
             // position, so the seek must happen first. No need to restore it:
             // each cue opens its own AVAudioFile.
-            audioFile.framePosition = segment.start
-            try audioFile.read(into: buffer, frameCount: segment.count)
+            audioFile.framePosition = sequence.start
+            try audioFile.read(into: buffer, frameCount: sequence.count)
         } else {
             try audioFile.read(into: buffer)
         }

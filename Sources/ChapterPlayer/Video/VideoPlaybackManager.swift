@@ -30,7 +30,7 @@ public class VideoPlaybackManager {
     private struct VideoChannel {
         /// True once `play(action:)` has been asked for this channel. An
         /// in-flight `prepareAsync` MUST NOT stop/pause/mute a channel the
-        /// segment is actually playing — without this flag a preheat that
+        /// sequence is actually playing — without this flag a preheat that
         /// overlaps a cold play froze the first video's frame (warm-up
         /// `pause()` landing on the live player) or killed it outright
         /// (preheat's entry `stop`).
@@ -66,7 +66,7 @@ public class VideoPlaybackManager {
     /// `stopAll()`. `prepareAsync` snapshots it right after its own entry
     /// teardown and abandons the preheat if ANY stop landed while it was
     /// suspended. Without this, a preheat awaiting its asset load across
-    /// `SegmentEngine.play()`'s stopAll could re-store a half-built muted
+    /// `SequenceEngine.play()`'s stopAll could re-store a half-built muted
     /// channel in the gap before step 0's `playVideo` executes — and the
     /// engine's supposedly-cold start would silently adopt that zombie
     /// (skipping the cue discipline the cold path guarantees).
@@ -147,9 +147,9 @@ public class VideoPlaybackManager {
     }
 
     /// Channels that survive `stopAll()` — they're managed at a higher
-    /// scope than the segment (e.g. `AppModel.backdropVideoChannel`)
-    /// and must not be torn down when `SegmentEngine.stop()` resets
-    /// per-segment video state at segment transitions. Mirrors the
+    /// scope than the sequence (e.g. `AppModel.backdropVideoChannel`)
+    /// and must not be torn down when `SequenceEngine.stop()` resets
+    /// per-sequence video state at sequence transitions. Mirrors the
     /// equivalent `protectedChannels` set on `AudioActionExecutor`.
     public var protectedChannels: Set<String> = []
 
@@ -322,7 +322,7 @@ public class VideoPlaybackManager {
             queuePlayer.volume = action.volume
             // Don't make the player wait for a full buffer before showing
             // the first frame — visionOS HTTP streaming over the live
-            // channel was sometimes stalling for the entire segment step
+            // channel was sometimes stalling for the entire sequence step
             // before producing any frame, so the author saw nothing
             // during the step then a paused frame after it ended.
             queuePlayer.automaticallyWaitsToMinimizeStalling = false
@@ -569,7 +569,7 @@ public class VideoPlaybackManager {
     ///   • AVPlayerItem.preroll(atRate: 1.0) complete
     ///   • If `.entity` presentation: ModelComponent (mesh + VideoMaterial)
     ///     bound onto the target entity, so RealityKit's GPU upload
-    ///     happens *now* rather than at segment step time
+    ///     happens *now* rather than at sequence step time
     ///   • A brief play→pause→seek-to-zero cycle so AVPlayer has actually
     ///     produced its first decoded frame and visionOS's video pipeline
     ///     is warm
@@ -595,14 +595,14 @@ public class VideoPlaybackManager {
     }
 
     public func prepareAsync(action: VideoAction) async {
-        // Never preheat over a channel the segment is already playing —
+        // Never preheat over a channel the sequence is already playing —
         // the entry `stop` would kill the live video (the "first video is
         // a black box" race when preheat overlaps a cold play).
         if channels[action.channel]?.isPlayRequested == true { return }
         stop(channel: action.channel)
         // Snapshot AFTER the entry teardown (which bumps the epoch
         // itself). Any stop that lands during the awaits below means the
-        // world moved on — a segment start, a jump, a project switch —
+        // world moved on — a sequence start, a jump, a project switch —
         // and this preheat must abandon rather than re-store a channel
         // the engine just tore down.
         let epoch = stopEpoch
@@ -659,14 +659,14 @@ public class VideoPlaybackManager {
         channels[action.channel] = channel
 
         // Bind VideoMaterial onto the target entity NOW so RealityKit
-        // uploads the texture binding before segment time.
+        // uploads the texture binding before sequence time.
         attachToPresentation(player: player, presentation: action.presentation, channelKey: action.channel, channel: &channel)
         channels[action.channel] = channel
 
         // Keep the entity ENABLED during preheat — disabling it removes
         // the entity from RealityKit's render graph, which means
         // VideoMaterial's GPU upload doesn't happen until isEnabled flips
-        // back at segment time. That re-introduces the multi-second
+        // back at sequence time. That re-introduces the multi-second
         // first-frame delay we're trying to eliminate.
         //
         // Instead, drive visibility via OpacityComponent. The entity
@@ -703,17 +703,17 @@ public class VideoPlaybackManager {
 
         // 2) Force visionOS to actually decode + render the first frame.
         //    The trick: play() then pause(), and rely on AVPlayer's
-        //    natural position (a few ms in) so the segment step's
+        //    natural position (a few ms in) so the sequence step's
         //    eventual play() resumes from a warm decode buffer.
         //
         //    Earlier revisions did `seek(to: .zero, toleranceBefore: .zero,
         //    toleranceAfter: .zero)` here to rewind to exactly frame 0.
         //    Zero-tolerance seek is precise but flushes AVPlayer's
         //    decoded-frame buffer — which destroyed the entire reason
-        //    for the warmup. Step 1 of every segment would then play
+        //    for the warmup. Step 1 of every sequence would then play
         //    1+ seconds late while the decoder re-primed. We accept a
         //    handful of frames of offset (the user can't perceive ~50ms
-        //    on a segment-step entry) in exchange for actual instant
+        //    on a sequence-step entry) in exchange for actual instant
         //    playback.
         player.play()
         // Two render frames @ ~90Hz on visionOS ≈ 22ms; a touch over
@@ -816,7 +816,7 @@ public class VideoPlaybackManager {
         // we just disable it. For the immersive skybox, drop the
         // VideoPlayerComponent so the now-stopped AVPlayer's frame
         // doesn't keep rendering, and disable the entity so the next
-        // segment's `applyAmbientBackgroundVisibility` decides
+        // sequence's `applyAmbientBackgroundVisibility` decides
         // whether to bring it back up. No ModelComponent to restore
         // — the video path uses an empty entity + VideoPlayerComponent
         // only.
@@ -851,7 +851,7 @@ public class VideoPlaybackManager {
     }
 
     public func resumeAll() {
-        // Only resume channels the segment actually asked to play.
+        // Only resume channels the sequence actually asked to play.
         // Preheat-only channels are deliberately parked at the clip's
         // first frame (paused, opacity 0) — blanket-playing them here let
         // a pause/resume cycle silently run a warmed video to its end, so
@@ -863,14 +863,14 @@ public class VideoPlaybackManager {
     }
 
     public func stopAll() {
-        // `SegmentEngine.stop()` calls this on every segment transition to
-        // reset segment-scope video state. Protected channels —
+        // `SequenceEngine.stop()` calls this on every sequence transition to
+        // reset sequence-scope video state. Protected channels —
         // currently just `AppModel.backdropVideoChannel` for the
-        // segment-level immersive video backdrop — are SCOPED ABOVE
-        // segment boundaries and must survive the reset. Without this
+        // sequence-level immersive video backdrop — are SCOPED ABOVE
+        // sequence boundaries and must survive the reset. Without this
         // guard, an immersive video backdrop bound by
-        // `applySegmentBackdrop` was getting wiped out the moment the
-        // engine started the segment's step loop (because the engine
+        // `applySequenceBackdrop` was getting wiped out the moment the
+        // engine started the sequence's step loop (because the engine
         // calls stop() before running steps).
         // Bump once even when no channels exist yet: preheats still in
         // their asset-load await (channel not stored) must also observe
@@ -938,7 +938,7 @@ public class VideoPlaybackManager {
                 // VideoPlayerComponent on top of an UnlitMaterial
                 // placeholder, which on visionOS left the gray placeholder
                 // visible and never reliably swapped in the video texture
-                // before the segment step ended.
+                // before the sequence step ended.
                 // Rounded corners ride on the entity (stamped from
                 // VideoPanelSpec at materialize) — the geometry clips,
                 // the video texture stays rect-mapped.
@@ -1028,8 +1028,8 @@ public class VideoPlaybackManager {
     ///      verify+retry below recovers if it doesn't. The old code
     ///      *skipped* the attach on timeout — a guaranteed-black skybox.
     ///   3. Liveness guard by PLAYER IDENTITY, not stop-epoch: the epoch
-    ///      bumps on every `stopAll()`, including the segment-transition
-    ///      one that PROTECTED channels (the segment backdrop) survive —
+    ///      bumps on every `stopAll()`, including the sequence-transition
+    ///      one that PROTECTED channels (the sequence backdrop) survive —
     ///      an epoch guard here would kill the backdrop's own in-flight
     ///      attach. Identity survives protected stops and fails for
     ///      genuinely stopped/replaced channels.

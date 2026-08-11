@@ -2,7 +2,7 @@
 //  EntityActionExecutor.swift
 //  SharedVisions
 //
-//  Handles entity show/hide/move/scale/fade/reveal/gesture/persist actions from SegmentEngine.
+//  Handles entity show/hide/move/scale/fade/reveal/gesture/persist actions from SequenceEngine.
 //  Wraps RealityKit Entity manipulation.
 //
 
@@ -33,13 +33,13 @@ public protocol EntityActionExecutorProtocol {
     func beginMotion(_ action: AnimateMotionAction)
     func clearAllMotions()
     func applyActiveMotions(stepElapsed: TimeInterval, totalElapsed: TimeInterval)
-    func setSegmentAnimation(tracks: [EntityAnimationTrack], clock: (@MainActor () -> TimeInterval)?)
+    func setSequenceAnimation(tracks: [EntityAnimationTrack], clock: (@MainActor () -> TimeInterval)?)
 }
 
 /// Default no-op so existing conformers outside this package keep compiling;
 /// the real executor overrides it.
 public extension EntityActionExecutorProtocol {
-    func setSegmentAnimation(tracks: [EntityAnimationTrack], clock: (@MainActor () -> TimeInterval)?) {}
+    func setSequenceAnimation(tracks: [EntityAnimationTrack], clock: (@MainActor () -> TimeInterval)?) {}
 }
 
 // MARK: - Implementation
@@ -55,7 +55,7 @@ public final class EntityActionExecutor: EntityActionExecutorProtocol {
     /// Original transforms for reset support.
     private var originalTransforms: [String: Transform] = [:]
 
-    /// Names of entities that should survive segment transitions.
+    /// Names of entities that should survive sequence transitions.
     /// Populated by `.persistEntity` step actions; respected by `resetAllEntities()`.
     public var persistedEntityNames: Set<String> = []
 
@@ -65,12 +65,12 @@ public final class EntityActionExecutor: EntityActionExecutorProtocol {
     /// and writes the result back to the entity's transform.
     private var activeMotions: [String: AnimateMotionAction] = [:]
 
-    /// Segment-level animation tracks, registered once at segment start and
-    /// sampled every frame on the AUTHORED segment clock (`animationClock`) —
+    /// Sequence-level animation tracks, registered once at sequence start and
+    /// sampled every frame on the AUTHORED sequence clock (`animationClock`) —
     /// not wall time, so gates and pauses hold curves instead of skipping
     /// them. Independent of the per-step `activeMotions` above (which stay
     /// for legacy documents).
-    private var segmentAnimationTracks: [EntityAnimationTrack] = []
+    private var sequenceAnimationTracks: [EntityAnimationTrack] = []
     private var animationClock: (@MainActor () -> TimeInterval)?
 
     /// Closure that samples the user's head transform at call time.
@@ -85,7 +85,7 @@ public final class EntityActionExecutor: EntityActionExecutorProtocol {
         translation: SIMD3<Float>(0, 1.5, 0)
     )
 
-    /// Register an entity with a name for the segment engine to reference.
+    /// Register an entity with a name for the sequence engine to reference.
     public func register(_ entity: Entity, name: String) {
         entityRegistry[name] = entity
         originalTransforms[name] = entity.transform
@@ -93,7 +93,7 @@ public final class EntityActionExecutor: EntityActionExecutorProtocol {
 
     /// Drop a registered entity name. Called by `DocumentEntityLoader.unload`
     /// when the loaded document changes (live hot-reload, project switch),
-    /// so old segment actions referencing a stale name fail safely instead
+    /// so old sequence actions referencing a stale name fail safely instead
     /// of operating on the deleted Entity.
     public func unregister(name: String) {
         entityRegistry.removeValue(forKey: name)
@@ -344,7 +344,7 @@ public final class EntityActionExecutor: EntityActionExecutorProtocol {
             if entity.components.has(OpacityComponent.self) {
                 entity.opacity = 1.0
             }
-            // Return to the canonical "default" state — hidden until a segment action reveals it.
+            // Return to the canonical "default" state — hidden until a sequence action reveals it.
             entity.isEnabled = false
         }
         logger.info("Reset all entity transforms and disabled non-persisted entities")
@@ -368,16 +368,16 @@ public final class EntityActionExecutor: EntityActionExecutorProtocol {
         activeMotions.removeAll(keepingCapacity: true)
     }
 
-    public func setSegmentAnimation(tracks: [EntityAnimationTrack], clock: (@MainActor () -> TimeInterval)?) {
-        segmentAnimationTracks = tracks.filter { $0.hasAnyKeys }
+    public func setSequenceAnimation(tracks: [EntityAnimationTrack], clock: (@MainActor () -> TimeInterval)?) {
+        sequenceAnimationTracks = tracks.filter { $0.hasAnyKeys }
         animationClock = clock
-        if !segmentAnimationTracks.isEmpty {
-            logger.info("Segment animation: \(self.segmentAnimationTracks.count) track(s) registered")
+        if !sequenceAnimationTracks.isEmpty {
+            logger.info("Sequence animation: \(self.sequenceAnimationTracks.count) track(s) registered")
         }
     }
 
     public func applyActiveMotions(stepElapsed: TimeInterval, totalElapsed: TimeInterval) {
-        applySegmentAnimationTracks()
+        applySequenceAnimationTracks()
         guard !activeMotions.isEmpty else { return }
         let absoluteTime = Float(totalElapsed)
         for action in activeMotions.values {
@@ -408,17 +408,17 @@ public final class EntityActionExecutor: EntityActionExecutorProtocol {
         }
     }
 
-    /// Sample every segment track at the authored segment time and write the
+    /// Sample every sequence track at the authored sequence time and write the
     /// poses. Runs even for disabled entities so a reveal mid-curve finds
     /// the entity already in the right pose. Opacity is only driven when the
     /// track keys it — otherwise the step/action system owns visibility.
-    private func applySegmentAnimationTracks() {
-        guard !segmentAnimationTracks.isEmpty, let clock = animationClock else { return }
+    private func applySequenceAnimationTracks() {
+        guard !sequenceAnimationTracks.isEmpty, let clock = animationClock else { return }
         let time = clock()
-        for track in segmentAnimationTracks {
+        for track in sequenceAnimationTracks {
             guard let entity = entityRegistry[track.entity] else { continue }
             let rest = restTransformData(for: track.entity, entity: entity)
-            let pose = SegmentAnimationEvaluator.samplePose(track, at: time, rest: rest)
+            let pose = SequenceAnimationEvaluator.samplePose(track, at: time, rest: rest)
             entity.position = SIMD3(pose.position.x, pose.position.y, pose.position.z)
             entity.orientation = simd_quatf(
                 vector: SIMD4(pose.rotation.x, pose.rotation.y, pose.rotation.z, pose.rotation.w)

@@ -29,9 +29,9 @@ public protocol AudioActionExecutorProtocol {
     func setMasterVolume(_ volume: Float)
     func setCategoryVolume(category: String, volume: Float)
     var onChannelFinished: ((String) -> Void)? { get set }
-    /// Bind the segment's authored volume automation, clocked by the same
-    /// authored segment time the animation tracks use.
-    func setSegmentAudioAutomation(
+    /// Bind the sequence's authored volume automation, clocked by the same
+    /// authored sequence time the animation tracks use.
+    func setSequenceAudioAutomation(
         tracks: [AudioAutomationTrack], clock: (@MainActor () -> TimeInterval)?
     )
     // Audio Zones
@@ -46,9 +46,9 @@ public protocol AudioActionExecutorProtocol {
 
 /// Default no-op so conformers outside this package keep compiling; the real
 /// executor forwards to its `SpatialAudioManager`. Same precedent as
-/// `EntityActionExecutorProtocol.setSegmentAnimation`.
+/// `EntityActionExecutorProtocol.setSequenceAnimation`.
 public extension AudioActionExecutorProtocol {
-    func setSegmentAudioAutomation(
+    func setSequenceAudioAutomation(
         tracks: [AudioAutomationTrack], clock: (@MainActor () -> TimeInterval)?
     ) {}
 }
@@ -62,26 +62,26 @@ public final class AudioActionExecutor: AudioActionExecutorProtocol {
     static public let narrationDuckTargets: [DuckTarget] = [
         DuckTarget(channel: "ambient", duckLevel: 0.2, fadeInDuration: 0.8, fadeOutDuration: 1.5),
         DuckTarget(channel: "ambient_main", duckLevel: 0.2, fadeInDuration: 0.8, fadeOutDuration: 1.5),
-        DuckTarget(channel: "segment_audio", duckLevel: 0.4, fadeInDuration: 0.8, fadeOutDuration: 1.5),
+        DuckTarget(channel: "sequence_audio", duckLevel: 0.4, fadeInDuration: 0.8, fadeOutDuration: 1.5),
         DuckTarget(channel: "sfx", duckLevel: 0.6, fadeInDuration: 0.5, fadeOutDuration: 0.8),
     ]
 
     public let audioManager: SpatialAudioManager
 
-    /// Channels that survive segment transitions — dynamically populated
+    /// Channels that survive sequence transitions — dynamically populated
     /// when audio is played with `scope: .ambient`.
     public var protectedChannels: Set<String> = []
 
-    /// Completion callback — wired by SegmentEngine for .onAudioComplete actions
+    /// Completion callback — wired by SequenceEngine for .onAudioComplete actions
     public var onChannelFinished: ((String) -> Void)? {
         get { self.audioManager.onChannelFinished }
         set { self.audioManager.onChannelFinished = newValue }
     }
 
-    public func setSegmentAudioAutomation(
+    public func setSequenceAudioAutomation(
         tracks: [AudioAutomationTrack], clock: (@MainActor () -> TimeInterval)?
     ) {
-        audioManager.setSegmentAudioAutomation(tracks: tracks, clock: clock)
+        audioManager.setSequenceAudioAutomation(tracks: tracks, clock: clock)
     }
 
     public init(audioManager: SpatialAudioManager) {
@@ -150,7 +150,7 @@ public final class AudioActionExecutor: AudioActionExecutorProtocol {
         audioManager.activeZoneCount
     }
 
-    /// Stops all segment audio — preserves protected ambient channels.
+    /// Stops all sequence audio — preserves protected ambient channels.
     public func stopAll() {
         audioManager.stopAll(except: protectedChannels)
     }
