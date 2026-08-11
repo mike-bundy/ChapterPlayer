@@ -18,7 +18,15 @@ extension WorldTrackingProvider {
     /// - Returns: The sampled transform, or `nil` when world tracking is not ready.
     public func sampleDeviceTransform(leveled: Bool = true) -> Transform? {
         guard case .running = self.state,
-              let anchor = self.queryDeviceAnchor(atTimestamp: CACurrentMediaTime())
+              let anchor = self.queryDeviceAnchor(atTimestamp: CACurrentMediaTime()),
+              // ARKit re-localizes every time an immersive space opens
+              // (data only flows while one is up). During that window
+              // queryDeviceAnchor returns an UNTRACKED placeholder pose
+              // near the origin (y ≈ 0.14) — consuming it re-based the
+              // scene root to the floor whenever play beat tracking to
+              // the punch. Nil until the pose is real; pollers keep
+              // polling.
+              anchor.isTracked
         else { return nil }
 
         let fullTransform = Transform(matrix: anchor.originFromAnchorTransform)
