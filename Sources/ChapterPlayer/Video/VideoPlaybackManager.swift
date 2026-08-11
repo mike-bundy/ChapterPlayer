@@ -830,6 +830,16 @@ public class VideoPlaybackManager {
         case .entity(let name, _, _):
             if let entity = videoEntityRegistry[name] {
                 entity.isEnabled = false
+                // Drop the VideoPlayerComponent along with the channel. The
+                // channel's AVPlayer is being discarded — a VPC left behind
+                // keeps RealityKit's video-target subscription pointed at
+                // the dead player ("no AssetHandle … could be found"), and
+                // the NEXT play's freshly-set component then never reaches
+                // .readyToPlay: replays rendered nothing while first plays
+                // (component-free entity) worked. Removing it makes every
+                // replay structurally identical to a first play, mirroring
+                // what releaseImmersiveShell does for the skybox.
+                entity.components.remove(VideoPlayerComponent.self)
                 if entity.components.has(OpacityComponent.self) {
                     entity.components[OpacityComponent.self]?.opacity = 1
                 }
