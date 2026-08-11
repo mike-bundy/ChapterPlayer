@@ -104,12 +104,6 @@ public struct LiveDevExperienceProvider: ExperienceProvider {
     /// Optional progress sink for the asset prefetch pass. UI binds to this so
     /// authors see "streaming N/M" while the player pulls files from the Mac.
     public let prefetchProgress: LivePrefetchProgress?
-    /// Called with the server's `X-Chapter-Rev` header when the fetched
-    /// document carried one. Editor peers use it to adopt document and
-    /// sync revision atomically — the revision of the exact bytes fetched,
-    /// not of the last broadcast they happened to hear.
-    public let onDocumentRevision: (@Sendable (Int) -> Void)?
-
     /// Reports the revision of the exact document bytes this load fetched, read
     /// from the Mac's `X-Chapter-Rev` response header.
     ///
