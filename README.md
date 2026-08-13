@@ -1,26 +1,44 @@
 # ChapterPlayer
 
-Swift package that runs ChapterScript documents on visionOS. Bundles the segment engine, spatial audio + immersive video managers, entity factory, and live-experience client into a single framework so a consuming app only needs to ship its UI, content, and product-specific extensions.
+The open source visionOS runtime that plays [ChapterScript](https://github.com/mike-bundy/ChapterScript) documents. It bundles the sequence engine, spatial audio and video managers, entity factory, gate detection, and live-development client into a single Swift package, so a consuming app only needs to ship its UI, content, and product-specific extensions.
+
+ChapterPlayer is the same runtime that powers playback in [Maestro](https://maestrostud.io), the commercial authoring suite. Website: [chapterscript.com](https://chapterscript.com).
 
 ## What's in the package
 
-- **`SegmentEngine`** — declarative segment/step choreographer. Always resets entities on segment change; pluggable executor protocols for entity / audio / video / attachment / effect actions.
-- **`SpatialAudioManager`** — `AVAudioEngine` + `PHASEEngine` ambient/spatial channel system with category mixing, ducking, audio zones, loop configs.
-- **`VideoPlaybackManager`** — per-channel `AVPlayer` orchestrator. Supports flat panels via `VideoMaterial`, attachment-based SwiftUI overlays, and 360°/180° immersive skybox via `VideoPlayerComponent` (matches Apple's `PlayingImmersiveMediaWithRealityKit` sample).
-- **`EntityFactory`** — builds RealityKit entities for ChapterScript `EntityDefinition`s (primitives, USDZs, text, lights, video panels).
-- **`DocumentEntityLoader`** — materializes the document's entities into the immersive scene, registers them with the executors and video-entity registry.
-- **`LiveDevExperienceProvider` + `LiveMediaResolver`** — Bonjour discovery + concurrent delegate-based prefetch of asset bundles from a Maestro Studio peer on the LAN.
-- **`PulseRingEntity` / `SparkBurstEntity`** — VFX primitives the engine fires via `StepAction.showPulseRing` / `.startSparkBurst`.
+- **`SequenceEngine`** — the declarative sequence/step choreographer. Always resets entities on sequence change; pluggable executor protocols for entity / audio / video / attachment / effect actions.
+- **`GateDetectionController`** — holds a step until its gate resolves (tap, gaze, approach, grab, or timeout), behind the `GateDetecting` protocol.
+- **`SpatialAudioManager`** — `AVAudioEngine`-based channel system with audio buses, ducking rules, audio zones, and loop configs.
+- **`VideoPlaybackManager`** — per-channel `AVPlayer` orchestrator: flat scene panels, attachment-based SwiftUI overlays, and 360°/180° immersive skybox playback via `VideoPlayerComponent`.
+- **`EntityFactory`** + **`DocumentEntityLoader`** — build RealityKit entities for ChapterScript `EntityDefinition`s (primitives, USDZs, text, lights, video panels) and materialize a document's entities into the immersive scene, registered with the executors.
+- **`BackdropCueDriver`** — drives sequence backdrop presentation behind the `BackdropCuePresenting` protocol.
+- **`MotionCurveEvaluator`** — a thin delegate over ChapterScript's canonical `MotionCurveSampling`, so playback matches editors' scrub previews, motion trails, and graph rendering exactly.
+- **Experience providers + media resolvers** — `BundledExperienceProvider` / `LocalFolderExperienceProvider` for shipped content, and `LiveDevExperienceProvider` + `LiveServerBrowser` + `LiveMediaResolver` for Bonjour discovery and concurrent asset prefetch from a Maestro Studio peer on the LAN. `AssetPreloader` warms media before playback.
+- **`PulseRingEntity` / `SparkBurstEntity`** — procedural VFX primitives the engine fires via the corresponding step actions.
 
 ## Consumer responsibilities
 
-- Provide the visionOS scenes (`@main`, `WindowGroup`, `ImmersiveSpace`) and inject `openImmersiveSpace`/`dismissImmersiveSpace` into the player core.
+- Provide the visionOS scenes (`@main`, `WindowGroup`, `ImmersiveSpace`) and inject `openImmersiveSpace` / `dismissImmersiveSpace`.
 - Register custom action handlers via the `EffectActionExecutor`'s custom-action escape hatch.
-- Register product-specific entity factories (USDZs, audio reactive elements, etc.) on top of the built-in registry.
+- Register product-specific entity factories (USDZs, audio-reactive elements, etc.) on top of the built-in registry.
 - Provide a `MediaResolver` for bundled assets (or use `BundleMediaResolver`).
+
+## Installing
+
+`Package.swift`:
+
+```swift
+.package(url: "https://github.com/mike-bundy/ChapterPlayer.git", branch: "main")
+```
+
+ChapterPlayer tracks the ChapterScript format package at `main` while the wire format is pre-1.0; both will pin to tagged versions once the format settles. A local sibling checkout of `ChapterScript` overrides the remote by package identity (the standard local-override workflow).
 
 ## Requirements
 
-- visionOS 26.2
-- Swift 6.0 / Xcode 26+
-- ChapterScript 0.4.0+
+- visionOS 26+
+- Swift 6.2 / Xcode 26+
+- [ChapterScript](https://github.com/mike-bundy/ChapterScript) (resolved automatically)
+
+## License
+
+MIT — see `LICENSE`.
