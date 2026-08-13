@@ -443,10 +443,45 @@ public final class SequenceEngine {
             // Scheduled actions fire inline within the timing loop — no fire-and-forget
             // Tasks. On visionOS, MainActor Task scheduling is starved by RealityKit GPU
             // resource prep, so fire-and-forget Tasks for scheduled actions never execute.
-            var firedScheduledActions = Set<Int>()
+            //
+            // SORTED CURSOR, NOT A RESCAN. This used to walk every scheduled
+            // action on every 250 ms tick and test a Set for whether it had
+            // already fired — O(actions) four times a second, on the main
+            // actor, forever. Timeline 3.0 makes Steps longer and fewer (they
+            // are runtime pause regions now, not editorial containers), so a
+            // feature-length sequence can put hundreds of actions in one Step
+            // and that scan becomes the hot path.
+            //
+            // Fires in TIME order, ties broken by authored order — which is
+            // also what `MaestroKit.SequenceTime.actionsInAbsoluteOrder` does,
+            // so the editor and the runtime agree on what happens first.
+            let scheduledInFireOrder = step.scheduledActions
+                .enumerated()
+                .sorted { a, b in
+                    a.element.at != b.element.at ? a.element.at < b.element.at
+                                                 : a.offset < b.offset
+                }
+                .map(\.element)
+            var nextScheduled = 0
+
+            // An action stored past its Step's end can never fire: this loop
+            // exits while it is still pending, silently. Say so rather than
+            // letting authored behaviour vanish without a word.
+            for scheduled in scheduledInFireOrder where scheduled.at > step.duration {
+                let detail = "step '\(step.id)': action scheduled at +"
+                    + String(format: "%.2f", scheduled.at) + "s but the step is only "
+                    + String(format: "%.2f", step.duration)
+                    + "s long — it will NEVER fire. The document is malformed."
+                logger.error("\(detail, privacy: .public)")
+            }
 
             var remaining = max(0, step.duration - Date.now.timeIntervalSince(stepStartTime))
-            while remaining > 0 {
+            // `repeat`, not `while`: a ZERO-DURATION step starts with
+            // `remaining == 0`, so a plain `while` never entered the body and
+            // anything scheduled at +0 in such a step never fired. Running the
+            // body once drains the due actions and then exits on the same
+            // condition, so nothing changes for a step with real duration.
+            repeat {
                 guard !Task.isCancelled else { return nil }
 
                 if isPaused {
@@ -459,22 +494,22 @@ public final class SequenceEngine {
                 }
 
                 let elapsedSinceStepStart = Date.now.timeIntervalSince(stepStartTime) - stepPausedDuration
-                for (i, scheduled) in step.scheduledActions.enumerated() {
-                    if !firedScheduledActions.contains(i) && elapsedSinceStepStart >= scheduled.at {
-                        firedScheduledActions.insert(i)
-                        logger.info("Scheduled action fired at +\(String(format: "%.1f", scheduled.at))s in step \(step.id)")
-                        if scheduled.action.isAsync {
-                            await executeAction(scheduled.action)
-                        } else {
-                            executeActionSync(scheduled.action)
-                        }
+                while nextScheduled < scheduledInFireOrder.count,
+                      elapsedSinceStepStart >= scheduledInFireOrder[nextScheduled].at {
+                    let scheduled = scheduledInFireOrder[nextScheduled]
+                    nextScheduled += 1
+                    logger.info("Scheduled action fired at +\(String(format: "%.1f", scheduled.at))s in step \(step.id)")
+                    if scheduled.action.isAsync {
+                        await executeAction(scheduled.action)
+                    } else {
+                        executeActionSync(scheduled.action)
                     }
                 }
 
                 let sleepTime = min(remaining, 0.25)
                 try? await Task.sleep(for: .seconds(sleepTime))
                 remaining = max(0, step.duration - Date.now.timeIntervalSince(stepStartTime))
-            }
+            } while remaining > 0
 
             if let gate = step.gate {
                 guard !Task.isCancelled else { return nil }

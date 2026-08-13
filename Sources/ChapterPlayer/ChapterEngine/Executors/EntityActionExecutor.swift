@@ -59,11 +59,21 @@ public final class EntityActionExecutor: EntityActionExecutorProtocol {
     /// Populated by `.persistEntity` step actions; respected by `resetAllEntities()`.
     public var persistedEntityNames: Set<String> = []
 
-    /// Per-entity active motion curves. Populated by `.animateMotion` step actions
-    /// when a step starts; cleared at every step boundary by `clearAllMotions()`.
+    /// Per-entity active motion curves. Populated by `.animateMotion` step actions;
+    /// cleared at every step boundary by `clearAllMotions()`.
     /// `applyActiveMotions(stepElapsed:totalElapsed:)` samples each entry per frame
     /// and writes the result back to the entity's transform.
-    private var activeMotions: [String: AnimateMotionAction] = [:]
+    ///
+    /// `startedAt` is the AUTHORED sequence time at which the motion began, and
+    /// it is what progress is measured from. It used to be measured from the
+    /// STEP's start instead, which meant a motion scheduled 5s into a 10s step
+    /// began life already 50% complete — while the editor's `ScrubCompositor`
+    /// drew the same motion from its beginning. The author saw one thing and
+    /// the headset did another. Both now call `MotionProgress`.
+    ///
+    /// nil when no authored clock was available at registration; the sampler
+    /// then falls back to the old step-relative behaviour rather than freezing.
+    private var activeMotions: [String: (action: AnimateMotionAction, startedAt: TimeInterval?)] = [:]
 
     /// Sequence-level animation tracks, registered once at sequence start and
     /// sampled every frame on the AUTHORED sequence clock (`animationClock`) —
@@ -357,7 +367,9 @@ public final class EntityActionExecutor: EntityActionExecutorProtocol {
             logger.warning("beginMotion: entity '\(action.entity)' not found in registry")
             return
         }
-        activeMotions[action.entity] = action
+        // Stamp the authored clock NOW, so progress is measured from when this
+        // motion actually started rather than from whenever its step did.
+        activeMotions[action.entity] = (action, animationClock?())
         logger.debug("beginMotion: \(action.entity) (duration \(action.duration)s)")
     }
 
@@ -380,9 +392,23 @@ public final class EntityActionExecutor: EntityActionExecutorProtocol {
         applySequenceAnimationTracks()
         guard !activeMotions.isEmpty else { return }
         let absoluteTime = Float(totalElapsed)
-        for action in activeMotions.values {
+        let authoredNow = animationClock?()
+        for (action, startedAt) in activeMotions.values {
             guard let entity = entityRegistry[action.entity], entity.isEnabled else { continue }
-            let progress = Float(max(0, min(1, stepElapsed / max(action.duration, 0.001))))
+            // Measured from the MOTION's own start on the authored clock — the
+            // same rule `ScrubCompositor` uses, so the editor and the headset
+            // draw the same frame. Falls back to the legacy step-relative
+            // measure only when no authored clock was available.
+            let progress: Float
+            if let startedAt, let authoredNow {
+                progress = MotionProgress.progress(startTime: startedAt,
+                                                   now: authoredNow,
+                                                   duration: action.duration)
+            } else {
+                progress = MotionProgress.progress(startTime: 0,
+                                                   now: stepElapsed,
+                                                   duration: action.duration)
+            }
 
             if let positionCurve = action.position {
                 entity.position = MotionCurveEvaluator.evaluate(
