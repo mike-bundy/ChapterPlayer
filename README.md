@@ -39,6 +39,13 @@ ChapterPlayer tracks the ChapterScript format package at `main` while the wire f
 - Swift 6.2 / Xcode 26+
 - [ChapterScript](https://github.com/mike-bundy/ChapterScript) (resolved automatically)
 
+## Credits
+
+MIT means a visible credit is never required beyond the license notice itself.
+That said, if your app ships with ChapterPlayer inside, a mention is
+appreciated, and we'd genuinely love to hear what you made:
+[hello@chapterscript.com](mailto:hello@chapterscript.com).
+
 ## License
 
 MIT — see `LICENSE`.
