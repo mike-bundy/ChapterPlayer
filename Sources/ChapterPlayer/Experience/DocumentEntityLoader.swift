@@ -180,6 +180,19 @@ public final class DocumentEntityLoader {
         return true
     }
 
+    /// The materialized entity carrying an authored id, or `nil` when the
+    /// document has not been materialized (no immersive space) or nothing
+    /// answers to that name.
+    ///
+    /// Entities are keyed by `EntityDefinition.id` — the same opaque string
+    /// every reference in the format uses, including
+    /// `SpatialAudioConfigDTO.attachToEntity`. This is deliberately a lookup
+    /// rather than a stored map: `materialize` builds a FRESH anchor each
+    /// time, so a cached dictionary would go stale on the next sequence.
+    public func entity(named id: String) -> Entity? {
+        anchor?.children.first { $0.name == id }
+    }
+
     /// Tear down the previous batch of document-spawned entities. Called
     /// before re-materializing on a new document, and on phase transition
     /// out of the immersive space. Re-enables the optional ambient

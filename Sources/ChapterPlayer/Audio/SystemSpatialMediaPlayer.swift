@@ -37,6 +37,7 @@
 
 import Foundation
 import AVFoundation
+import AudioToolbox
 import OSLog
 import ChapterScript
 
@@ -55,15 +56,22 @@ final class SystemSpatialMediaChannel {
     var requestedVolume: Float
     var isLooping: Bool
     var loopObserver: NSObjectProtocol?
+    /// Held so the load-status observation survives until the item resolves.
+    var statusObservation: NSKeyValueObservation?
+    /// The authored listening frame, kept so any re-prepare can reapply it
+    /// rather than silently reverting to the system default.
+    let presentation: AudioSpatialPresentation
 
     init(player: AVPlayer, item: AVPlayerItem, file: String,
-         sourceRange: MediaSourceRange, requestedVolume: Float, isLooping: Bool) {
+         sourceRange: MediaSourceRange, requestedVolume: Float, isLooping: Bool,
+         presentation: AudioSpatialPresentation) {
         self.player = player
         self.item = item
         self.file = file
         self.sourceRange = sourceRange
         self.requestedVolume = requestedVolume
         self.isLooping = isLooping
+        self.presentation = presentation
     }
 }
 
@@ -94,17 +102,30 @@ final class SystemSpatialMediaPlayer {
 
         // THE ASSET, UNTOUCHED. No AVAudioFile, no buffers, no engine.
         let item = AVPlayerItem(url: url)
-        let player = AVPlayer(playerItem: item)
-        player.volume = effectiveVolume
-        // Nothing else may re-spatialise a mix that is already spatial.
-        player.automaticallyWaitsToMinimizeStalling = false
 
-        applyPresentation(presentation, to: player, channel: action.channel)
+        // MULTICHANNEL SPATIALIZATION MUST BE ASKED FOR.
+        //
+        // `allowedAudioSpatializationFormats` defaults to `.monoAndStereo`, so
+        // an encoded spatial master — the ONLY kind of asset that reaches this
+        // pipeline — is by default the one thing the system will not
+        // spatialise. Measured on the owner's files: ASAF.mp4 is `apac` with
+        // 18 channels and Dolby Spatial.mp4 is `ec-3` with 6; both load and
+        // report `isDecodable`, so the file was never the problem.
+        //
+        // This is also why the two failed DIFFERENTLY on device and looked
+        // like unrelated bugs: 5.1 has a defined stereo downmix, so Dolby
+        // stayed audible (unspatialised, but there); 18 discrete APAC channels
+        // have no such fallback, so ASAF rendered nothing at all. Silence and
+        // a flat mix were the same defect wearing two faces.
+        item.allowedAudioSpatializationFormats = .monoStereoAndMultichannel
+        let player = makePlayer(item: item, presentation: presentation,
+                                volume: effectiveVolume, channel: action.channel)
 
         let channel = SystemSpatialMediaChannel(
             player: player, item: item, file: action.file,
             sourceRange: action.sourceRange,
-            requestedVolume: action.volume, isLooping: action.loop)
+            requestedVolume: action.volume, isLooping: action.loop,
+            presentation: presentation)
 
         // A marked cue starts at its in-point. ONE seek, at start — not a
         // per-frame correction.
@@ -121,6 +142,30 @@ final class SystemSpatialMediaPlayer {
             }
         }
 
+        // WHY AN ENCODED MASTER FAILED, IN THE LOG.
+        //
+        // Device QA found Dolby playing and ASAF silent through this exact
+        // path — same folder, same code, one works. Without the item status
+        // there is nothing to go on but "no sound", and the difference between
+        // "the file did not load" and "it played and was inaudible" is the
+        // whole diagnosis. Observed once per occurrence, not polled.
+        let file = action.file
+        channel.statusObservation = item.observe(\.status, options: [.initial, .new]) { observed, _ in
+            let status = observed.status
+            let reason = observed.error?.localizedDescription
+            Task { @MainActor [weak self] in
+                guard let self else { return }
+                switch status {
+                case .failed:
+                    self.logger.error("Spatial media FAILED to load \(file, privacy: .public): \(reason ?? "unknown", privacy: .public)")
+                case .readyToPlay:
+                    self.logger.info("Spatial media ready: \(file, privacy: .public)")
+                default:
+                    break
+                }
+            }
+        }
+
         channels[action.channel] = channel
         player.play()
         logger.info("""
@@ -128,44 +173,132 @@ final class SystemSpatialMediaPlayer {
             '\(action.channel, privacy: .public)' \
             (\(presentation.rawValue, privacy: .public))
             """)
+
+        probeAfterStart(channel: action.channel, file: action.file)
     }
 
-    /// Apply the authored listening frame.
+    /// DID IT PLAY SILENTLY, OR NOT PLAY AT ALL? — one sample, 1.5s in.
     ///
-    /// A LISTENING FRAME, NOT A LOCATION. `.headTracked` leaves the system's
-    /// own spatial rendering in charge, which is what an encoded master is for;
-    /// `.fixed` asks for the mix to travel with the listener.
+    /// The two produce the same report from a listener ("no sound") and have
+    /// nothing in common as defects: a transport that never moved is a
+    /// loading, routing or URL problem, while a transport running normally
+    /// with nothing audible is a RENDERING problem. Device QA burned several
+    /// rounds on ASAF for want of exactly this distinction, so it is measured
+    /// rather than inferred.
     ///
-    /// Where the running OS exposes no control for this, the system default
-    /// stands and the author is told once — rather than Maestro pretending it
-    /// applied something. That is the same declared-degradation rule the router
-    /// uses; silence would make an unhonoured setting look like a broken one.
+    /// `print` alongside the logger deliberately: OSLog does not reach
+    /// `devicectl --console`, and being able to read this over the cable is
+    /// the difference between diagnosing it and asking the owner for another
+    /// screen recording.
+    private func probeAfterStart(channel: String, file: String) {
+        Task { @MainActor [weak self] in
+            try? await Task.sleep(for: .milliseconds(1500))
+            guard let self, let ch = self.channels[channel] else { return }
+            let t = CMTimeGetSeconds(ch.player.currentTime())
+            let moved = t > 0.2
+            let line = """
+                [SPATIAL-PROBE] \(file) ch=\(channel) \
+                transport=\(moved ? "RUNNING" : "STALLED") t=\(String(format: "%.2f", t))s \
+                rate=\(ch.player.rate) vol=\(ch.player.volume) \
+                status=\(ch.item.status.rawValue) \
+                keepUp=\(ch.item.isPlaybackLikelyToKeepUp) \
+                err=\(ch.item.error?.localizedDescription ?? "none") \
+                => \(moved ? "playing but INAUDIBLE (rendering)" : "never started (load/route)")
+                """
+            print(line)
+            self.logger.info("\(line, privacy: .public)")
+        }
+    }
+
+    /// THE ONLY PLACE AN `AVPlayer` IS CONSTRUCTED.
+    ///
+    /// A choke point on purpose. The listening frame is not a one-time setup
+    /// step that a later code path can skip: source replacement, a loop
+    /// restart, a re-prepare after a seek — any of them producing a fresh
+    /// player would otherwise silently revert to the system default while the
+    /// Inspector still showed the author's choice. Route every construction
+    /// through here and that cannot happen.
+    private func makePlayer(
+        item: AVPlayerItem,
+        presentation: AudioSpatialPresentation,
+        volume: Float,
+        channel: String
+    ) -> AVPlayer {
+        let player = AVPlayer(playerItem: item)
+        player.volume = volume
+        player.automaticallyWaitsToMinimizeStalling = false
+        applyPresentation(presentation, to: player, channel: channel)
+        return player
+    }
+
+    /// Apply the authored listening frame to the REAL PLAYER.
+    ///
+    /// THIS USED TO BE DECORATIVE. The first version switched on the
+    /// presentation and did nothing with it — `.headTracked` fell through to
+    /// `break`, `.fixed` only logged — so the Inspector control configured
+    /// metadata and the player kept the system default. The whole point of
+    /// pipeline B is that the author decides the listening frame, so it now
+    /// sets the actual property.
+    ///
+    /// `AVPlayer.intendedSpatialAudioExperience` (visionOS 26.0) is the
+    /// per-player hook. Per-player, deliberately: a chapter can hold a
+    /// RealityKit positional source, an ordinary head-locked cue and an encoded
+    /// head-tracked master at the same time, and imposing one presentation on
+    /// all of them through the audio session would be wrong for two of the
+    /// three. The session is left alone.
+    ///
+    /// SOUND STAGE SIZE IS LEFT AUTOMATIC in both cases. It is a separate
+    /// creative axis (how widely the channels are spread) that Maestro does not
+    /// expose, and choosing one here would silently override the mix's own
+    /// intent. Anchoring is automatic for the same reason — Maestro does not
+    /// author a UIScene anchor, so the system's choice is the honest one.
     private func applyPresentation(
         _ presentation: AudioSpatialPresentation, to player: AVPlayer, channel: String
     ) {
         #if os(visionOS)
-        // The per-player spatial experience is the supported hook on visionOS.
-        // Guarded by availability so an older deployment target still builds
-        // and simply keeps the system default.
-        if #available(visionOS 2.0, *) {
-            switch presentation {
+        if #available(visionOS 26.0, *) {
+            // The mapping itself lives in `AudioRuntimeRouting` so it can be
+            // pinned by a test — this package is visionOS-only and has none.
+            defer {
+                // READ THE PROPERTY BACK AND LOG WHAT IT ACTUALLY HOLDS.
+                //
+                // This is the evidence a listening test needs when Head Tracked
+                // and Fixed sound the same: it separates "Maestro never applied
+                // it" from "the renderer does not distinguish them for this
+                // asset". Without it that result is a dead end, and the first
+                // instinct would be to change code that is already correct.
+                let held = String(describing: player.intendedSpatialAudioExperience)
+                logger.info("\(channel, privacy: .public): requested \(presentation.rawValue, privacy: .public), player holds \(held, privacy: .public)")
+            }
+            switch AudioRuntimeRouting.spatialExperience(for: presentation) {
             case .headTracked:
-                // The system's default for an encoded spatial master, and the
-                // reason to use this pipeline at all.
-                break
+                // The mix stays anchored to the room and follows head motion —
+                // what an encoded spatial master is for.
+                player.intendedSpatialAudioExperience =
+                    .headTracked(.automatic, soundStageSize: .automatic)
             case .fixed:
-                reportPresentationLimit(
-                    channel: channel,
-                    note: "Fixed presentation is not applied on this OS; the mix stays head-tracked.")
+                // The mix travels with the listener: spatialised, but not
+                // motion-tracked. NOT `.bypassed`, which would remove spatial
+                // processing altogether and flatten the master — a different
+                // and much worse thing than "fixed".
+                player.intendedSpatialAudioExperience =
+                    .fixed(soundStageSize: .automatic)
             }
             return
         }
+        // Older visionOS has no per-player hook. Say so rather than let the
+        // Inspector imply a setting that was never applied.
+        reportPresentationLimit(
+            channel: channel,
+            note: """
+                \(presentation.displayName) presentation needs visionOS 26; \
+                the system default is in force.
+                """)
+        #else
+        // Non-visionOS builds (the Mac editor links this package) have no
+        // spatial experience to set. Nothing is claimed and nothing is logged.
+        _ = (presentation, player, channel)
         #endif
-        if presentation == .fixed {
-            reportPresentationLimit(
-                channel: channel,
-                note: "Fixed presentation needs a newer visionOS; the mix stays head-tracked.")
-        }
     }
 
     private func reportPresentationLimit(channel: String, note: String) {

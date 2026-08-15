@@ -242,6 +242,57 @@ public class SpatialAudioManager {
         setupDefaultBuses()
     }
 
+    // AN AVAUDIOSESSION WAS TRIED HERE AND REVERTED — 2026-08-15.
+    //
+    // Reasoning was: nothing configures a session, the default category does
+    // not support spatialization, and 18-channel APAC has no downmix to fall
+    // back on (unlike Dolby's 5.1), so a missing session would explain ASAF's
+    // silence. Setting `.playback` + `setActive(true)` in this initializer was
+    // measured on device and did TWO things:
+    //
+    //   - ASAF stayed silent, so the session was not the cause.
+    //   - POSITIONAL AUDIO STOPPED WORKING, having just been fixed. Taking the
+    //     session over this early evidently costs RealityKit's own spatial
+    //     audio rendering, which had been working on the default session.
+    //
+    // So the default session is load-bearing for pipeline A. If a session is
+    // ever needed for pipeline B, it must be scoped to that player rather than
+    // imposed process-wide at init, and positional must be re-verified on
+    // device afterwards.
+
+    /// THE SESSION DECIDES WHETHER SPATIAL AUDIO EXISTS AT ALL.
+    ///
+    /// Nothing in ChapterPlayer or its consumers had ever configured an
+    /// `AVAudioSession`, so the app ran on the default category — which does
+    /// not support spatialization. Every spatial decision above this line was
+    /// therefore moot: `intendedSpatialAudioExperience` and
+    /// `allowedAudioSpatializationFormats` are both requests to a renderer
+    /// that was not available.
+    ///
+    /// This is why the two encoded masters failed differently and why fixing
+    /// the item's allowed formats changed nothing. `ec-3` 5.1 has a defined
+    /// stereo downmix, so Dolby stayed audible without a spatializer; 18
+    /// discrete APAC channels have no downmix to fall back on, so ASAF was
+    /// silent. One missing session, two symptoms.
+    ///
+    /// `.playback` is also simply the correct category for this app: it is a
+    /// media player, it should keep playing when the user looks elsewhere, and
+    /// it should not be silenced by the ringer switch.
+    private func configureAudioSession() {
+        #if !os(macOS)
+        let session = AVAudioSession.sharedInstance()
+        do {
+            try session.setCategory(.playback, mode: .default)
+            try session.setActive(true)
+            logger.info("Audio session: .playback active — spatial audio available")
+        } catch {
+            // Not fatal: unspatialised playback still works, and saying so is
+            // better than a silent degradation nobody can account for later.
+            logger.error("Audio session setup FAILED — spatial audio will be unavailable: \(error.localizedDescription)")
+        }
+        #endif
+    }
+
     // MARK: - Engine Management (3B)
 
     private func ensureEngineRunning() {
@@ -1478,6 +1529,26 @@ public class SpatialAudioManager {
         }
 
         let resolvedFile = resolveVariation(for: action.file)
+
+        // PRELOAD IS AN OPTIMISATION, NOT A PRECONDITION.
+        //
+        // This used to require `preloadedResources[resolvedFile]` and drop the
+        // cue otherwise — and `preload(files:)` is called by the consumer app,
+        // never by MaestroVision. So positional audio was silent in the editor
+        // ALWAYS: head-locked played (the ambient path opens the URL directly)
+        // while every placed sound dropped, which is exactly what the device
+        // test found. Load on demand and cache it, so a cue plays whether or
+        // not anyone warmed it first.
+        if preloadedResources[resolvedFile] == nil, let url = findAudioURL(file: resolvedFile) {
+            do {
+                let resource = try AudioFileResource.load(contentsOf: url)
+                preloadedResources[resolvedFile] = resource
+                resolvedURLs[resolvedFile] = url
+                logger.info("Loaded spatial audio on demand: \(resolvedFile, privacy: .public)")
+            } catch {
+                logger.error("Could not load spatial audio \(resolvedFile, privacy: .public): \(error.localizedDescription, privacy: .public)")
+            }
+        }
 
         if let resource = preloadedResources[resolvedFile] {
             let vol = effectiveVolume(requested: action.volume, channel: action.channel)

@@ -108,6 +108,35 @@ open class ChapterPlayerCore {
     /// closure runs.
     public var immersiveSceneRoot: Entity? {
         didSet {
+            // A REALITYKIT AUDIO SOURCE THAT IS NOT IN A SCENE IS SILENT.
+            //
+            // `SpatialAudioManager.audioRoot` is where every positional cue's
+            // source entity is parented, and nothing had ever added it to a
+            // scene — so `playAudio` ran, logged success, and produced no
+            // sound. Head-locked cues were unaffected (they go through
+            // AVAudioEngine, which needs no scene), which is exactly why this
+            // read as "spatial audio is broken" rather than "audio is broken".
+            //
+            // Mounting it here, with the root, ties its lifetime to the one
+            // thing it depends on.
+            if let root = immersiveSceneRoot {
+                if audioManager.audioRoot.parent !== root {
+                    root.addChild(audioManager.audioRoot)
+                }
+                // AND the sound must find its emitter. `entityLookup` was
+                // declared and read but never assigned, so every cue authored
+                // `attachToEntity` silently fell back to the unplaced branch —
+                // a positional sound at the origin, which is the one place an
+                // author never put it. Resolved through the loader on each
+                // call because `materialize` rebuilds its anchor.
+                audioManager.entityLookup = { [weak self] name in
+                    self?.documentEntities.entity(named: name)
+                }
+            } else {
+                audioManager.audioRoot.removeFromParent()
+                audioManager.entityLookup = nil
+            }
+
             if let document = loadedExperience?.document, immersiveSceneRoot != nil {
                 documentEntities.materialize(
                     document: document,
