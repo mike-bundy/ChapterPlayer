@@ -221,7 +221,13 @@ private extension AudioAction {
             category: dto.category,
             crossfade: dto.crossfade,
             loopConfig: dto.loopConfig.map { LoopConfig($0) },
-            sourceRange: dto.sourceRange
+            sourceRange: dto.sourceRange,
+            // THE LOSS POINT. This bridge copied eleven fields and silently
+            // dropped the twelfth, so the authored playback model never
+            // reached the runtime and `SpatialAudioManager` had nothing to
+            // route on but `spatial != nil`.
+            playbackModel: dto.playbackModel,
+            spatialPresentation: dto.spatialPresentation
         )
     }
 }

@@ -9,6 +9,7 @@
 
 import Foundation
 import OSLog
+import ChapterScript
 
 private let logger = Logger(
     subsystem: Bundle.main.bundleIdentifier ?? "com.shellcorp.sharedvisions",
@@ -234,7 +235,11 @@ public final class SequenceEngine {
         // fade exactly where it holds a transform curve.
         audioExecutor?.setSequenceAudioAutomation(
             tracks: sequence.audioTracks,
-            clock: { [weak self] in self?.sequenceAnimationTime ?? 0 }
+            clock: { [weak self] in self?.sequenceAnimationTime ?? 0 },
+            // AUTHORED FADES travel with the automation, because they are the
+            // same question: how loud is this clip right now. Gathered once
+            // per sequence start — a document walk, never a per-frame one.
+            fades: Self.authoredFades(in: sequence)
         )
         // Backdrop cues ride the SAME authored clock. On wall time a viewer
         // held at a gate would watch the backdrop cut ahead of the step they
@@ -245,6 +250,47 @@ public final class SequenceEngine {
             presentation: sequence.presentation,
             clock: { [weak self] in self?.sequenceAnimationTime ?? 0 }
         )
+    }
+
+    /// Every channel's authored fades, gathered once when a sequence starts.
+    ///
+    /// `SequenceDefinition` is the runtime's own shape, so this rebuilds the
+    /// DTO view `AudioGainComposition.fades(forChannel:in:)` expects — one
+    /// walk, at sequence start, never on a frame.
+    static func authoredFades(in sequence: SequenceDefinition) -> [String: [AudioFade]] {
+        var channels: Set<String> = []
+        var stepStart = 0.0
+        var result: [String: [AudioFade]] = [:]
+        for step in sequence.steps {
+            // Both buckets: an immediate action fires at the step's start, a
+            // scheduled one at its own offset.
+            let timed: [(Double, StepAction)] =
+                step.actions.map { (stepStart, $0) }
+                + step.scheduledActions.map { (stepStart + $0.at, $0.action) }
+            for (time, action) in timed {
+                switch action {
+                case .playAudio(let a):
+                    channels.insert(a.channel)
+                    if let fadeIn = a.fadeIn, fadeIn > 0 {
+                        result[a.channel, default: []].append(
+                            AudioFade(startTime: time, duration: fadeIn, to: a.volume, from: 0)
+                        )
+                    }
+                case .fadeAudio(let channel, let to, let duration):
+                    channels.insert(channel)
+                    result[channel, default: []].append(
+                        AudioFade(startTime: time, duration: duration, to: to)
+                    )
+                default:
+                    break
+                }
+            }
+            stepStart += step.duration
+        }
+        for channel in result.keys {
+            result[channel]?.sort { $0.startTime < $1.startTime }
+        }
+        return result
     }
 
     /// The authored sequence clock: absolute seconds along the sequence's

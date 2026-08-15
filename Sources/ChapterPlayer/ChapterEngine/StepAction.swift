@@ -258,6 +258,24 @@ public struct AudioAction: Sendable {
     /// Looping loops the WINDOW, not the file. See `MediaSourceRange`.
     public let sourceRange: MediaSourceRange
 
+    /// THE AUTHORED PLAYBACK SEMANTICS, carried through from the document.
+    ///
+    /// This field used to be dropped by the DTO bridge, so the runtime decided
+    /// semantics from `spatial != nil` — a boolean that answers "is there
+    /// attachment metadata", not "how should this be played". Head-locked
+    /// stereo, an ambisonic bed and an Apple Spatial Audio master all took one
+    /// path as a result.
+    ///
+    /// `nil` means a document written before the field existed;
+    /// `AudioRuntimeRouting` applies the historic inference for those, so no
+    /// existing chapter changes how it sounds.
+    public let playbackModel: AudioPlaybackModel?
+
+    /// The listening frame for an encoded spatial master — head-tracked or
+    /// fixed. A rendering concept, not a transform; meaningful only for
+    /// `.spatialMix`.
+    public let spatialPresentation: AudioSpatialPresentation?
+
     public init(
         file: String,
         channel: String,
@@ -269,7 +287,9 @@ public struct AudioAction: Sendable {
         category: String? = nil,
         crossfade: TimeInterval? = nil,
         loopConfig: LoopConfig? = nil,
-        sourceRange: MediaSourceRange = .full
+        sourceRange: MediaSourceRange = .full,
+        playbackModel: AudioPlaybackModel? = nil,
+        spatialPresentation: AudioSpatialPresentation? = nil
     ) {
         self.file = file
         self.channel = channel
@@ -282,6 +302,18 @@ public struct AudioAction: Sendable {
         self.crossfade = crossfade
         self.loopConfig = loopConfig
         self.sourceRange = sourceRange
+        self.playbackModel = playbackModel
+        self.spatialPresentation = spatialPresentation
+    }
+
+    /// Where this cue should play, and whether that honours the authored
+    /// intent. One decision, shared with the editor — see
+    /// `ChapterScript.AudioRuntimeRouting`.
+    public var routing: AudioRuntimeRouting.Support {
+        AudioRuntimeRouting.route(
+            playbackModel: playbackModel,
+            hasSpatialAttachment: spatial?.attachToEntity != nil || spatial?.position != nil
+        )
     }
 }
 

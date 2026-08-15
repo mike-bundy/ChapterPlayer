@@ -29,10 +29,17 @@ public protocol AudioActionExecutorProtocol {
     func setMasterVolume(_ volume: Float)
     func setCategoryVolume(category: String, volume: Float)
     var onChannelFinished: ((String) -> Void)? { get set }
-    /// Bind the sequence's authored volume automation, clocked by the same
-    /// authored sequence time the animation tracks use.
+    /// Bind the sequence's authored volume automation AND its fades, clocked
+    /// by the same authored sequence time the animation tracks use.
+    ///
+    /// Fades travel with the curves because they answer the same question —
+    /// how loud is this clip right now — and are composed by the one rule in
+    /// `AudioGainComposition`. Passing them separately is what let a fade and
+    /// a curve become two writers of one property.
     func setSequenceAudioAutomation(
-        tracks: [AudioAutomationTrack], clock: (@MainActor () -> TimeInterval)?
+        tracks: [AudioAutomationTrack],
+        clock: (@MainActor () -> TimeInterval)?,
+        fades: [String: [AudioFade]]
     )
     // Audio Zones
     func addAudioZone(_ zone: AudioZone)
@@ -49,7 +56,9 @@ public protocol AudioActionExecutorProtocol {
 /// `EntityActionExecutorProtocol.setSequenceAnimation`.
 public extension AudioActionExecutorProtocol {
     func setSequenceAudioAutomation(
-        tracks: [AudioAutomationTrack], clock: (@MainActor () -> TimeInterval)?
+        tracks: [AudioAutomationTrack],
+        clock: (@MainActor () -> TimeInterval)?,
+        fades: [String: [AudioFade]]
     ) {}
 }
 
@@ -79,9 +88,11 @@ public final class AudioActionExecutor: AudioActionExecutorProtocol {
     }
 
     public func setSequenceAudioAutomation(
-        tracks: [AudioAutomationTrack], clock: (@MainActor () -> TimeInterval)?
+        tracks: [AudioAutomationTrack],
+        clock: (@MainActor () -> TimeInterval)?,
+        fades: [String: [AudioFade]]
     ) {
-        audioManager.setSequenceAudioAutomation(tracks: tracks, clock: clock)
+        audioManager.setSequenceAudioAutomation(tracks: tracks, clock: clock, fades: fades)
     }
 
     public init(audioManager: SpatialAudioManager) {

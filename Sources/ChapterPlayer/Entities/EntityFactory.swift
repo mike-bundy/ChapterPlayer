@@ -71,6 +71,13 @@ public final class EntityFactory {
             entity = makeVideoPanel(definition)
         case .particles:
             entity = makeParticleEmitter(definition)
+        case .audioEmitter:
+            // A bare Entity, like a light — no geometry, nothing to see.
+            // Building it is what registers the name, and registration is the
+            // whole point: `applySequenceAnimationTracks` writes its pose from
+            // the sequence's `EntityAnimationTrack`, and `playSpatial` parents
+            // the sound to it. RealityKit then carries the sound along.
+            entity = Entity()
         case .placeholder:
             // BLOCKING CONTENT BUILDS NOTHING AT RUNTIME.
             //
