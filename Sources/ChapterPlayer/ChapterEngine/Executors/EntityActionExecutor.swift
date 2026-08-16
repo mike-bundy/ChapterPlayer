@@ -438,11 +438,23 @@ public final class EntityActionExecutor: EntityActionExecutorProtocol {
     /// poses. Runs even for disabled entities so a reveal mid-curve finds
     /// the entity already in the right pose. Opacity is only driven when the
     /// track keys it — otherwise the step/action system owns visibility.
+    /// EXPLORE LOOP OVERLAY, by authored entity id.
+    ///
+    /// Set only for the few entities an author explicitly marked "Loop During
+    /// Explore", and only while the story is held at a region boundary. The
+    /// ordinary Sequence clock stays PARKED at that boundary — this replaces
+    /// the sample time for these entities alone. It moves no key, rewrites no
+    /// track and creates no second animation system; when the region resolves
+    /// the override is removed and evaluation returns to normal.
+    public var animationLoopOverrides: [String: Double] = [:]
+
     private func applySequenceAnimationTracks() {
         guard !sequenceAnimationTracks.isEmpty, let clock = animationClock else { return }
         let time = clock()
         for track in sequenceAnimationTracks {
             guard let entity = entityRegistry[track.entity] else { continue }
+            // The overlay wins for this entity, if one is installed.
+            let time = animationLoopOverrides[track.entity] ?? time
             let rest = restTransformData(for: track.entity, entity: entity)
             let pose = SequenceAnimationEvaluator.samplePose(track, at: time, rest: rest)
             entity.position = SIMD3(pose.position.x, pose.position.y, pose.position.z)

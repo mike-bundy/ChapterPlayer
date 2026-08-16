@@ -70,6 +70,24 @@ public enum StepAction: Sendable {
     case enableGesture(entity: String)
     case disableGesture(entity: String)
 
+    // Interaction control — arm or disarm one authored `InteractionSpec` on an
+    // entity. See `InteractionController`.
+    case enableInteraction(entity: String, interactionId: String)
+
+    /// WHERE THE STORY GOES NEXT. Carried verbatim from the authored action;
+    /// the executor hands it to `ExperienceNavigator` and does nothing else,
+    /// so an Interaction's Go To and a Sequence's completion converge on the
+    /// same authority.
+    case navigate(NavigationIntent)
+
+    /// WHAT THE STORY REMEMBERS. Carried verbatim; the engine hands it to the
+    /// session's `StoryStateStore` and the arithmetic is the shared one in
+    /// `ChapterScript.StoryStateArithmetic`, so a Mac preview and a headset
+    /// cannot end the same tap holding different values.
+    case setStoryState(StoryStateMutation)
+
+    case disableInteraction(entity: String, interactionId: String)
+
     // Upper limb and keyboard passthrough (visionOS system UI)
     case setUpperLimbVisibility(_ visibility: Visibility)
     case setKeyboardPassthrough(_ enabled: Bool)

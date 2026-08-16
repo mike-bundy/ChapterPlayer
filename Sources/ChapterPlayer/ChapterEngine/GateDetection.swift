@@ -2,17 +2,15 @@
 //  GateDetection.swift
 //  ChapterPlayer
 //
-//  Runtime detection for the spatial gate types. `SequenceEngine.waitAtGate`
-//  notifies the wired `GateDetecting` when a gate activates; the controller
-//  starts the matching watcher and calls back into `satisfyGate()` when the
-//  user meets it:
+//  Runtime detection for the spatial GATE types. `SequenceEngine.waitAtGate`
+//  notifies the wired `GateDetecting` when a gate activates; this starts the
+//  matching watch and calls back into `satisfyGate()` when the user meets it.
 //
-//  - .gaze       head-aim cone + dwell timer (the OS never exposes the true
-//                gaze ray, so "look at it" is approximated by head aim —
-//                the cone widens with the target's angular size)
-//  - .proximity  horizontal head-to-target distance vs the gate's radius
-//  - .grab       ManipulationEvents.WillBegin on the target (installing the
-//                manipulation stack on demand if the author didn't)
+//  THE SENSING ITSELF LIVES IN `SpatialTriggerDetector`, which entity
+//  interactions also use — same cone, same dwell decay, same horizontal
+//  proximity, same manipulation subscription. This file is now the GATE's
+//  interpretation of those signals: exactly one watch at a time, satisfied
+//  once, torn down on resolve.
 //
 //  .tap / .orchestrator / .any stay consumer-wired (SpatialTapGesture /
 //  orchestrator message → `satisfyGate()`), exactly as before.
@@ -49,182 +47,117 @@ public protocol GateDetecting: AnyObject {
 @Observable
 public final class GateDetectionController: GateDetecting {
 
-    // MARK: Tuning
+    /// The shared sensing layer. Exposed so `ChapterPlayerCore` can wire ONE
+    /// detector into both this and `InteractionController` — two detectors
+    /// polling the same head pose would be two answers to one question.
+    @ObservationIgnored public let detector: SpatialTriggerDetector
 
-    /// Seconds the target must stay inside the aim cone before a `.gaze`
-    /// gate satisfies. Looking away decays the timer rather than resetting
-    /// it, so a blink or jitter doesn't restart the dwell.
-    public var gazeDwellDuration: TimeInterval = 1.0
+    // MARK: Tuning (forwarded — the values live on the detector)
 
-    /// Base half-angle (radians) of the head-aim cone for `.gaze`. The
-    /// effective cone per sample is max(this, the target's angular radius),
-    /// so near/large targets are hit anywhere on their bounds.
-    public var gazeConeHalfAngle: Float = 12 * .pi / 180
+    public var facingDwellDuration: TimeInterval {
+        get { detector.facingDwellDuration }
+        set { detector.facingDwellDuration = newValue }
+    }
+    public var facingConeHalfAngle: Float {
+        get { detector.facingConeHalfAngle }
+        set { detector.facingConeHalfAngle = newValue }
+    }
+    public var defaultProximityRadius: Float {
+        get { detector.defaultProximityRadius }
+        set { detector.defaultProximityRadius = newValue }
+    }
 
-    /// Trigger distance for `.proximity` gates that don't author a radius.
-    public var defaultProximityRadius: Float = 1.0
-
-    // MARK: Wiring (set by ChapterPlayerCore)
+    // MARK: Wiring
 
     /// Resolves a gate's `targetEntity` name to the live entity.
-    @ObservationIgnored public var entityProvider: ((String) -> Entity?)?
+    @ObservationIgnored public var entityProvider: ((String) -> Entity?)? {
+        get { detector.entityProvider }
+        set { detector.entityProvider = newValue }
+    }
 
-    /// UNLEVELED head sample — gaze aim needs pitch, unlike the executor's
-    /// yaw-only placement provider. Returning nil (tracking not ready)
-    /// pauses detection for that tick; there is deliberately no simulator
-    /// fallback pose, because a static fallback could aim straight at a
-    /// target and silently auto-satisfy the gate.
-    @ObservationIgnored public var headTransformProvider: (() -> Transform?)?
+    /// UNLEVELED head sample — facing needs pitch, unlike the executor's
+    /// yaw-only placement provider.
+    @ObservationIgnored public var headTransformProvider: (() -> Transform?)? {
+        get { detector.headTransformProvider }
+        set { detector.headTransformProvider = newValue }
+    }
 
-    /// 0…1 dwell progress of the active `.gaze` gate. Hosts can render a
-    /// progress ring next to the gate prompt.
+    /// 0…1 dwell progress of the active `.viewerFacing` gate. Hosts can render
+    /// a progress ring next to the gate prompt.
     public private(set) var dwellProgress: Double = 0
 
-    @ObservationIgnored private var pollTask: Task<Void, Never>?
-    @ObservationIgnored private var manipulationSubscription: (any Cancellable)?
+    @ObservationIgnored private var watch: SpatialTriggerDetector.Watch?
 
-    public init() {}
+    /// A gate began waiting / resolved. `ChapterPlayerCore` uses these to
+    /// publish and withdraw the gate's ACCESSIBLE EQUIVALENT on its target —
+    /// a gate blocks the story, so a viewer who cannot perform the physical act
+    /// must have another route or the chapter is over for them.
+    ///
+    /// Deliberately separate from `onGateStarted`/`onGateEnded`, which remain
+    /// the consumer's prompt UI.
+    @ObservationIgnored public var onGateActivated: ((StepGate) -> Void)?
+    @ObservationIgnored public var onGateResolved: (() -> Void)?
+
+    public init(detector: SpatialTriggerDetector = SpatialTriggerDetector()) {
+        self.detector = detector
+    }
 
     // MARK: GateDetecting
 
     public func gateDidStart(_ gate: StepGate, satisfy: @escaping @MainActor @Sendable () -> Void) {
         gateDidEnd()
+        onGateActivated?(gate)
         switch gate.type {
         case .tap, .orchestrator, .any:
             break
-        case .gaze:
-            startGazeDwell(gate, satisfy: satisfy)
+        case .storyCondition:
+            // NOTHING TO SENSE. This boundary waits on what the Chapter
+            // remembers, and `SequenceEngine` releases it from the Story State
+            // store the moment a fact it waits for becomes true. Installing a
+            // spatial watch here would be a detector for an act nobody has to
+            // perform.
+            break
+        case .viewerFacing:
+            guard let target = gate.targetEntity else {
+                logger.warning("Viewer-facing gate has no targetEntity — only timeout/manual satisfy can clear it")
+                return
+            }
+            watch = detector.watchViewerFacing(
+                target: target,
+                progress: { [weak self] progress in
+                    // Published, so it is written only when it CHANGES — the
+                    // ring redraws twenty times a second otherwise.
+                    guard let self, self.dwellProgress != progress else { return }
+                    self.dwellProgress = progress
+                },
+                onTriggered: satisfy
+            )
         case .proximity:
-            startProximityWatch(gate, satisfy: satisfy)
+            guard let target = gate.targetEntity else {
+                logger.warning("Proximity gate has no targetEntity — only timeout/manual satisfy can clear it")
+                return
+            }
+            // `.immediate`, deliberately: a GATE asks "is this true?", so a
+            // viewer already standing inside the radius when the gate begins
+            // satisfies it at once. That is the behaviour gates had before
+            // interactions existed, and this closure does not change it — an
+            // Interaction's entry EDGE is a different question with a different
+            // policy. Shared geometry, distinct consumer semantics.
+            watch = detector.watchProximity(target: target, radius: gate.radius,
+                                            arming: .immediate, onTriggered: satisfy)
         case .grab:
-            startGrabWatch(gate, satisfy: satisfy)
+            guard let target = gate.targetEntity else {
+                logger.warning("Grab gate has no targetEntity — only timeout/manual satisfy can clear it")
+                return
+            }
+            watch = detector.watchGrab(target: target, onTriggered: satisfy)
         }
     }
 
     public func gateDidEnd() {
-        pollTask?.cancel()
-        pollTask = nil
-        manipulationSubscription?.cancel()
-        manipulationSubscription = nil
+        watch?.cancel()
+        watch = nil
         dwellProgress = 0
-    }
-
-    // MARK: - Gaze
-
-    private func startGazeDwell(_ gate: StepGate, satisfy: @escaping @MainActor @Sendable () -> Void) {
-        guard let targetName = gate.targetEntity else {
-            logger.warning("Gaze gate has no targetEntity — only timeout/manual satisfy can clear it")
-            return
-        }
-        let needed = gazeDwellDuration
-        let tick: TimeInterval = 0.05
-        pollTask = Task { @MainActor [weak self] in
-            var dwell: TimeInterval = 0
-            while !Task.isCancelled {
-                try? await Task.sleep(for: .seconds(tick))
-                guard let self, !Task.isCancelled else { return }
-                guard let entity = self.entityProvider?(targetName),
-                      entity.scene != nil, entity.isEnabledInHierarchy,
-                      let head = self.headTransformProvider?()
-                else { continue }
-                if self.isAimed(head: head, at: entity) {
-                    dwell += tick
-                } else {
-                    dwell = max(0, dwell - tick * 2)
-                }
-                self.dwellProgress = min(1, dwell / needed)
-                if dwell >= needed {
-                    logger.info("Gaze gate satisfied: dwelled \(String(format: "%.2f", needed))s on '\(targetName)'")
-                    satisfy()
-                    return
-                }
-            }
-        }
-    }
-
-    private func isAimed(head: Transform, at entity: Entity) -> Bool {
-        let bounds = entity.visualBounds(relativeTo: nil)
-        let toTarget = bounds.center - head.translation
-        let distance = simd_length(toTarget)
-        guard distance > 0.05 else { return true }
-        let forward = head.rotation.act(SIMD3<Float>(0, 0, -1))
-        let cosAngle = simd_dot(forward, toTarget / distance)
-        let angle = acos(simd_clamp(cosAngle, -1, 1))
-        let angularRadius = atan2(bounds.boundingRadius, distance)
-        return angle <= max(gazeConeHalfAngle, angularRadius)
-    }
-
-    // MARK: - Proximity
-
-    private func startProximityWatch(_ gate: StepGate, satisfy: @escaping @MainActor @Sendable () -> Void) {
-        guard let targetName = gate.targetEntity else {
-            logger.warning("Proximity gate has no targetEntity — only timeout/manual satisfy can clear it")
-            return
-        }
-        let radius = gate.radius ?? defaultProximityRadius
-        pollTask = Task { @MainActor [weak self] in
-            while !Task.isCancelled {
-                try? await Task.sleep(for: .milliseconds(150))
-                guard let self, !Task.isCancelled else { return }
-                guard let entity = self.entityProvider?(targetName),
-                      entity.scene != nil,
-                      let head = self.headTransformProvider?()
-                else { continue }
-                // Horizontal-plane distance: "walk up to it" must not depend
-                // on whether the target sits at floor height or eye height.
-                let delta = entity.visualBounds(relativeTo: nil).center - head.translation
-                let distance = simd_length(SIMD3<Float>(delta.x, 0, delta.z))
-                if distance <= radius {
-                    logger.info("Proximity gate satisfied: \(String(format: "%.2f", distance))m ≤ \(String(format: "%.2f", radius))m of '\(targetName)'")
-                    satisfy()
-                    return
-                }
-            }
-        }
-    }
-
-    // MARK: - Grab
-
-    private func startGrabWatch(_ gate: StepGate, satisfy: @escaping @MainActor @Sendable () -> Void) {
-        guard let targetName = gate.targetEntity else {
-            logger.warning("Grab gate has no targetEntity — only timeout/manual satisfy can clear it")
-            return
-        }
-        // The target may not be in the scene yet (gate authored before its
-        // reveal lands) — retry until it mounts, then subscribe once.
-        pollTask = Task { @MainActor [weak self] in
-            while !Task.isCancelled {
-                guard let self else { return }
-                if let entity = self.entityProvider?(targetName), let scene = entity.scene {
-                    self.subscribeGrab(target: entity, scene: scene, satisfy: satisfy)
-                    return
-                }
-                try? await Task.sleep(for: .milliseconds(250))
-            }
-        }
-    }
-
-    private func subscribeGrab(target: Entity, scene: RealityKit.Scene, satisfy: @escaping @MainActor @Sendable () -> Void) {
-        // The gate must be satisfiable even when the author never marked the
-        // entity manipulable. Installing on demand leaves the entity
-        // grabbable after the gate — acceptable: a grab gate implies the
-        // entity is meant to be handled.
-        if target.components[ManipulationComponent.self] == nil {
-            ManipulationComponent.configureEntity(target)
-            logger.info("Grab gate installed manipulation stack on '\(target.name)'")
-        }
-        // Scene-wide subscription + ancestry walk: the event's entity can be
-        // a descendant of the registered target (USDZ subtrees).
-        manipulationSubscription = scene.subscribe(to: ManipulationEvents.WillBegin.self) { event in
-            var node: Entity? = event.entity
-            while let current = node {
-                if current === target {
-                    logger.info("Grab gate satisfied on '\(target.name)'")
-                    Task { @MainActor in satisfy() }
-                    return
-                }
-                node = current.parent
-            }
-        }
+        onGateResolved?()
     }
 }
