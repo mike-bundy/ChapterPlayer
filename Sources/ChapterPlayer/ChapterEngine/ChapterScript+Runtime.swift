@@ -384,6 +384,9 @@ extension StepAction {
             self = .custom(id: id)
 
         // Animate motion — curves carry through directly; format types are reused.
+        case .motionBehavior(let b):
+            self = .motionBehavior(b)
+
         case .animateMotion(let m):
             self = .animateMotion(AnimateMotionAction(
                 entity: m.entity,

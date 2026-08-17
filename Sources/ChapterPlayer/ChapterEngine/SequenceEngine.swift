@@ -863,6 +863,8 @@ public final class SequenceEngine {
             entityExecutor?.revealEntity(revealAction)
         case .animateMotion(let motion):
             entityExecutor?.beginMotion(motion)
+        case .motionBehavior(let behavior):
+            entityExecutor?.beginMotionBehavior(behavior)
         case .persistEntity(let name):
             entityExecutor?.persistEntity(named: name)
         case .unpersistEntity(let name):

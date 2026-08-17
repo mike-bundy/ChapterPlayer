@@ -24,6 +24,10 @@ public enum StepAction: Sendable {
     case unpersistEntity(name: String)
     case revealEntity(RevealAction)
     case animateMotion(AnimateMotionAction)
+    /// Motion Actions 2.0. Carried verbatim — the DTO is the authored truth
+    /// and `MotionBehaviorResolver` is the only thing that turns it into
+    /// numbers, on device exactly as in the editor.
+    case motionBehavior(ChapterScript.MotionBehaviorDTO)
 
     // Attachments (SwiftUI in 3D)
     case showAttachment(id: String)
