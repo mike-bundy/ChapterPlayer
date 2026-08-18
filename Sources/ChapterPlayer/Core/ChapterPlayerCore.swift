@@ -51,9 +51,37 @@ open class ChapterPlayerCore {
     public let attachmentExecutor = AttachmentActionExecutor()
     public let effectExecutor = EffectActionExecutor()
 
-    /// Runtime detection for the spatial gate types (gaze / proximity /
-    /// grab). Tap/orchestrator gates stay consumer-wired to `satisfyGate()`.
-    public let gateDetection = GateDetectionController()
+    /// ONE sensing layer for "look at it", "walk up to it" and "grab it".
+    /// Shared by gates and entity interactions — two detectors polling the same
+    /// head pose would be two answers to one question, and twice the device QA.
+    public let spatialTriggers = SpatialTriggerDetector()
+
+    /// Runtime detection for the spatial gate types (viewer-facing / proximity
+    /// / grab). Tap/orchestrator gates stay consumer-wired to `satisfyGate()`.
+    public let gateDetection: GateDetectionController
+
+    /// Live entity interactions: registration, lifetime, response dispatch and
+    /// the accessible hover affordance. See `InteractionController`.
+    public let interactions: InteractionController
+
+    /// EXPLORE regions: the two clocks, the fallback timer and the
+    /// continuation behaviours. See `StoryRegionController`.
+    public let storyRegions = StoryRegionController()
+
+    /// THE ONE AUTHORITY FOR MOVEMENT BETWEEN SEQUENCES.
+    ///
+    /// Completion, Interaction responses and host commands all emit a
+    /// `NavigationRequest`; this decides, and `perform(_:)` carries it out.
+    /// Nothing else may start a Sequence — two things that both can is how a
+    /// chapter ends up playing two at once.
+    @ObservationIgnored public var navigator = ExperienceNavigator()
+
+    /// WHAT THE CHAPTER REMEMBERS, for this playback session.
+    ///
+    /// Owned here because a Chapter playback session is a property of the whole
+    /// run, not of a Sequence — the engine, the gate wait and the navigator all
+    /// read this one store. Never serialized; see `StoryStateStore`.
+    public let storyState = StoryStateStore()
     /// Follows the active sequence's timed backdrop track. Lazy because it
     /// needs `self` as its presenter, and observation-ignored because it is a
     /// driver, not rendered state — tracking it would invalidate every view
@@ -64,6 +92,18 @@ open class ChapterPlayerCore {
     // MARK: - Sequence routing
 
     public var activeSequenceId: String?
+    /// The visit currently executing, so an entry can tell a fresh one from a
+    /// resumed one. Runtime state: never serialized, cleared when the run ends.
+    private var activeVisitID: SequenceVisitID?
+    /// One suspended visit's interaction state per visit id. Bounded for the
+    /// same reason the navigator bounds its history: an hour of navigating must
+    /// not accumulate without limit.
+    private var visitLedgers: [SequenceVisitID: InteractionLedger] = [:]
+
+    private func pruneVisitLedgers() {
+        guard visitLedgers.count > 64 else { return }
+        visitLedgers.removeAll()
+    }
     public var sequenceReentryNonce: Int = 0
 
     /// The currently-loaded ChapterScript experience document (if any).
@@ -108,6 +148,35 @@ open class ChapterPlayerCore {
     /// closure runs.
     public var immersiveSceneRoot: Entity? {
         didSet {
+            // A REALITYKIT AUDIO SOURCE THAT IS NOT IN A SCENE IS SILENT.
+            //
+            // `SpatialAudioManager.audioRoot` is where every positional cue's
+            // source entity is parented, and nothing had ever added it to a
+            // scene — so `playAudio` ran, logged success, and produced no
+            // sound. Head-locked cues were unaffected (they go through
+            // AVAudioEngine, which needs no scene), which is exactly why this
+            // read as "spatial audio is broken" rather than "audio is broken".
+            //
+            // Mounting it here, with the root, ties its lifetime to the one
+            // thing it depends on.
+            if let root = immersiveSceneRoot {
+                if audioManager.audioRoot.parent !== root {
+                    root.addChild(audioManager.audioRoot)
+                }
+                // AND the sound must find its emitter. `entityLookup` was
+                // declared and read but never assigned, so every cue authored
+                // `attachToEntity` silently fell back to the unplaced branch —
+                // a positional sound at the origin, which is the one place an
+                // author never put it. Resolved through the loader on each
+                // call because `materialize` rebuilds its anchor.
+                audioManager.entityLookup = { [weak self] name in
+                    self?.documentEntities.entity(named: name)
+                }
+            } else {
+                audioManager.audioRoot.removeFromParent()
+                audioManager.entityLookup = nil
+            }
+
             if let document = loadedExperience?.document, immersiveSceneRoot != nil {
                 documentEntities.materialize(
                     document: document,
@@ -165,9 +234,9 @@ open class ChapterPlayerCore {
             self.entityExecutor.headTransformProvider = { [weak provider] in
                 provider?.sampleDeviceTransform(leveled: true)
             }
-            // Spatial gates need the FULL head orientation — gaze aim
+            // Spatial gates need the FULL head orientation — facing
             // uses pitch, which the leveled sample above strips.
-            self.gateDetection.headTransformProvider = { [weak provider] in
+            self.spatialTriggers.headTransformProvider = { [weak provider] in
                 provider?.sampleDeviceTransform(leveled: false)
             }
         } catch {
@@ -285,6 +354,10 @@ open class ChapterPlayerCore {
         self.ambientBackdropName = ambientBackdropName
         self.audioExecutor = AudioActionExecutor(audioManager: audioManager)
         self.videoExecutor = VideoActionExecutor(videoManager: videoManager)
+        // After the executors: `self` is only usable once every stored `let`
+        // has a value, and both of these read `spatialTriggers` off self.
+        self.gateDetection = GateDetectionController(detector: spatialTriggers)
+        self.interactions = InteractionController(detector: spatialTriggers)
         // The sequence backdrop's video channel is owned at the
         // ChapterPlayerCore scope (one backdrop per sequence, swapped at
         // sequence transitions), not at the sequence-engine scope.
@@ -305,8 +378,86 @@ open class ChapterPlayerCore {
         // (`rebaseSceneRootToHead`).
         sequenceEngine.gateDetector = gateDetection
         sequenceEngine.backdropDriver = backdropCues
-        gateDetection.entityProvider = { [weak self] name in
+        spatialTriggers.entityProvider = { [weak self] name in
             self?.entityExecutor.entityRegistry[name]
+        }
+
+        // Interactions: same registry, and responses handed straight back to
+        // the engine so they run through the executors a step's actions use.
+        sequenceEngine.interactionController = interactions
+        interactions.entityProvider = { [weak self] name in
+            self?.entityExecutor.entityRegistry[name]
+        }
+        interactions.perform = { [weak self] actions in
+            self?.sequenceEngine.performActions(actions)
+        }
+        interactions.documentProvider = { [weak self] in
+            self?.loadedExperience?.document
+        }
+
+        // THE GATE, AS THE SECOND CONSUMER OF ONE SEMANTIC ACTIVATION.
+        interactions.offerToGate = { [weak self] entityName, trigger, interactionRan, isAccessible in
+            self?.offerActivationToGate(entityName: entityName, trigger: trigger,
+                                        interactionRan: interactionRan,
+                                        isAccessible: isAccessible) ?? false
+        }
+
+        // An ACTIVE gate publishes an accessible equivalent on its target, and
+        // withdraws it when it resolves. Event-driven, never polled.
+        gateDetection.onGateActivated = { [weak self] gate in
+            guard let self, let target = gate.targetEntity else { return }
+            // A STORY-CONDITION GATE PUBLISHES NOTHING, and that is the
+            // accessible behaviour rather than a gap in it. It is not waiting
+            // for a person to do anything — it is waiting for a fact — so there
+            // is no physical act to offer an equivalent FOR, and offering
+            // "Continue" would let assistive technology bypass a condition the
+            // author set. Every gate that asks for an act still gets one.
+            guard let trigger = GateActivation.trigger(for: gate.type.authored) else { return }
+            self.interactions.setGateAction(
+                entityName: target,
+                label: GateActivation.accessibleLabel(prompt: gate.prompt),
+                trigger: trigger)
+        }
+        gateDetection.onGateResolved = { [weak self] in
+            self?.interactions.clearGateActions()
+        }
+
+        // STORY STATE. The engine applies mutations into this session's store;
+        // the store tells a waiting story-condition boundary that a fact it
+        // waits for became true. Event-driven both ways, so nothing polls the
+        // Chapter to notice a counter went up.
+        sequenceEngine.storyState = storyState
+        storyState.onChange = { [weak self] in
+            self?.sequenceEngine.storyStateDidChange()
+        }
+
+        // EXPLORE. The clocks come from the engine, so there is no second timer
+        // and nothing that keeps running while playback is paused.
+        sequenceEngine.storyRegions = storyRegions
+        storyRegions.runtimeClock = { [weak self] in
+            // The engine's PAUSE-AWARE playback clock. It keeps advancing past
+            // the authored total while the story is held, which is exactly what
+            // makes it the runtime clock — and it subtracts paused time, so a
+            // suspended experience does not age its region.
+            self?.sequenceEngine.totalElapsed ?? 0
+        }
+        storyRegions.authoredClock = { [weak self] in
+            // The Sequence clock. The engine clamps it at a step's end during a
+            // gate wait, and that clamping IS the Explore hold.
+            self?.sequenceEngine.sequenceAnimationTime ?? 0
+        }
+        storyRegions.releaseStory = { [weak self] in
+            // The SAME call a tap makes. One way out of a hold.
+            self?.sequenceEngine.satisfyGate()
+        }
+        storyRegions.setAnimationLoopOverride = { [weak self] entity, sampleTime in
+            self?.entityExecutor.animationLoopOverrides[entity] = sampleTime
+        }
+        storyRegions.applyContinuation = { [weak self] target, behavior, phase in
+            self?.applyStoryContinuation(target: target, behavior: behavior, phase: phase)
+        }
+        storyRegions.applyExitFade = { [weak self] target, seconds in
+            self?.applyStoryExitFade(target: target, seconds: seconds)
         }
 
         // DocumentEntityLoader needs the two executors it registers
@@ -328,36 +479,42 @@ open class ChapterPlayerCore {
         // to the next sequence. The next sequence must come from the
         // currently-loaded ChapterScript document — the core no longer
         // ships bundled demo sequences as a fallback.
-        sequenceEngine.onSequenceComplete = { [weak self] completion in
+        // AN AUTHORED NAVIGATION — from an Interaction response, or from any
+        // step — reaches the ONE navigator here.
+        //
+        // Accessibility gets this for free: an accessible activation runs the
+        // same `InteractionSpec.actions` a physical one does, so it produces
+        // the same `.navigate` action, the same intent and the same transition.
+        // There is no accessibility-specific Sequence change (Phase 6's rule).
+        sequenceEngine.onNavigationRequested = { [weak self] intent in
             guard let self else { return }
-            switch completion {
-            case .autoAdvance(let nextId):
-                Task { @MainActor in
-                    // Follow the WHOLE chain here: `playAndAwait` returns
-                    // the next sequence's completion action instead of
-                    // re-firing this callback, so seg1 → seg2 → seg3 only
-                    // works if this loop keeps walking.
-                    var targetId = nextId
-                    while true {
-                        guard let next = self.sequenceFromLoadedDocument(id: targetId) else {
-                            logger.info("[auto-advance] target sequence '\(targetId)' not found in loaded document — stopping")
-                            break
-                        }
-                        // Respect the next sequence's presentation +
-                        // backdrop. Auto-advance crosses sequence boundaries
-                        // so this is exactly where immersive → windowed (or
-                        // vice versa) transitions need to fire and where
-                        // the previous sequence's skybox / USDZ environment
-                        // is torn down before the new one binds.
-                        await self.applySequencePresentation(next)
-                        self.applySequenceBackdrop(next)
-                        let chained = await self.sequenceEngine.playAndAwait(sequence: next)
-                        guard case .autoAdvance(let chainedId) = chained else { break }
-                        targetId = chainedId
-                    }
-                }
-            case .holdOnLastStep, .transitionTo, .dismissToHome:
-                break
+            Task { @MainActor in
+                // EXPLICIT NAVIGATION LEAVES AN EXPLORE REGION IMMEDIATELY.
+                // Satisfying a Region's exit is a different act and does not
+                // come through here — see `docs/EXPERIENCE_FLOW.md` §6.
+                self.storyRegions.teardown()
+                await self.navigate(intent, source: .host)
+            }
+        }
+
+        // COMPLETION EMITS AN INTENT. IT DOES NOT NAVIGATE.
+        //
+        // This used to be a self-contained `while true` chain-walker that
+        // resolved targets, applied presentation and called `playAndAwait`
+        // inline — a second navigator, which Phase 8's Go To would have made a
+        // third. `ExperienceNavigator` now decides, and this performs. Legacy
+        // `autoAdvance` therefore behaves identically while sharing one
+        // execution path with every new navigation kind.
+        sequenceEngine.onSequenceComplete = { [weak self] completion in
+            guard let self, let finished = self.activeSequenceId else { return }
+            Task { @MainActor in
+                let outcome = self.navigator.handleCompletion(
+                    completion.authored,
+                    from: finished,
+                    exists: { self.sequenceFromLoadedDocument(id: $0) != nil },
+                    start: { self.loadedExperience?.document.defaultSequenceId },
+                    currentPosition: self.sequenceEngine.sequenceAnimationTime)
+                await self.perform(outcome)
             }
         }
     }
@@ -370,7 +527,18 @@ open class ChapterPlayerCore {
     /// `.windowed` wants it dismissed) before the sequence's first step
     /// runs so the engine never fires audio / video against a
     /// mis-presented stage.
-    public func playSequence(_ sequence: SequenceDefinition) async {
+    /// ONE PERFORMER. `ExperienceNavigator` decides where to go; this is the
+    /// only thing that starts a Sequence, so the immersive-space transition and
+    /// the skybox-registration wait below cannot be bypassed by a second entry
+    /// path. `startingAtStepIndex` is non-zero only for a resumed visit.
+    public func playSequence(_ sequence: SequenceDefinition,
+                             startingAtStepIndex startIndex: Int = 0) async {
+        // A HOST THAT JUMPS STRAIGHT INTO A SEQUENCE still gets a session, so
+        // its Story States hold their authored initial values rather than being
+        // undefined. Guarded on the session FLAG, not on emptiness: a Chapter
+        // that defines no Story State still has a session, and re-seeding on
+        // every entry would reset the memory on the first Go To.
+        if !storyState.isSessionActive { beginChapterPlaybackSession() }
         await applySequencePresentation(sequence)
         // The FIRST play of a session races the ImmersiveSpace open:
         // openSpace returns when the system creates the scene, but the
@@ -387,7 +555,280 @@ open class ChapterPlayerCore {
             logger.info("[backdrop] skybox registration wait finished (registered=\(self.videoManager.videoEntityRegistry["skybox"] != nil))")
         }
         applySequenceBackdrop(sequence)
-        sequenceEngine.play(sequence: sequence)
+        sequenceEngine.play(sequence: sequence, startingAtStepIndex: startIndex)
+    }
+
+    /// APPLY ONE CONTINUATION BEHAVIOUR, using the playback the runtime already
+    /// has.
+    ///
+    /// Explore is an ORCHESTRATION layer: it starts and stops behaviour that
+    /// already exists, and never becomes a second media engine. That is why
+    /// there is no loop implementation here — a clip authored to loop keeps
+    /// looping under `.continue` through `AVPlayerLooper`, which is the
+    /// primitive the runtime already trims to the source window.
+    private func applyStoryContinuation(
+        target: StoryContinuationTarget,
+        behavior: StoryContinuationBehavior,
+        phase: StoryRegionController.ContinuationPhase
+    ) {
+        // An entity animation loop is handled by the sampling overlay, not here.
+        guard case .occurrence(let actionId) = target else { return }
+        guard let channel = channelForOccurrence(actionId) else {
+            logger.warning("[explore] continuation target '\(actionId)' resolves to no channel — ignoring")
+            return
+        }
+
+        let isVideo = isVideoOccurrence(actionId)
+
+        switch (behavior, phase) {
+        case (.hold, .enteringHold):
+            // HOLD LAST FRAME. Pause where the authored pass left it; a clip
+            // that already ended is already showing its last frame.
+            //
+            // VIDEO ONLY, AND SAID OUT LOUD. There is no per-channel audio
+            // pause in this runtime — only `pauseAll()`, which would silence
+            // channels the author asked to keep playing — so an audio hold
+            // cannot be performed. The editors do not offer it
+            // (`StoryContinuationCapabilities`); this logs the case that can
+            // still arrive from a newer document or a hand edit, because the
+            // previous behaviour was to route it through `videoManager`, get
+            // nil, and leave the sound playing with no trace anywhere.
+            if isVideo {
+                videoManager.player(for: channel)?.pause()
+            } else {
+                logger.warning("[explore] hold is not available for audio channel '\(channel)' — it keeps playing")
+            }
+        case (.hold, .leavingHold):
+            if isVideo { videoManager.player(for: channel)?.play() }
+        case (.stop, .enteringHold):
+            if isVideo { videoExecutor.stop(channel: channel) }
+            else { audioExecutor.stop(channel: channel) }
+        case (.continue, _):
+            // Nothing to do: continuing means the content keeps running on its
+            // own clock while authored time is parked, which is what it is
+            // already doing.
+            break
+        case (.loop, _):
+            // Not offered for media in this pass — see `docs/STORY_REGIONS.md`.
+            // A clip authored to loop keeps looping under `.continue`.
+            break
+        case (.stop, .leavingHold), (.hold, _):
+            break
+        }
+    }
+
+    /// FADE THIS CONTENT OUT AS THE STORY RESUMES.
+    ///
+    /// Applied on the way out of a hold, using the per-channel gain command
+    /// that has existed since long before Story Regions — the region owns no
+    /// gain engine of its own. Audio only, which is the only place
+    /// `StoryContinuationCapabilities` offers it.
+    private func applyStoryExitFade(target: StoryContinuationTarget, seconds: TimeInterval) {
+        guard case .occurrence(let actionId) = target,
+              let channel = channelForOccurrence(actionId),
+              !isVideoOccurrence(actionId) else { return }
+        logger.info("[explore] fading '\(channel)' out over \(String(format: "%.2f", seconds))s on exit")
+        audioExecutor.fade(channel: channel, to: 0, duration: seconds)
+    }
+
+    /// Is this occurrence a video? Video and audio share `channelForOccurrence`
+    /// but not a single executor, and sending one's command to the other is how
+    /// audio "hold" came to be a control that did nothing.
+    private func isVideoOccurrence(_ actionId: String) -> Bool {
+        guard let document = loadedExperience?.document else { return false }
+        for sequence in document.sequences {
+            for step in sequence.steps {
+                for authored in step.authoredActions where authored.id == actionId {
+                    switch authored.action {
+                    case .playVideo, .prepareVideo: return true
+                    default: return false
+                    }
+                }
+            }
+        }
+        return false
+    }
+
+    /// The playback channel one authored occurrence plays on.
+    ///
+    /// Resolved from the DOCUMENT by stable action id, never from a filename or
+    /// an index — an occurrence keeps its id through trim, slip, blade and
+    /// retime, so a continuation override survives all of them.
+    private func channelForOccurrence(_ actionId: String) -> String? {
+        guard let document = loadedExperience?.document else { return nil }
+        for sequence in document.sequences {
+            for step in sequence.steps {
+                for authored in step.authoredActions where authored.id == actionId {
+                    switch authored.action {
+                    case .playVideo(let v), .prepareVideo(let v): return v.channel
+                    case .playAudio(let a): return a.channel
+                    default: return nil
+                    }
+                }
+            }
+        }
+        return nil
+    }
+
+    /// OFFER ONE SEMANTIC ACTIVATION TO THE WAITING GATE.
+    ///
+    /// The gate decides for itself whether this activation is the one it is
+    /// waiting for — shared input, distinct consumers. The DECISION is
+    /// `ChapterScript.GateActivation`, not a rule of this file's own: it
+    /// determines whether a story advances, which is not something to discover
+    /// on a headset. Sensing happens here; deciding does not.
+    ///
+    /// Returns true when the gate was satisfied.
+    private func offerActivationToGate(
+        entityName: String?, trigger: InteractionTrigger,
+        interactionRan: Bool, isAccessible: Bool = false
+    ) -> Bool {
+        guard sequenceEngine.isWaiting, let gate = sequenceEngine.currentGate else { return false }
+
+        let activation = SemanticActivation(
+            entityName: entityName, trigger: trigger,
+            interactionRan: interactionRan, isAccessible: isAccessible)
+        // THE ACT **AND** WHAT THE STORY REMEMBERS. A condition an author added
+        // to a gate is a requirement, so "tap the door once you have the key"
+        // cannot be opened by the tap alone.
+        guard GateActivation.satisfies(gate: gate.authored, activation: activation,
+                                       state: storyState.ledger) else { return false }
+
+        logger.info("[gate] satisfied by \(isAccessible ? "an accessible" : "a physical") \(trigger.kindName) activation on '\(entityName ?? "—")'")
+        sequenceEngine.satisfyGate()
+        return true
+    }
+
+    // MARK: - Performing navigation
+
+    /// Carry out ONE navigation outcome. The only place a Sequence starts.
+    ///
+    /// The navigator decided; this performs. Presentation and backdrop are
+    /// applied here because crossing a Sequence boundary is exactly where an
+    /// immersive → windowed transition fires and where the previous Sequence's
+    /// environment is torn down before the new one binds — which the old
+    /// inline chain-walker also did, and which is the behaviour old Chapters
+    /// depend on.
+    @MainActor
+    public func perform(_ outcome: NavigationOutcome) async {
+        switch outcome {
+        case .enter(let sequenceId, let visit, let resumingFrom):
+            guard let next = sequenceFromLoadedDocument(id: sequenceId) else {
+                logger.warning("[flow] '\(sequenceId)' vanished between decision and entry")
+                return
+            }
+            // Put the visit we are leaving aside before `playSequence` tears it
+            // down, so a later Resume can hand it back.
+            if let outgoing = activeVisitID {
+                visitLedgers[outgoing] = interactions.ledgerSnapshot
+            }
+            // DELEGATES TO THE ONE PERFORMER rather than starting the engine
+            // itself. `playSequence` owns the immersive-space transition and
+            // the skybox-registration wait, and a second start path that
+            // skipped them is exactly the class of divergence this pass exists
+            // to remove.
+            //
+            // RESUME ENTERS AT AN AUTHORED POSITION; a fresh visit starts at
+            // the beginning. Restart and Resume must never share an
+            // implementation ACCIDENTALLY — they share this one deliberately,
+            // because entering is entering, and they differ in the VISIT the
+            // navigator handed back.
+            let startIndex = resumingFrom.map { stepIndex(of: next, atAuthoredTime: $0) } ?? 0
+            await playSequence(next, startingAtStepIndex: startIndex)
+
+            // ── WHAT A VISIT OWNS, RESTORED OR RE-ARMED ─────────────────────
+            //
+            // `playSequence` always re-arms. For a fresh visit that is correct
+            // and this changes nothing. For a RESUMED one it is the bug: the
+            // audience comes back to a Sequence where everything they had
+            // already done is undone. Resume is the one case that carries a
+            // position, and it is the one case that restores.
+            activeVisitID = visit.id
+            if resumingFrom != nil, let restored = visitLedgers[visit.id] {
+                interactions.restoreLedger(restored)
+            } else {
+                visitLedgers[visit.id] = nil
+            }
+            pruneVisitLedgers()
+
+        case .finish:
+            sequenceEngine.stop()
+            activeSequenceId = nil
+            activeVisitID = nil
+            visitLedgers.removeAll()
+            // THE RUN IS OVER, so the session's memory ends with it. Nothing is
+            // carried into the next run — that is what "a new playback session
+            // resets Story State" means from the other side.
+            storyState.endSession()
+
+        case .stay:
+            break
+
+        case .refused(let refusal):
+            // REFUSED, NOT REDIRECTED. Silently going somewhere plausible is
+            // how an audience ends up in the wrong part of a story with no
+            // trace of why.
+            logger.warning("[flow] navigation refused: \(refusal.message)")
+        }
+    }
+
+    /// Ask the navigator to do something, then do it.
+    @MainActor
+    public func navigate(_ intent: NavigationIntent, source: NavigationSource = .host) async {
+        // `.start` IS THE BEGINNING OF A CHAPTER PLAYBACK SESSION. Seeding here
+        // rather than inside the navigator keeps the navigator pure, and keeps
+        // the one thing that resets Story State at the one place a Chapter
+        // begins.
+        if case .start = intent { beginChapterPlaybackSession() }
+
+        let outcome = navigator.handle(
+            NavigationRequest(intent: intent, source: source),
+            exists: { self.sequenceFromLoadedDocument(id: $0) != nil },
+            start: { self.loadedExperience?.document.defaultSequenceId },
+            currentPosition: sequenceEngine.sequenceAnimationTime,
+            // A BRANCH IS RESOLVED AGAINST THE RUNNING SESSION, by the shared
+            // evaluator. Nothing here decides which case wins.
+            storyState: storyState.ledger)
+        await perform(outcome)
+    }
+
+    /// BEGIN A CHAPTER PLAYBACK SESSION. Every Story State returns to its
+    /// authored initial value.
+    ///
+    /// The ONLY thing that resets Story State. Deliberately not called from
+    /// `playSequence`, which starts a Sequence VISIT: Go To, Return and Restart
+    /// all run through that, and every one of them must leave the story's memory
+    /// exactly as the audience left it.
+    @MainActor
+    public func beginChapterPlaybackSession() {
+        storyState.beginSession(loadedExperience?.document.storyState ?? [])
+    }
+
+    /// The step a resumed visit re-enters at.
+    ///
+    /// AUTHORED-BOUNDARY RESUME: playback resumes at the start of the step the
+    /// visit had reached, not at an arbitrary sub-second offset. Reconstructing
+    /// exact mid-action runtime state (a video part-played, a fade half-run, a
+    /// gate part-dwelt) would need a retained live graph per suspended visit,
+    /// which an hour-long chapter cannot afford. Documented as such rather than
+    /// faked — see `docs/EXPERIENCE_FLOW.md` §Resume.
+    private func stepIndex(of sequence: SequenceDefinition, atAuthoredTime time: TimeInterval) -> Int {
+        var elapsed: TimeInterval = 0
+        for (index, step) in sequence.steps.enumerated() {
+            elapsed += step.duration
+            if time < elapsed { return index }
+        }
+        return max(sequence.steps.count - 1, 0)
+    }
+
+    /// Arm the loaded document's interactions against the live scene.
+    ///
+    /// Document-wide, not Sequence-scoped — an interaction belongs to the
+    /// object. Unrevealed objects are simply never hit: every watch checks that
+    /// the entity is in the scene and enabled before it measures anything.
+    public func installInteractions() {
+        guard let document = loadedExperience?.document else { return }
+        interactions.install(document: document)
     }
 
     /// Bind / swap / tear down the sequence's immersive backdrop. Called

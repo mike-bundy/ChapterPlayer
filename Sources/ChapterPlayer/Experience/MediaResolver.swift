@@ -52,13 +52,39 @@ public struct LocalFolderMediaResolver: MediaResolver {
     }
 
     public func url(for assetId: String, kind: MediaKind) -> URL? {
-        guard let rel = pathById[assetId] else { return nil }
-        let candidate = assetsRoot.appending(path: rel)
-        // Decoded path — see `LocalFolderExperienceProvider.resolveBundleRoot`.
-        // `path()` is percent-encoded and silently fails for any path with a
-        // space, which would have made every asset in an iCloud Drive bundle
-        // unresolvable even once the document itself loaded.
-        return FileManager.default.fileExists(atPath: candidate.path(percentEncoded: false))
+        // MANIFEST FIRST — it is authoritative, and it is the only thing that
+        // can express an asset stored under a different name or in a subfolder.
+        if let rel = pathById[assetId], let url = existing(assetsRoot.appending(path: rel)) {
+            return url
+        }
+
+        // THEN THE OBVIOUS PLACE: `assets/<assetId>`.
+        //
+        // An asset id in this format IS a filename — `AudioActionDTO.file`,
+        // `VideoActionDTO.file` and the entity ids all carry one — so a file
+        // sitting in `assets/` under exactly the requested name is the asset,
+        // manifest entry or no manifest entry.
+        //
+        // Refusing it was a real failure, found on device: a bundle whose
+        // manifest was empty resolved NOTHING. Every cue fell through to the
+        // app's shipped Media.bundle, found nothing there either, and playback
+        // was silent — "Ambient audio DROPPED" for every file, with the files
+        // plainly present in `assets/`. The manifest carries integrity data
+        // (hashes, renames); it was never meant to be the addressing scheme,
+        // and treating it as one makes any hand-authored or hand-edited bundle
+        // unplayable.
+        return existing(assetsRoot.appending(path: assetId))
+    }
+
+    /// `path(percentEncoded: false)` — NOT `path()`.
+    ///
+    /// `URL.path()` percent-encodes by default, so an iCloud Drive path arrives
+    /// as ".../Mobile%20Documents/..." and `FileManager`, which speaks raw
+    /// filesystem paths, reports the file missing. Any path containing a space
+    /// fails — and iCloud Drive's real directory is literally "Mobile
+    /// Documents".
+    private func existing(_ candidate: URL) -> URL? {
+        FileManager.default.fileExists(atPath: candidate.path(percentEncoded: false))
             ? candidate : nil
     }
 }

@@ -46,6 +46,11 @@ public struct SequenceDefinition: Sendable {
     /// `animationTracks`, so a volume ride holds at a gate exactly like a
     /// transform curve does.
     public let audioTracks: [AudioAutomationTrack]
+    /// EXPLORE SPANS. Format types used directly, like `animationTracks` — pure
+    /// authored data the region controller reads, not something the engine
+    /// models. Empty = the Sequence is entirely Directed, which is every
+    /// document written before Explore existed.
+    public let storyRegions: [StoryRegion]
     public let visibility: VisibilityState
     public let onComplete: CompletionAction
 
@@ -59,6 +64,7 @@ public struct SequenceDefinition: Sendable {
         steps: [StepDefinition],
         animationTracks: [EntityAnimationTrack] = [],
         audioTracks: [AudioAutomationTrack] = [],
+        storyRegions: [StoryRegion] = [],
         visibility: VisibilityState = VisibilityState(),
         onComplete: CompletionAction = .holdOnLastStep
     ) {
@@ -71,6 +77,7 @@ public struct SequenceDefinition: Sendable {
         self.steps = steps
         self.animationTracks = animationTracks
         self.audioTracks = audioTracks
+        self.storyRegions = storyRegions
         self.visibility = visibility
         self.onComplete = onComplete
     }
@@ -138,33 +145,76 @@ public enum GateType: String, Sendable {
     case tap          // User interaction on headset
     case orchestrator // External controller
     case any          // Either works
-    case gaze         // Look at targetEntity (dwell)
+    /// The viewer FACES targetEntity for a dwell time. SYSTEM-EYE-INPUT: not
+    /// a claim about the eyes — measured from the device's forward direction.
+    /// LEGACY-INTERACTION-VOCAB: the raw value matches `ChapterScript.GateType`.
+    case viewerFacing = "gaze"   // LEGACY-INTERACTION-VOCAB
     case proximity    // Come within radius meters of targetEntity
     case grab         // Pinch-grab targetEntity
+    /// The story's own memory is the condition; no act continues it.
+    case storyCondition
+}
+
+extension GateType {
+    /// The AUTHORED gate type this runtime case stands for.
+    ///
+    /// The runtime mirrors `ChapterScript.GateType` as its own enum, so the one
+    /// place that decides whether an activation satisfies a gate
+    /// (`ChapterScript.GateActivation`) needs a way across. EXHAUSTIVE with no
+    /// `default`: a case added to either enum must be answered here rather than
+    /// quietly mapping to `.tap`, because getting it wrong means a story that
+    /// advances on the wrong act.
+    public var authored: ChapterScript.GateType {
+        switch self {
+        case .tap:           return .tap
+        case .orchestrator:  return .orchestrator
+        case .any:           return .any
+        case .viewerFacing:  return .viewerFacing
+        case .proximity:     return .proximity
+        case .grab:          return .grab
+        case .storyCondition: return .storyCondition
+        }
+    }
 }
 
 public struct StepGate: Sendable {
     public let type: GateType
     public let timeout: TimeInterval?
     public let prompt: String?
-    /// Entity the gate watches (gaze / proximity / grab). Advisory — the
+    /// Entity the gate watches (viewer-facing / proximity / grab). Advisory — the
     /// consumer wires the matching detection to `satisfyGate()`.
     public let targetEntity: String?
     /// Trigger distance in meters for `.proximity` (default ~1 m).
     public let radius: Float?
+    /// What the story must already remember before this boundary may pass.
+    public let storyConditions: StoryConditionGroup?
 
     public init(
         type: GateType,
         timeout: TimeInterval? = nil,
         prompt: String? = nil,
         targetEntity: String? = nil,
-        radius: Float? = nil
+        radius: Float? = nil,
+        storyConditions: StoryConditionGroup? = nil
     ) {
         self.type = type
         self.timeout = timeout
         self.prompt = prompt
         self.targetEntity = targetEntity
         self.radius = radius
+        self.storyConditions = storyConditions
+    }
+
+    /// The AUTHORED shape of this gate.
+    ///
+    /// Exists so every question about a gate — which act satisfies it, whether
+    /// the story's memory continues it — is answered by the ONE authority in
+    /// `ChapterScript.GateActivation`, rather than by a rule reimplemented here
+    /// against the runtime mirror.
+    public var authored: StepGateDTO {
+        StepGateDTO(type: type.authored, timeout: timeout, prompt: prompt,
+                    targetEntity: targetEntity, radius: radius,
+                    storyConditions: storyConditions)
     }
 }
 
@@ -204,6 +254,22 @@ public enum CompletionAction: Sendable, Equatable {
     case transitionTo(phase: String, visibility: VisibilityState)
     case autoAdvance(nextSequenceId: String)
     case dismissToHome
+    /// The full navigation vocabulary — Return, Restart, End and Go To.
+    ///
+    /// ── WHY THIS CASE EXISTS ────────────────────────────────────────────────
+    ///
+    /// `CompletionActionDTO.navigate` was added so a Sequence could END by
+    /// returning or restarting, which the four legacy cases cannot express.
+    /// This runtime mirror was not extended with it, and nothing noticed
+    /// because ChapterPlayer only builds for visionOS: the Mac suites were
+    /// green over a **broken device build**.
+    ///
+    /// Mapping it to `.holdOnLastStep` instead would have been worse than the
+    /// build error — every authored Return, Restart and End would have become a
+    /// silent hold on device while the editor showed the author what they
+    /// asked for. A runtime type that cannot say what the format says is not a
+    /// simplification; it is a lie with a shorter switch.
+    case navigate(NavigationIntent)
 }
 
 // MARK: - Timing Function

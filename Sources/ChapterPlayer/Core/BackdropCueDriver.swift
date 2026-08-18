@@ -20,7 +20,7 @@
 //
 //  `sequenceAnimationTime` — the same clock animation curves and audio
 //  automation sample. Wall time would drift past a gate: a viewer who stands
-//  at a gaze gate for thirty seconds would watch the backdrop cut to the next
+//  at a viewer-facing gate for thirty seconds would watch the backdrop cut to the next
 //  cue while the step they are gated on is still waiting. Cue times are
 //  authored against the step grid, so they must be read against the step grid.
 //

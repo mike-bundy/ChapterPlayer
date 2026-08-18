@@ -83,6 +83,17 @@ private enum ZoneActivity {
 @MainActor
 @Observable
 public class SpatialAudioManager {
+
+    /// Channels already reported as playing degraded — see `reportFallback`.
+    private var reportedFallbackChannels: Set<String> = []
+
+    /// PIPELINE B. Encoded spatial masters, played by the system with the asset
+    /// intact — never opened as buffers, never given a location. See
+    /// `SystemSpatialMediaPlayer`.
+    private let systemSpatialMedia = SystemSpatialMediaPlayer()
+    /// In-flight gain ramps for encoded masters, so a new fade supersedes the
+    /// old one rather than fighting it.
+    private var systemSpatialFadeTasks: [String: Task<Void, Never>] = [:]
     /// Fallback mapping for catalog audio names that are referenced by scenes
     /// but not shipped in the current Media.bundle.
     private static let audioFileFallbacks: [String: String] = [
@@ -229,6 +240,57 @@ public class SpatialAudioManager {
 
     public init() {
         setupDefaultBuses()
+    }
+
+    // AN AVAUDIOSESSION WAS TRIED HERE AND REVERTED — 2026-08-15.
+    //
+    // Reasoning was: nothing configures a session, the default category does
+    // not support spatialization, and 18-channel APAC has no downmix to fall
+    // back on (unlike Dolby's 5.1), so a missing session would explain ASAF's
+    // silence. Setting `.playback` + `setActive(true)` in this initializer was
+    // measured on device and did TWO things:
+    //
+    //   - ASAF stayed silent, so the session was not the cause.
+    //   - POSITIONAL AUDIO STOPPED WORKING, having just been fixed. Taking the
+    //     session over this early evidently costs RealityKit's own spatial
+    //     audio rendering, which had been working on the default session.
+    //
+    // So the default session is load-bearing for pipeline A. If a session is
+    // ever needed for pipeline B, it must be scoped to that player rather than
+    // imposed process-wide at init, and positional must be re-verified on
+    // device afterwards.
+
+    /// THE SESSION DECIDES WHETHER SPATIAL AUDIO EXISTS AT ALL.
+    ///
+    /// Nothing in ChapterPlayer or its consumers had ever configured an
+    /// `AVAudioSession`, so the app ran on the default category — which does
+    /// not support spatialization. Every spatial decision above this line was
+    /// therefore moot: `intendedSpatialAudioExperience` and
+    /// `allowedAudioSpatializationFormats` are both requests to a renderer
+    /// that was not available.
+    ///
+    /// This is why the two encoded masters failed differently and why fixing
+    /// the item's allowed formats changed nothing. `ec-3` 5.1 has a defined
+    /// stereo downmix, so Dolby stayed audible without a spatializer; 18
+    /// discrete APAC channels have no downmix to fall back on, so ASAF was
+    /// silent. One missing session, two symptoms.
+    ///
+    /// `.playback` is also simply the correct category for this app: it is a
+    /// media player, it should keep playing when the user looks elsewhere, and
+    /// it should not be silenced by the ringer switch.
+    private func configureAudioSession() {
+        #if !os(macOS)
+        let session = AVAudioSession.sharedInstance()
+        do {
+            try session.setCategory(.playback, mode: .default)
+            try session.setActive(true)
+            logger.info("Audio session: .playback active — spatial audio available")
+        } catch {
+            // Not fatal: unspatialised playback still works, and saying so is
+            // better than a silent degradation nobody can account for later.
+            logger.error("Audio session setup FAILED — spatial audio will be unavailable: \(error.localizedDescription)")
+        }
+        #endif
     }
 
     // MARK: - Engine Management (3B)
@@ -575,6 +637,18 @@ public class SpatialAudioManager {
     /// fighting them.
     private var automationMultipliers: [String: Float] = [:]
     private var audioAutomationTracks: [AudioAutomationTrack] = []
+    /// Authored fades per channel, in force for the current sequence.
+    ///
+    /// A fade used to be a SECOND WRITER of `node.volume`: `fadeVolume` ramped
+    /// it on its own 30 Hz task while `applyMixToAllChannels` wrote the same
+    /// property from the 20 Hz automation task and cancelled that ramp. Two
+    /// writers with no order meant a fade crossing a volume key produced a
+    /// different result depending on which fired last.
+    ///
+    /// Now a fade is DATA the one sampler evaluates, through
+    /// `AudioGainComposition` — the same function the Mac preview calls. One
+    /// writer, one rule, no race.
+    private var audioFades: [String: [AudioFade]] = [:]
     private var audioAutomationClock: (@MainActor () -> TimeInterval)?
     private var audioAutomationTask: Task<Void, Never>?
 
@@ -582,14 +656,19 @@ public class SpatialAudioManager {
     /// actually carries keys, so an un-automated chapter pays nothing.
     public func setSequenceAudioAutomation(
         tracks: [AudioAutomationTrack],
-        clock: (@MainActor () -> TimeInterval)?
+        clock: (@MainActor () -> TimeInterval)?,
+        fades: [String: [AudioFade]] = [:]
     ) {
         audioAutomationTask?.cancel()
         audioAutomationTask = nil
         audioAutomationTracks = tracks
         audioAutomationClock = clock
+        audioFades = fades
 
-        guard SequenceAudioAutomation.hasAutomation(tracks), clock != nil else {
+        // Fades count as automation: a sequence with a fade and no curves
+        // still needs the sampler running, or the fade never happens.
+        guard SequenceAudioAutomation.hasAutomation(tracks) || !audioFades.isEmpty,
+              clock != nil else {
             // Release every channel back to unity, or a sequence WITHOUT
             // automation would inherit the last ride of the one before it.
             if !automationMultipliers.isEmpty {
@@ -619,9 +698,22 @@ public class SpatialAudioManager {
         // channels with no track of their own.
         let channels = Set(ambientChannels.keys).union(spatialChannels.keys)
         for channel in channels {
-            let value = SequenceAudioAutomation.volumeMultiplier(
-                for: channel, at: time, in: audioAutomationTracks
+            // THE ONE RULE. `volumeMultiplier` alone ignored fades; folding
+            // them in here is what removes the second writer.
+            //
+            // Expressed as a MULTIPLIER against the channel's base level so it
+            // slots into the existing mix pipeline unchanged — `effectiveVolume`
+            // still multiplies bus, category, master and ducking around it.
+            let base = ambientChannels[channel]?.targetVolume
+                ?? spatialChannels[channel]?.targetVolume ?? 1.0
+            let composed = AudioGainComposition.authoredGain(
+                base: base,
+                fades: audioFades[channel] ?? [],
+                channel: channel,
+                at: time,
+                in: audioAutomationTracks
             )
+            let value = base > 0.0001 ? composed / base : composed
             // Only write on a real change: this runs 20x a second and each
             // write touches an AVAudioPlayerNode.
             if abs((automationMultipliers[channel] ?? 1.0) - value) > 0.001 {
@@ -782,19 +874,108 @@ public class SpatialAudioManager {
             channelCategories[action.channel] = category
         }
 
-        // Handle loopConfig (2C)
-        if let loopConfig = action.loopConfig {
-            playWithLoopConfig(action: action, loopConfig: loopConfig, stepContext: stepContext)
-            applyDucking(forTriggerChannel: action.channel)
-            return
+        // ROUTE FIRST, THEN LOOP — the order matters and it used to be wrong.
+        //
+        // `loopConfig` returned before any routing decision, so a cue with an
+        // intro/loop/outro was ALWAYS unspatialised: a positional looped sound
+        // played from nowhere and an encoded master was flattened. Looping is a
+        // property of how a source repeats, not of where it plays, so the route
+        // is chosen first and each path applies its own looping.
+        //
+        // ROUTE ON THE AUTHORED PLAYBACK MODEL, not on `spatial != nil`.
+        //
+        // That boolean answers "is there attachment metadata", which is not the
+        // same question as "what are the playback semantics". Routing on it
+        // sent head-locked stereo, an ambisonic bed and an Apple Spatial Audio
+        // master down one path indistinguishably.
+        //
+        // `AudioRuntimeRouting` is the one decision and it is shared with the
+        // editor, so what an author is told and what the runtime does cannot
+        // drift. A `fallback` is a DECLARED degradation with a reason, not a
+        // silent detour — it is logged once per channel below.
+        let routing = action.routing
+        if case .fallback(_, let from, let reason) = routing {
+            reportFallback(model: from, reason: reason, channel: action.channel, file: action.file)
         }
 
-        if action.spatial != nil {
-            playSpatial(action: action, stepContext: stepContext)
-        } else {
-            playAmbient(action: action, stepContext: stepContext)
+        switch routing.route {
+        case .positional:
+            // PIPELINE A — a source in the scene. Its location is the emitter's
+            // animated transform and nothing here duplicates it.
+            if let loopConfig = action.loopConfig {
+                // The three-file intro/loop/outro form has no spatial variant.
+                // Declared, not silent — and now reached only for a cue that
+                // genuinely asked for both.
+                reportFallback(
+                    model: .positional,
+                    reason: "Cues with an intro/loop/outro play unspatialised. Use a plain looping cue to place this sound.",
+                    channel: action.channel, file: action.file)
+                playWithLoopConfig(action: action, loopConfig: loopConfig, stepContext: stepContext)
+            } else {
+                playSpatial(action: action, stepContext: stepContext)
+            }
+
+        case .systemSpatialMedia:
+            // PIPELINE B — an encoded master, handed over whole. `loopConfig`'s
+            // three-file form is a graph construct and has no meaning here; a
+            // plain `loop` does, and the system player handles it.
+            playSystemSpatialMedia(action: action, stepContext: stepContext)
+
+        case .headLocked, .sceneBased:
+            // Scene-based still degrades to here, declared, until its source
+            // can be prepared into something a pipeline can carry. Listed
+            // rather than defaulted so giving it a path is a compile error
+            // here rather than a silent continuation.
+            if let loopConfig = action.loopConfig {
+                playWithLoopConfig(action: action, loopConfig: loopConfig, stepContext: stepContext)
+            } else {
+                playAmbient(action: action, stepContext: stepContext)
+            }
         }
         applyDucking(forTriggerChannel: action.channel)
+    }
+
+    /// Say once, per channel, that a cue is not being played as authored.
+    ///
+    /// Once — an author scrubbing a Sequence would otherwise get the same line
+    /// on every replay of the same cue, and a log nobody reads is the same as
+    /// no log. The document is unchanged either way: the authored intent is
+    /// preserved and only this playback is degraded.
+    private func reportFallback(
+        model: AudioPlaybackModel, reason: String, channel: String, file: String
+    ) {
+        guard reportedFallbackChannels.insert(channel).inserted else { return }
+        logger.warning("""
+            Audio '\(file, privacy: .public)' on channel '\(channel, privacy: .public)' is \
+            authored as \(model.rawValue, privacy: .public) but is playing head-locked. \
+            \(reason, privacy: .public)
+            """)
+    }
+
+    /// PIPELINE B entry — hand the encoded asset to the system player.
+    ///
+    /// The gain is composed HERE, by the same `effectiveVolume` every other
+    /// path uses, so bus / category / master / ducking apply identically. What
+    /// is NOT possible is routing an encoded master through the bus EFFECT
+    /// chain: those are `AVAudioUnit`s in the engine graph, and putting the
+    /// asset through the graph is precisely what destroys it. Level yes,
+    /// insert effects no — documented rather than forced.
+    private func playSystemSpatialMedia(action: AudioAction, stepContext: String? = nil) {
+        let resolvedFile = resolveVariation(for: action.file)
+        guard let url = findAudioURL(file: resolvedFile) else {
+            logger.error("""
+                Spatial media DROPPED — file: \(resolvedFile, privacy: .public), \
+                channel: \(action.channel, privacy: .public), \
+                beat: \(stepContext ?? "unknown", privacy: .public)
+                """)
+            return
+        }
+        systemSpatialMedia.play(
+            action: action,
+            url: url,
+            effectiveVolume: effectiveVolume(requested: action.volume, channel: action.channel),
+            presentation: action.spatialPresentation ?? .headTracked
+        )
     }
 
     private func playAmbient(action: AudioAction, stepContext: String? = nil) {
@@ -1349,6 +1530,26 @@ public class SpatialAudioManager {
 
         let resolvedFile = resolveVariation(for: action.file)
 
+        // PRELOAD IS AN OPTIMISATION, NOT A PRECONDITION.
+        //
+        // This used to require `preloadedResources[resolvedFile]` and drop the
+        // cue otherwise — and `preload(files:)` is called by the consumer app,
+        // never by MaestroVision. So positional audio was silent in the editor
+        // ALWAYS: head-locked played (the ambient path opens the URL directly)
+        // while every placed sound dropped, which is exactly what the device
+        // test found. Load on demand and cache it, so a cue plays whether or
+        // not anyone warmed it first.
+        if preloadedResources[resolvedFile] == nil, let url = findAudioURL(file: resolvedFile) {
+            do {
+                let resource = try AudioFileResource.load(contentsOf: url)
+                preloadedResources[resolvedFile] = resource
+                resolvedURLs[resolvedFile] = url
+                logger.info("Loaded spatial audio on demand: \(resolvedFile, privacy: .public)")
+            } catch {
+                logger.error("Could not load spatial audio \(resolvedFile, privacy: .public): \(error.localizedDescription, privacy: .public)")
+            }
+        }
+
         if let resource = preloadedResources[resolvedFile] {
             let vol = effectiveVolume(requested: action.volume, channel: action.channel)
             let controller = sourceEntity.playAudio(resource)
@@ -1377,6 +1578,10 @@ public class SpatialAudioManager {
     // MARK: - Stop
 
     public func stop(channel: String) {
+        // Pipeline B occurrences live in their own player; a channel stop must
+        // reach both or an encoded master keeps playing under the next cue.
+        systemSpatialMedia.stop(channel: channel)
+
         // If channel has a loop config, trigger outro instead of hard stop
         if let state = loopStates[channel], state.phase == .looping {
             playOutro(channel: channel)
@@ -1420,6 +1625,10 @@ public class SpatialAudioManager {
     }
 
     public func stopAll(except protectedChannels: Set<String> = []) {
+        for channel in systemSpatialMedia.activeChannels where !protectedChannels.contains(channel) {
+            systemSpatialMedia.stop(channel: channel)
+        }
+
         for key in ambientChannels.keys where !protectedChannels.contains(key) {
             removeDucking(forTriggerChannel: key)
         }
@@ -1478,6 +1687,11 @@ public class SpatialAudioManager {
     /// Pauses all ambient channel player nodes. Cancels active fade tasks but preserves channel state.
     /// Spatial channels (AudioPlaybackController) don't support pause — noted as a limitation.
     public func pauseAll() {
+        // STATE CHANGE, not a per-frame seek. A gate, a transport pause and a
+        // Timeline jump are events; the encoded player is told when one
+        // happens and never polled for time.
+        systemSpatialMedia.pauseAll()
+
         for key in ambientChannels.keys {
             guard var ch = ambientChannels[key] else { continue }
             ch.fadeTask?.cancel()
@@ -1497,6 +1711,8 @@ public class SpatialAudioManager {
 
     /// Resumes all ambient channel player nodes from where they were paused.
     public func resumeAll() {
+        systemSpatialMedia.resumeAll()
+
         for (_, channel) in ambientChannels {
             channel.playerNode.play()
             // Resume outgoing crossfade node if it was mid-transition
@@ -1511,11 +1727,50 @@ public class SpatialAudioManager {
 
     // MARK: - Fade
 
+    /// Author a fade on `channel`.
+    ///
+    /// RECORDS AN ENVELOPE; it does not ramp anything itself. The 20 Hz
+    /// automation sampler evaluates it through `AudioGainComposition`, which
+    /// is the same function the Mac preview uses — so the editor and the
+    /// device agree, and a fade crossing a volume key composes with it instead
+    /// of racing it.
+    ///
+    /// Falls back to the old immediate ramp ONLY when there is no authored
+    /// clock (a host driving audio outside a sequence), where there is no
+    /// sampler to evaluate an envelope and nothing to race with.
     public func fade(channel: String, to targetVolume: Float, duration: TimeInterval) {
-        fadeVolume(channel: channel, to: targetVolume, duration: duration)
+        guard let clock = audioAutomationClock else {
+            fadeVolume(channel: channel, to: targetVolume, duration: duration)
+            return
+        }
+        audioFades[channel, default: []].append(
+            AudioFade(startTime: clock(), duration: duration, to: targetVolume)
+        )
+        // A sequence that had no automation at all has no sampler running yet.
+        if audioAutomationTask == nil {
+            setSequenceAudioAutomation(
+                tracks: audioAutomationTracks, clock: audioAutomationClock, fades: audioFades
+            )
+        }
     }
 
     private func fadeVolume(channel: String, to targetVolume: Float, duration: TimeInterval, applyMix: Bool = true, rawTarget: Float? = nil) {
+        // NARRATIVE MIXING STILL APPLIES TO AN ENCODED MASTER.
+        //
+        // Level, fades, master and ducking are an output gain — they do not
+        // touch the spatial render, so a spatial mix fades like anything else.
+        // What CANNOT apply is the bus EFFECT chain: those are `AVAudioUnit`s
+        // in the engine graph, and putting the asset through the graph is
+        // exactly what flattens it. Level yes, inserts no.
+        if systemSpatialMedia.isActive(channel: channel) {
+            fadeSystemSpatialVolume(
+                channel: channel,
+                to: rawTarget ?? (applyMix
+                    ? effectiveVolume(requested: targetVolume, channel: channel)
+                    : targetVolume),
+                duration: duration)
+            return
+        }
         guard var ch = ambientChannels[channel] else { return }
 
         ch.fadeTask?.cancel()
@@ -1549,6 +1804,33 @@ public class SpatialAudioManager {
         }
 
         ambientChannels[channel] = ch
+    }
+
+    /// Ramp an encoded master's output gain on the same schedule the graph
+    /// path uses, so a fade sounds identical whichever pipeline carries it.
+    private func fadeSystemSpatialVolume(channel: String, to target: Float, duration: TimeInterval) {
+        systemSpatialFadeTasks[channel]?.cancel()
+        guard duration > 0 else {
+            systemSpatialMedia.setVolume(target, channel: channel)
+            return
+        }
+        let start = systemSpatialMedia.volume(channel: channel) ?? target
+        let steps = max(Int(duration * 30), 1)
+        let stepDuration = duration / Double(steps)
+        let delta = (target - start) / Float(steps)
+
+        systemSpatialFadeTasks[channel] = Task { @MainActor [self] in
+            for i in 0..<steps {
+                guard !Task.isCancelled else { break }
+                systemSpatialMedia.setVolume(start + delta * Float(i + 1), channel: channel)
+                try? await Task.sleep(for: .seconds(stepDuration))
+            }
+            guard !Task.isCancelled else { return }
+            systemSpatialMedia.setVolume(target, channel: channel)
+            // A fade to silence ends the occurrence, exactly as it does on the
+            // graph path — otherwise a faded-out master keeps a player alive.
+            if target <= 0.001 { systemSpatialMedia.stop(channel: channel) }
+        }
     }
 
     /// Fade variant for applyMixToAllChannels (avoids updating targetVolume).

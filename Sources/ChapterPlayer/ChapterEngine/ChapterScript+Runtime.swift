@@ -78,9 +78,10 @@ private extension GateType {
         case .tap:          self = .tap
         case .orchestrator: self = .orchestrator
         case .any:          self = .any
-        case .gaze:         self = .gaze
+        case .viewerFacing: self = .viewerFacing
         case .proximity:    self = .proximity
         case .grab:         self = .grab
+        case .storyCondition: self = .storyCondition
         }
     }
 }
@@ -221,7 +222,13 @@ private extension AudioAction {
             category: dto.category,
             crossfade: dto.crossfade,
             loopConfig: dto.loopConfig.map { LoopConfig($0) },
-            sourceRange: dto.sourceRange
+            sourceRange: dto.sourceRange,
+            // THE LOSS POINT. This bridge copied eleven fields and silently
+            // dropped the twelfth, so the authored playback model never
+            // reached the runtime and `SpatialAudioManager` had nothing to
+            // route on but `spatial != nil`.
+            playbackModel: dto.playbackModel,
+            spatialPresentation: dto.spatialPresentation
         )
     }
 }
@@ -356,6 +363,18 @@ extension StepAction {
         case .enableGesture(let entity):   self = .enableGesture(entity: entity)
         case .disableGesture(let entity):  self = .disableGesture(entity: entity)
 
+        // Interaction control
+        case .enableInteraction(let entity, let id):
+            self = .enableInteraction(entity: entity, interactionId: id)
+        case .disableInteraction(let entity, let id):
+            self = .disableInteraction(entity: entity, interactionId: id)
+
+        // Experience Flow
+        case .navigate(let intent):            self = .navigate(intent)
+
+        // Story State
+        case .setStoryState(let mutation):     self = .setStoryState(mutation)
+
         // System
         case .setUpperLimbVisibility(let v):   self = .setUpperLimbVisibility(Visibility(v))
         case .setKeyboardPassthrough(let on):  self = .setKeyboardPassthrough(on)
@@ -365,6 +384,9 @@ extension StepAction {
             self = .custom(id: id)
 
         // Animate motion — curves carry through directly; format types are reused.
+        case .motionBehavior(let b):
+            self = .motionBehavior(b)
+
         case .animateMotion(let m):
             self = .animateMotion(AnimateMotionAction(
                 entity: m.entity,
@@ -390,8 +412,19 @@ private extension StepGate {
             timeout: dto.timeout,
             prompt: dto.prompt,
             targetEntity: dto.targetEntity,
-            radius: dto.radius
+            radius: dto.radius,
+            storyConditions: dto.storyConditions
         )
+    }
+}
+
+public extension VisibilityState {
+    /// Back to the authored shape, for the completion bridge above.
+    var dto: VisibilityStateDTO {
+        VisibilityStateDTO([
+            "orb": orb, "cube": cube, "cylinder": cylinder,
+            "cone": cone, "pulseRing": pulseRing, "sparkBurst": sparkBurst,
+        ])
     }
 }
 
@@ -408,6 +441,25 @@ private extension VisibilityState {
     }
 }
 
+public extension CompletionAction {
+    /// The AUTHORED completion this runtime value stands for.
+    ///
+    /// The runtime mirrors `CompletionActionDTO` as its own enum, and the one
+    /// place that decides what a completion MEANS navigationally
+    /// (`NavigationIntent.forCompletion`) works on the authored type.
+    /// EXHAUSTIVE with no `default`: a new case must be answered here rather
+    /// than silently becoming a hold.
+    var authored: CompletionActionDTO {
+        switch self {
+        case .holdOnLastStep:                          return .holdOnLastStep
+        case .transitionTo(let phase, let visibility): return .transitionTo(phase: phase, visibility: visibility.dto)
+        case .autoAdvance(let nextSequenceId):         return .autoAdvance(nextSequenceId: nextSequenceId)
+        case .dismissToHome:                           return .dismissToHome
+        case .navigate(let intent):                    return .navigate(intent)
+        }
+    }
+}
+
 private extension CompletionAction {
     public init(_ dto: CompletionActionDTO) {
         switch dto {
@@ -415,6 +467,10 @@ private extension CompletionAction {
         case .transitionTo(let phase, let visibility): self = .transitionTo(phase: phase, visibility: VisibilityState(visibility))
         case .autoAdvance(let nextSequenceId):          self = .autoAdvance(nextSequenceId: nextSequenceId)
         case .dismissToHome:                           self = .dismissToHome
+        // ROUND-TRIPS EXACTLY. `authored` hands this straight back to
+        // `NavigationIntent.forCompletion`, so anything lost here is a
+        // navigation the device cannot perform.
+        case .navigate(let intent):                    self = .navigate(intent)
         }
     }
 }
@@ -452,6 +508,7 @@ extension SequenceDefinition {
             steps: try dto.steps.map { try StepDefinition(dto: $0) },
             animationTracks: dto.animationTracks,
             audioTracks: dto.audioTracks,
+            storyRegions: dto.storyRegions,
             visibility: VisibilityState(dto.visibility),
             onComplete: CompletionAction(dto.onComplete)
         )

@@ -31,6 +31,7 @@ public protocol EntityActionExecutorProtocol {
     func persistEntity(named: String)
     func unpersistEntity(named: String)
     func beginMotion(_ action: AnimateMotionAction)
+    func beginMotionBehavior(_ behavior: ChapterScript.MotionBehaviorDTO)
     func clearAllMotions()
     func applyActiveMotions(stepElapsed: TimeInterval, totalElapsed: TimeInterval)
     func setSequenceAnimation(tracks: [EntityAnimationTrack], clock: (@MainActor () -> TimeInterval)?)
@@ -40,6 +41,7 @@ public protocol EntityActionExecutorProtocol {
 /// the real executor overrides it.
 public extension EntityActionExecutorProtocol {
     func setSequenceAnimation(tracks: [EntityAnimationTrack], clock: (@MainActor () -> TimeInterval)?) {}
+    func beginMotionBehavior(_ behavior: ChapterScript.MotionBehaviorDTO) {}
 }
 
 // MARK: - Implementation
@@ -59,11 +61,30 @@ public final class EntityActionExecutor: EntityActionExecutorProtocol {
     /// Populated by `.persistEntity` step actions; respected by `resetAllEntities()`.
     public var persistedEntityNames: Set<String> = []
 
-    /// Per-entity active motion curves. Populated by `.animateMotion` step actions
-    /// when a step starts; cleared at every step boundary by `clearAllMotions()`.
+    /// Per-entity active motion curves. Populated by `.animateMotion` step actions;
+    /// cleared at every step boundary by `clearAllMotions()`.
     /// `applyActiveMotions(stepElapsed:totalElapsed:)` samples each entry per frame
     /// and writes the result back to the entity's transform.
-    private var activeMotions: [String: AnimateMotionAction] = [:]
+    ///
+    /// `startedAt` is the AUTHORED sequence time at which the motion began, and
+    /// it is what progress is measured from. It used to be measured from the
+    /// STEP's start instead, which meant a motion scheduled 5s into a 10s step
+    /// began life already 50% complete — while the editor's `ScrubCompositor`
+    /// drew the same motion from its beginning. The author saw one thing and
+    /// the headset did another. Both now call `MotionProgress`.
+    ///
+    /// nil when no authored clock was available at registration; the sampler
+    /// then falls back to the old step-relative behaviour rather than freezing.
+    private var activeMotions: [String: (action: AnimateMotionAction, startedAt: TimeInterval?)] = [:]
+
+    /// MOTION ACTIONS 2.0 — active behaviors per entity, MANY per entity
+    /// (a Move In and a Scale In are two behaviors that compose), each with
+    /// the authored time it started. Cleared with the legacy motions.
+    ///
+    /// A behavior is an OFFSET: it is re-applied every frame on top of the
+    /// pose the authored layers produce, never accumulated into the entity —
+    /// so it cannot drift, and removing it restores the authored pose exactly.
+    private var activeBehaviors: [String: [(behavior: ChapterScript.MotionBehaviorDTO, startedAt: TimeInterval?)]] = [:]
 
     /// Sequence-level animation tracks, registered once at sequence start and
     /// sampled every frame on the AUTHORED sequence clock (`animationClock`) —
@@ -352,12 +373,22 @@ public final class EntityActionExecutor: EntityActionExecutorProtocol {
 
     // MARK: - Active motion
 
+    public func beginMotionBehavior(_ behavior: ChapterScript.MotionBehaviorDTO) {
+        guard entityRegistry[behavior.entity] != nil else {
+            logger.warning("beginMotionBehavior: entity '\(behavior.entity)' not found in registry")
+            return
+        }
+        activeBehaviors[behavior.entity, default: []].append((behavior, animationClock?()))
+    }
+
     public func beginMotion(_ action: AnimateMotionAction) {
         guard entityRegistry[action.entity] != nil else {
             logger.warning("beginMotion: entity '\(action.entity)' not found in registry")
             return
         }
-        activeMotions[action.entity] = action
+        // Stamp the authored clock NOW, so progress is measured from when this
+        // motion actually started rather than from whenever its step did.
+        activeMotions[action.entity] = (action, animationClock?())
         logger.debug("beginMotion: \(action.entity) (duration \(action.duration)s)")
     }
 
@@ -366,6 +397,7 @@ public final class EntityActionExecutor: EntityActionExecutorProtocol {
             logger.debug("Cleared \(self.activeMotions.count) active motion(s)")
         }
         activeMotions.removeAll(keepingCapacity: true)
+        activeBehaviors.removeAll(keepingCapacity: true)
     }
 
     public func setSequenceAnimation(tracks: [EntityAnimationTrack], clock: (@MainActor () -> TimeInterval)?) {
@@ -376,13 +408,86 @@ public final class EntityActionExecutor: EntityActionExecutorProtocol {
         }
     }
 
+    /// MOTION ACTIONS 2.0 — compose every active behavior onto the pose the
+    /// authored layers just produced.
+    ///
+    /// Runs AFTER `applySequenceAnimationTracks()` on purpose: the track (or,
+    /// for an unkeyed entity, the registered rest transform) is the base, and
+    /// a behavior only ever ADDS to it. The base is read from AUTHORED state —
+    /// the animation track or `originalTransforms` — never from the entity's
+    /// current on-screen transform, which would fold the previous frame's
+    /// offset back in and make the object walk away over time.
+    private func applyActiveBehaviors() {
+        guard !activeBehaviors.isEmpty else { return }
+        let authoredNow = animationClock?()
+        // NO LIVE HEAD YAW, DELIBERATELY. The scene root is rebased to the
+        // head when a Sequence starts (`rebaseSceneRootToHead`), so the root's
+        // own axes ARE the viewer's axes — and that rebase is the stable one
+        // an author aimed at. Reading the head every frame instead would make
+        // "enter from the left" depend on where the viewer happened to be
+        // looking at the moment the motion fired, so the same authored Chapter
+        // would play differently on every run and would never match the
+        // editor. `nil` means "viewer space is this space", which is exactly
+        // what the Mac Viewer also assumes (camera at the origin facing -Z).
+        let viewerYaw: Float? = nil
+
+        for (name, entries) in activeBehaviors {
+            guard let entity = entityRegistry[name] else { continue }
+            var combined = ChapterScript.MotionOffset.identity
+            for (behavior, startedAt) in entries {
+                let progress: Float
+                if let startedAt, let authoredNow {
+                    progress = ChapterScript.MotionProgress.progress(
+                        startTime: startedAt, now: authoredNow, duration: behavior.duration)
+                } else {
+                    progress = 1
+                }
+                combined = ChapterScript.MotionOffset.combine(
+                    combined,
+                    ChapterScript.MotionBehaviorResolver.offset(
+                        behavior, progress: progress, viewerYaw: viewerYaw)
+                )
+            }
+
+            // The authored base: whatever the track/rest layer produced. For a
+            // keyed entity `applySequenceAnimationTracks` has just written it;
+            // for an unkeyed one it is the registered rest transform.
+            let base = sequenceAnimationTracks.contains { $0.entity == name }
+                ? entity.transform
+                : (originalTransforms[name] ?? entity.transform)
+
+            entity.position = base.translation + combined.positionDelta
+            entity.scale = base.scale * combined.scaleMultiplier
+            if combined.opacityMultiplier < 0.999 {
+                entity.components.set(OpacityComponent(opacity: combined.opacityMultiplier))
+            } else if entity.components.has(OpacityComponent.self) {
+                entity.components.remove(OpacityComponent.self)
+            }
+        }
+    }
+
     public func applyActiveMotions(stepElapsed: TimeInterval, totalElapsed: TimeInterval) {
         applySequenceAnimationTracks()
+        applyActiveBehaviors()
         guard !activeMotions.isEmpty else { return }
         let absoluteTime = Float(totalElapsed)
-        for action in activeMotions.values {
+        let authoredNow = animationClock?()
+        for (action, startedAt) in activeMotions.values {
             guard let entity = entityRegistry[action.entity], entity.isEnabled else { continue }
-            let progress = Float(max(0, min(1, stepElapsed / max(action.duration, 0.001))))
+            // Measured from the MOTION's own start on the authored clock — the
+            // same rule `ScrubCompositor` uses, so the editor and the headset
+            // draw the same frame. Falls back to the legacy step-relative
+            // measure only when no authored clock was available.
+            let progress: Float
+            if let startedAt, let authoredNow {
+                progress = MotionProgress.progress(startTime: startedAt,
+                                                   now: authoredNow,
+                                                   duration: action.duration)
+            } else {
+                progress = MotionProgress.progress(startTime: 0,
+                                                   now: stepElapsed,
+                                                   duration: action.duration)
+            }
 
             if let positionCurve = action.position {
                 entity.position = MotionCurveEvaluator.evaluate(
@@ -412,11 +517,23 @@ public final class EntityActionExecutor: EntityActionExecutorProtocol {
     /// poses. Runs even for disabled entities so a reveal mid-curve finds
     /// the entity already in the right pose. Opacity is only driven when the
     /// track keys it — otherwise the step/action system owns visibility.
+    /// EXPLORE LOOP OVERLAY, by authored entity id.
+    ///
+    /// Set only for the few entities an author explicitly marked "Loop During
+    /// Explore", and only while the story is held at a region boundary. The
+    /// ordinary Sequence clock stays PARKED at that boundary — this replaces
+    /// the sample time for these entities alone. It moves no key, rewrites no
+    /// track and creates no second animation system; when the region resolves
+    /// the override is removed and evaluation returns to normal.
+    public var animationLoopOverrides: [String: Double] = [:]
+
     private func applySequenceAnimationTracks() {
         guard !sequenceAnimationTracks.isEmpty, let clock = animationClock else { return }
         let time = clock()
         for track in sequenceAnimationTracks {
             guard let entity = entityRegistry[track.entity] else { continue }
+            // The overlay wins for this entity, if one is installed.
+            let time = animationLoopOverrides[track.entity] ?? time
             let rest = restTransformData(for: track.entity, entity: entity)
             let pose = SequenceAnimationEvaluator.samplePose(track, at: time, rest: rest)
             entity.position = SIMD3(pose.position.x, pose.position.y, pose.position.z)

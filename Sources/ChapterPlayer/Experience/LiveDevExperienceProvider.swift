@@ -107,10 +107,12 @@ public struct LiveDevExperienceProvider: ExperienceProvider {
     /// Reports the revision of the exact document bytes this load fetched, read
     /// from the Mac's `X-Chapter-Rev` response header.
     ///
-    /// A tethered peer needs this to SEED its revision counter. Without it the
-    /// peer starts at 0 while the Mac is at N, so the first `POST /ops` it sends
-    /// carries a stale base revision and is rejected — stale-op protection firing
-    /// on an edit that was never actually stale.
+    /// Editor peers use it to adopt document and sync revision atomically — the
+    /// revision of the bytes actually fetched, not of the last broadcast they
+    /// happened to hear. A tethered peer needs this to SEED its revision
+    /// counter: without it the peer starts at 0 while the Mac is at N, so the
+    /// first `POST /ops` it sends carries a stale base revision and is
+    /// rejected — stale-op protection firing on an edit that was never stale.
     public let onDocumentRevision: (@Sendable (Int) -> Void)?
 
     public init(
