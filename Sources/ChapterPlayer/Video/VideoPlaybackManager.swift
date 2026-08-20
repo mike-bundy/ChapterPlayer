@@ -952,13 +952,39 @@ public class VideoPlaybackManager {
                 // Rounded corners ride on the entity (stamped from
                 // VideoPanelSpec at materialize) — the geometry clips,
                 // the video texture stays rect-mapped.
-                let radius = entity.components[VideoPanelStyleComponent.self]?.cornerRadius ?? 0
+                let style = entity.components[VideoPanelStyleComponent.self]
+                let radius = style?.cornerRadius ?? 0
                 let mesh = MeshResource.generatePlane(
                     width: width, height: height,
                     cornerRadius: min(radius, min(width, height) / 2)
                 )
                 let material = VideoMaterial(avPlayer: player)
                 entity.components.set(ModelComponent(mesh: mesh, materials: [material]))
+
+                // AUTHORED SPATIAL PRESENTATION, and only when it was authored.
+                //
+                // `.flat` — every Chapter written before the field, and the
+                // default — takes the path above and nothing else, deliberately:
+                // the `VideoMaterial` plane is what makes panel playback
+                // reliable here, and the naive
+                // "VideoPlayerComponent on top of a placeholder" attach is a
+                // documented failure (the grey placeholder stayed and the
+                // texture never swapped in).
+                //
+                // `.spatial` asks the system for its own stereo presentation,
+                // which needs a `VideoPlayerComponent` — so it goes through the
+                // SAME deferred, verified, retrying attach the immersive shell
+                // uses, not the naive one. A refused component never
+                // re-evaluates on its own, which is the whole reason that
+                // machinery exists.
+                if style?.spatialPresentation == .spatial {
+                    let tinting = style?.passthroughTinting ?? false
+                    Task { [weak self] in
+                        await self?.attachSpatialPanelComponent(
+                            channelKey: channelKey, player: player,
+                            entity: entity, passthroughTinting: tinting)
+                    }
+                }
                 // Default to fully visible — preheat callers will dial
                 // OpacityComponent down to 0 after this returns; play()
                 // callers expect the panel to be visible immediately.
@@ -1050,6 +1076,61 @@ public class VideoPlaybackManager {
     ///      `currentRenderingStatus` and, if it never reaches `.ready`,
     ///      remove + re-add a FRESH component (a skipped instance is
     ///      dead) up to three times.
+    /// Attach the system's spatial-video presentation to a flat PANEL.
+    ///
+    /// Deliberately a sibling of `attachImmersiveComponent` rather than a
+    /// parameter on it: the two differ in what they ask RealityKit for (an
+    /// immersive shell is `.full` + `.stereo`; a panel is a screen in the room
+    /// asking for `.spatial`), and folding them together would put a mode
+    /// switch inside the one function whose retry behaviour nobody should have
+    /// to re-read.
+    ///
+    /// FAILURE IS SURVIVABLE HERE, unlike the shell's. The `VideoMaterial`
+    /// plane is already bound and already playing when this runs, so a refused
+    /// component leaves an ordinary flat panel rather than a black hole — which
+    /// is why this logs and gives up instead of retrying forever.
+    ///
+    /// DEVICE QA REQUIRED: this has never run on a headset. macOS has no
+    /// `desiredSpatialVideoMode`, so no Mac test can judge it.
+    private func attachSpatialPanelComponent(
+        channelKey: String, player: AVPlayer, entity: Entity,
+        passthroughTinting: Bool
+    ) async {
+        #if os(visionOS)
+        let isReady = await awaitCurrentItemReadyToPlay(player: player, timeout: 8.0)
+        if !isReady {
+            logger.warning("[video.panel.spatial] item not ready after 8s (channel '\(channelKey)') — attaching anyway")
+        }
+        guard channels[channelKey]?.player === player else {
+            logger.info("[video.panel.spatial] channel '\(channelKey)' was stopped while waiting — abandoning attach")
+            return
+        }
+        for attempt in 1...3 {
+            var component = VideoPlayerComponent(avPlayer: player)
+            component.desiredSpatialVideoMode = .spatial
+            component.desiredViewingMode = .stereo
+            component.isPassthroughTintingEnabled = passthroughTinting
+            entity.components.remove(VideoPlayerComponent.self)
+            entity.components.set(component)
+            let deadline = Date().addingTimeInterval(2.0)
+            while Date() < deadline {
+                if entity.components[VideoPlayerComponent.self]?.currentRenderingStatus == .ready {
+                    logger.info("[video.panel.spatial] spatial presentation ready on attempt \(attempt) (channel '\(channelKey)')")
+                    return
+                }
+                try? await Task.sleep(nanoseconds: 50_000_000)
+            }
+            guard channels[channelKey]?.player === player else { return }
+        }
+        // THE FLAT PANEL IS STILL THERE. Leaving the refused component set
+        // would put a component RealityKit has skipped on top of a working
+        // plane; removing it returns the panel to exactly the state a `.flat`
+        // authoring would have produced.
+        entity.components.remove(VideoPlayerComponent.self)
+        logger.warning("[video.panel.spatial] RealityKit did not accept the spatial presentation for channel '\(channelKey)' — the panel plays flat")
+        #endif
+    }
+
     private func attachImmersiveComponent(
         channelKey: String, player: AVPlayer, entity: Entity
     ) async {

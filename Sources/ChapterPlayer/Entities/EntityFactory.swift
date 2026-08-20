@@ -312,8 +312,17 @@ public final class EntityFactory {
         // Panel styling rides on the entity so the manager (which only
         // knows the presentation's width/height) can honor it when it
         // generates the plane at bind time.
-        if let radius = def.videoPanel?.cornerRadius, radius > 0 {
-            entity.components.set(VideoPanelStyleComponent(cornerRadius: radius))
+        // The panel's authored APPEARANCE rides on the entity, because the
+        // manager binds from the presentation (width/height) and cannot see the
+        // definition. Stamped whenever any of it is non-default.
+        let presentation = def.videoPanel?.spatialPresentation ?? .flat
+        let tinting = def.videoPanel?.passthroughTinting ?? false
+        let radius = def.videoPanel?.cornerRadius ?? 0
+        if radius > 0 || presentation != .flat || tinting {
+            entity.components.set(VideoPanelStyleComponent(
+                cornerRadius: radius,
+                spatialPresentation: presentation,
+                passthroughTinting: tinting))
         }
         return entity
     }
@@ -349,8 +358,18 @@ public struct VideoPanelStyleComponent: Component {
     /// Rounded corner radius in meters (the plane's geometry is clipped;
     /// the video texture stays rect-mapped).
     public var cornerRadius: Float
+    /// AUTHORED SPATIAL PRESENTATION for this panel. `.flat` is what every
+    /// Chapter written before the field does, and is the path this player has
+    /// always taken; `.spatial` asks for the system's own stereo presentation.
+    public var spatialPresentation: SpatialVideoPresentation
+    /// Only consulted under `.spatial`.
+    public var passthroughTinting: Bool
 
-    public init(cornerRadius: Float) {
+    public init(cornerRadius: Float,
+                spatialPresentation: SpatialVideoPresentation = .flat,
+                passthroughTinting: Bool = false) {
         self.cornerRadius = cornerRadius
+        self.spatialPresentation = spatialPresentation
+        self.passthroughTinting = passthroughTinting
     }
 }
