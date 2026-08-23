@@ -114,19 +114,36 @@ public struct LiveDevExperienceProvider: ExperienceProvider {
     /// first `POST /ops` it sends carries a stale base revision and is
     /// rejected — stale-op protection firing on an edit that was never stale.
     public let onDocumentRevision: (@Sendable (Int) -> Void)?
+    /// Reports the transport this load resolved (control/asset base URLs +
+    /// wired flag) from inside `load()`, so a tethered peer can reuse the
+    /// SAME resolved transport for its ops client and uploads instead of
+    /// paying a second Bonjour resolve. Fired exactly once per `load()`,
+    /// after the bulk probe has settled.
+    public let onTransportResolved: (@Sendable (LiveTransport) -> Void)?
 
     public init(
         descriptor: LiveServerDescriptor,
         prefetchProgress: LivePrefetchProgress? = nil,
-        onDocumentRevision: (@Sendable (Int) -> Void)? = nil
+        onDocumentRevision: (@Sendable (Int) -> Void)? = nil,
+        onTransportResolved: (@Sendable (LiveTransport) -> Void)? = nil
     ) {
         self.descriptor = descriptor
         self.prefetchProgress = prefetchProgress
         self.onDocumentRevision = onDocumentRevision
+        self.onTransportResolved = onTransportResolved
     }
 
     public func load() async throws -> LoadedExperience {
-        let baseURL = try await resolveBaseURL()
+        let unconstrainedBaseURL = try await resolveBaseURL()
+        // Wired-preferred pass (refactor-net phase 4): when a Developer
+        // Strap presents a wired path to the same service, control traffic
+        // takes the verified wire. Costs one ≤300 ms gate when no wire
+        // exists.
+        var transport = await LiveTransportResolver.resolve(
+            unconstrainedBaseURL: unconstrainedBaseURL,
+            endpoint: descriptor.endpoint
+        )
+        let baseURL = transport.controlBaseURL
         let docURL = baseURL.appending(path: "chapter.json")
         var request = URLRequest(url: docURL)
         request.cachePolicy = .reloadIgnoringLocalAndRemoteCacheData
@@ -153,6 +170,25 @@ public struct LiveDevExperienceProvider: ExperienceProvider {
             throw ExperienceLoaderError.unreadable(docURL, underlying: error)
         }
 
+        // Bulk path: with a verified wire, race a 4 MB ranged probe of the
+        // largest asset over both paths — the wire must PROVE it beats the
+        // radio before bulk moves onto it (a gen-1 strap often loses).
+        if transport.wiredAvailable,
+           let largest = document.manifest.entries.max(by: { ($0.byteSize ?? 0) < ($1.byteSize ?? 0) }),
+           (largest.byteSize ?? 0) > 0 {
+            let bulkBase = await LiveTransportResolver.raceBulkProbe(
+                wiredBaseURL: transport.controlBaseURL,
+                unconstrainedBaseURL: unconstrainedBaseURL,
+                assetRelativePath: largest.relativePath
+            )
+            transport = LiveTransport(
+                controlBaseURL: transport.controlBaseURL,
+                assetBaseURL: bulkBase,
+                wiredAvailable: true
+            )
+        }
+        onTransportResolved?(transport)
+
         // Phase 5.1: pull every audio / USDZ / image asset from the editor
         // into a local cache. Videos stay on the streaming URL — AVPlayer will
         // Range-fetch them lazily.
@@ -161,7 +197,7 @@ public struct LiveDevExperienceProvider: ExperienceProvider {
             do {
                 resolver = try await LiveMediaResolver.prefetch(
                     manifest: document.manifest,
-                    serverBaseURL: baseURL,
+                    serverBaseURL: transport.assetBaseURL ?? baseURL,
                     cacheRoot: LiveMediaResolver.defaultCacheRoot(),
                     progress: prefetchProgress
                 )
@@ -205,14 +241,9 @@ public struct LiveDevExperienceProvider: ExperienceProvider {
                     if let path = connection.currentPath,
                        let endpoint = path.remoteEndpoint,
                        case .hostPort(let host, let port) = endpoint {
-                        let hostString: String
-                        switch host {
-                        case .name(let s, _):           hostString = s
-                        case .ipv4(let v4):             hostString = "\(v4)"
-                        case .ipv6(let v6):             hostString = "[\(v6)]"
-                        @unknown default:               hostString = "localhost"
-                        }
-                        resumer.resume(.success((hostString, port.rawValue)))
+                        // hostString percent-encodes IPv6 zone ids, so
+                        // AWDL/link-local endpoints form valid URLs.
+                        resumer.resume(.success((hostString(for: host), port.rawValue)))
                     } else {
                         resumer.resume(.failure(ExperienceLoaderError.malformedDocument(reason: "Could not extract host/port")))
                     }
