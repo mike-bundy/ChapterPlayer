@@ -33,6 +33,9 @@ public protocol EntityActionExecutorProtocol {
     func beginMotion(_ action: AnimateMotionAction)
     func beginMotionBehavior(_ behavior: ChapterScript.MotionBehaviorDTO)
     func clearAllMotions()
+    /// Clear only the STEP-SCOPED motions. See the implementation for why
+    /// Motion Actions 2.0 behaviors are deliberately not among them.
+    func clearStepMotions()
     func applyActiveMotions(stepElapsed: TimeInterval, totalElapsed: TimeInterval)
     func setSequenceAnimation(tracks: [EntityAnimationTrack], clock: (@MainActor () -> TimeInterval)?)
 }
@@ -42,6 +45,9 @@ public protocol EntityActionExecutorProtocol {
 public extension EntityActionExecutorProtocol {
     func setSequenceAnimation(tracks: [EntityAnimationTrack], clock: (@MainActor () -> TimeInterval)?) {}
     func beginMotionBehavior(_ behavior: ChapterScript.MotionBehaviorDTO) {}
+    /// Defaults to the old behaviour for conformers outside this package, which
+    /// never had Motion Actions 2.0 to keep alive in the first place.
+    func clearStepMotions() { clearAllMotions() }
 }
 
 // MARK: - Implementation
@@ -400,6 +406,38 @@ public final class EntityActionExecutor: EntityActionExecutorProtocol {
         activeBehaviors.removeAll(keepingCapacity: true)
     }
 
+    /// A STEP BOUNDARY ENDS A LEGACY MOTION AND DOES NOT END A BEHAVIOR.
+    ///
+    /// `animateMotion` is per-step by design — it is sampled on `stepElapsed`
+    /// and the engine's comment at the call site says so. Motion Actions 2.0
+    /// behaviors were swept into the same call only because they were added to
+    /// the dictionary next door, and clearing them at a boundary is wrong for
+    /// three reasons:
+    ///
+    ///   1. A behavior is timed on the AUTHORED SEQUENCE CLOCK through
+    ///      `startedAt` + `MotionProgress`, whose progress SATURATES at 1. It
+    ///      has a natural end of its own and does not need a boundary to stop
+    ///      it; past that point it simply holds its final offset.
+    ///   2. Clearing one restores the authored rest pose, so an EXIT that had
+    ///      finished faded the object out and then a step boundary popped it
+    ///      back to full opacity at its original position.
+    ///   3. The editor never scoped them this way. `SequencePreviewCompositor`
+    ///      walks every timed entry at or before the playhead with no step
+    ///      scoping at all, so the Mac showed a behavior persisting while the
+    ///      headset dropped it — the editor and the device disagreeing about
+    ///      the same authored fact, which is the failure the `startedAt` work
+    ///      above this file was done to remove.
+    ///
+    /// A behavior is re-applied as an OFFSET from the authored base every
+    /// frame and never accumulates, so keeping one costs nothing and cannot
+    /// drift.
+    public func clearStepMotions() {
+        if !activeMotions.isEmpty {
+            logger.debug("Cleared \(self.activeMotions.count) step motion(s)")
+        }
+        activeMotions.removeAll(keepingCapacity: true)
+    }
+
     public func setSequenceAnimation(tracks: [EntityAnimationTrack], clock: (@MainActor () -> TimeInterval)?) {
         sequenceAnimationTracks = tracks.filter { $0.hasAnyKeys }
         animationClock = clock
@@ -433,31 +471,71 @@ public final class EntityActionExecutor: EntityActionExecutorProtocol {
 
         for (name, entries) in activeBehaviors {
             guard let entity = entityRegistry[name] else { continue }
+            // The authored base: whatever the track/rest layer produced. For a
+            // keyed entity `applySequenceAnimationTracks` has just written it;
+            // for an unkeyed one it is the registered rest transform.
+            //
+            // RESOLVED BEFORE the behaviors rather than after: an orbit is
+            // defined by its centre, so the resolver needs to know where the
+            // object sits.
+            let resolvedBase = sequenceAnimationTracks.contains { $0.entity == name }
+                ? entity.transform
+                : (originalTransforms[name] ?? entity.transform)
+            let restForMotion = resolvedBase.translation
+
             var combined = ChapterScript.MotionOffset.identity
             for (behavior, startedAt) in entries {
                 let progress: Float
                 if let startedAt, let authoredNow {
-                    progress = ChapterScript.MotionProgress.progress(
-                        startTime: startedAt, now: authoredNow, duration: behavior.duration)
+                    // AN AMBIENT BEHAVIOR IS NOT A RAMP. `MotionProgress`
+                    // clamps at 1, which is right for an entrance and would
+                    // freeze a cycling cue after one period, so an ambient
+                    // behavior is handed ELAPSED CYCLES instead and the
+                    // resolver takes the phase modulo one.
+                    if behavior.kind == .ambient {
+                        // Elapsed CYCLES. The resolver takes the phase modulo
+                        // one and returns identity once the authored span has
+                        // run out, so a trimmed cue stops rather than freezing
+                        // mid-phase.
+                        let period = max(ChapterScript.MotionProgress.minimumDuration,
+                                         behavior.duration)
+                        progress = Float((authoredNow - startedAt) / period)
+                    } else {
+                        progress = ChapterScript.MotionProgress.progress(
+                            startTime: startedAt, now: authoredNow, duration: behavior.duration)
+                    }
                 } else {
-                    progress = 1
+                    // With no authored clock an ambient behavior sits at its
+                    // authored pose rather than at some arbitrary point in a
+                    // cycle it cannot measure.
+                    progress = behavior.kind == .ambient ? 0 : 1
                 }
                 combined = ChapterScript.MotionOffset.combine(
                     combined,
                     ChapterScript.MotionBehaviorResolver.offset(
-                        behavior, progress: progress, viewerYaw: viewerYaw)
+                        behavior, progress: progress, viewerYaw: viewerYaw,
+                        restPosition: restForMotion)
                 )
             }
 
-            // The authored base: whatever the track/rest layer produced. For a
-            // keyed entity `applySequenceAnimationTracks` has just written it;
-            // for an unkeyed one it is the registered rest transform.
-            let base = sequenceAnimationTracks.contains { $0.entity == name }
-                ? entity.transform
-                : (originalTransforms[name] ?? entity.transform)
+            let base = resolvedBase
 
             entity.position = base.translation + combined.positionDelta
             entity.scale = base.scale * combined.scaleMultiplier
+            // ROTATION COMPOSES ON TOP OF THE AUTHORED ORIENTATION, in the
+            // entity's own space, so a Slow Spin turns an object about its own
+            // up axis wherever the author aimed it. Skipped entirely when
+            // there is none, so nothing that does not spin pays for a
+            // quaternion multiply every frame.
+            if combined.rotationDelta != .zero {
+                let radians = combined.rotationDelta * (.pi / 180)
+                let spin = simd_quatf(angle: radians.y, axis: [0, 1, 0])
+                    * simd_quatf(angle: radians.x, axis: [1, 0, 0])
+                    * simd_quatf(angle: radians.z, axis: [0, 0, 1])
+                entity.orientation = base.rotation * spin
+            } else {
+                entity.orientation = base.rotation
+            }
             if combined.opacityMultiplier < 0.999 {
                 entity.components.set(OpacityComponent(opacity: combined.opacityMultiplier))
             } else if entity.components.has(OpacityComponent.self) {

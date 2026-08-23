@@ -533,7 +533,13 @@ public final class SequenceEngine {
             // Per-frame motion curves are scoped to a single step. Clearing here means
             // the previous step's `.animateMotion` actions stop affecting entities
             // before this step's own actions run (and may register fresh ones).
-            entityExecutor?.clearAllMotions()
+            //
+            // MOTION ACTIONS 2.0 BEHAVIORS ARE NOT STEP-SCOPED and are not
+            // cleared here — they are timed on the authored sequence clock and
+            // saturate on their own. `clearStepMotions()` carries the whole
+            // reasoning; a Sequence teardown still clears everything through
+            // `resetAllEntities()`.
+            entityExecutor?.clearStepMotions()
 
             await executeActions(step.actions)
             let actionsElapsed = Date.now.timeIntervalSince(stepStartTime)

@@ -730,10 +730,10 @@ public final class InteractionController {
     ///   viewer's focus, which is motion in the near field. Under Reduce Motion it
     ///   becomes a static highlight instead of being switched OFF: removing the
     ///   affordance would trade a motion problem for a discoverability one.
-    /// * **Increase Contrast / Differentiate Without Colour** — strength is
+    /// * **Increase Contrast / Differentiate Without Color** — strength is
     ///   raised so the treatment survives being drawn over busy immersive
     ///   footage. It is a luminance change, not a hue change, so it never
-    ///   depends on colour alone; and the `AccessibilityComponent` above is a
+    ///   depends on color alone; and the `AccessibilityComponent` above is a
     ///   non-visual cue that is always present.
     private func hoverEffect(for feedback: InteractionFeedbackSpec) -> HoverEffectComponent? {
         let boost: Float = increasedContrast ? 1.6 : 1.0
