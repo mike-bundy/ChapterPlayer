@@ -564,6 +564,10 @@ open class ChapterPlayerCore {
             logger.info("[backdrop] skybox registration wait finished (registered=\(self.videoManager.videoEntityRegistry["skybox"] != nil))")
         }
         applySequenceBackdrop(sequence)
+        // SEQUENCE-LOCAL REST: place this sequence's objects where IT
+        // stages them (and return anything the previous sequence placed
+        // to its Chapter rest) before the first frame plays.
+        entityExecutor.applyRestPlacements(sequence.restPlacements)
         sequenceEngine.play(sequence: sequence, startingAtStepIndex: startIndex)
     }
 

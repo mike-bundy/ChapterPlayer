@@ -625,9 +625,42 @@ public final class EntityActionExecutor: EntityActionExecutorProtocol {
         }
     }
 
-    /// The entity's rest pose for unkeyed channels: its registration-time
-    /// transform (the document's base transform).
+    /// SEQUENCE-LOCAL REST OVERRIDES, installed at sequence entry from
+    /// `SequenceDefinition.restPlacements`. An entry replaces the
+    /// Chapter rest for animation's unkeyed-channel fallback while its
+    /// sequence plays; `applyRestPlacements` swaps the set atomically on
+    /// every entry so a placement can never leak into the next sequence.
+    private var sequenceRestOverrides: [String: TransformData] = [:]
+
+    /// Install a sequence's local rest placements: entities placed by
+    /// the PREVIOUS sequence and not by this one return to their
+    /// Chapter rest, placed entities move to their local rest, and the
+    /// animation fallback follows. Idempotent per sequence entry.
+    public func applyRestPlacements(_ placements: [String: TransformData]) {
+        // Restore anything the outgoing sequence had placed.
+        for name in sequenceRestOverrides.keys where placements[name] == nil {
+            if let original = originalTransforms[name], let entity = entityRegistry[name] {
+                entity.transform = original
+            }
+        }
+        sequenceRestOverrides = placements
+        for (name, data) in placements {
+            guard let entity = entityRegistry[name] else { continue }
+            entity.transform = Transform(
+                scale: SIMD3(data.scale.x, data.scale.y, data.scale.z),
+                rotation: simd_quatf(vector: SIMD4(
+                    data.rotation.x, data.rotation.y, data.rotation.z, data.rotation.w
+                )),
+                translation: SIMD3(data.position.x, data.position.y, data.position.z)
+            )
+        }
+    }
+
+    /// The entity's rest pose for unkeyed channels: this sequence's
+    /// local placement when one exists, else its registration-time
+    /// transform (the document's Chapter-global rest).
     private func restTransformData(for name: String, entity: Entity) -> TransformData {
+        if let local = sequenceRestOverrides[name] { return local }
         let t = originalTransforms[name] ?? entity.transform
         return TransformData(
             position: Vec3(t.translation.x, t.translation.y, t.translation.z),

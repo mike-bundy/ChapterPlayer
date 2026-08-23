@@ -51,6 +51,12 @@ public struct SequenceDefinition: Sendable {
     /// models. Empty = the Sequence is entirely Directed, which is every
     /// document written before Explore existed.
     public let storyRegions: [StoryRegion]
+    /// SEQUENCE-LOCAL REST PLACEMENT (format type used directly): where
+    /// each placed entity sits at rest IN THIS SEQUENCE, overriding its
+    /// Chapter-global transform. Applied at sequence entry; entities
+    /// without an entry keep (or return to) their Chapter rest. Empty =
+    /// every document written before local placement existed.
+    public let restPlacements: [String: TransformData]
     public let visibility: VisibilityState
     public let onComplete: CompletionAction
 
@@ -65,6 +71,7 @@ public struct SequenceDefinition: Sendable {
         animationTracks: [EntityAnimationTrack] = [],
         audioTracks: [AudioAutomationTrack] = [],
         storyRegions: [StoryRegion] = [],
+        restPlacements: [String: TransformData] = [:],
         visibility: VisibilityState = VisibilityState(),
         onComplete: CompletionAction = .holdOnLastStep
     ) {
@@ -78,6 +85,7 @@ public struct SequenceDefinition: Sendable {
         self.animationTracks = animationTracks
         self.audioTracks = audioTracks
         self.storyRegions = storyRegions
+        self.restPlacements = restPlacements
         self.visibility = visibility
         self.onComplete = onComplete
     }

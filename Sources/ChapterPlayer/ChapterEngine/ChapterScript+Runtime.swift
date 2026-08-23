@@ -509,6 +509,7 @@ extension SequenceDefinition {
             animationTracks: dto.animationTracks,
             audioTracks: dto.audioTracks,
             storyRegions: dto.storyRegions,
+            restPlacements: dto.restPlacements ?? [:],
             visibility: VisibilityState(dto.visibility),
             onComplete: CompletionAction(dto.onComplete)
         )
