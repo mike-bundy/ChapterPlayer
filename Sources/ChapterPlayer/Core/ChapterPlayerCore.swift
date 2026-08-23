@@ -1022,24 +1022,39 @@ open class ChapterPlayerCore {
                 let mesh: MeshResource
                 switch field {
                 case .equirect360:
+                    // Deliberately still `generateSphere`: RealityKit's own
+                    // UV convention renders 360° correctly, and swapping the
+                    // generator risks a silent handedness regression (the
+                    // same reasoning as the Mac's `BackdropMesh`).
                     mesh = MeshResource.generateSphere(radius: radius)
                 case .equirect180, .appleImmersive, .custom:
-                    // Partial shell — still approximated by a full sphere;
-                    // visionOS doesn't ship a hemisphere generator.
-                    // For most VR180 matte paintings this still looks
-                    // correct because the texture's "back half" maps
-                    // to a duplicate of the front when the image is
-                    // encoded that way. For true 180° images, scale
-                    // the texture differently in materials.
+                    // PARTIAL SHELL from the authored coverage: the shell
+                    // sweeps exactly `field.horizontalDegrees`, centred on
+                    // forward, so a 180° plate stops at the hemisphere
+                    // boundary and a 190°/220° plate sweeps its real field
+                    // instead of being smeared across a full sphere
+                    // (ShellGeometry — the runtime twin of the Mac's
+                    // `MaestroKit.BackdropGeometry`, conventions in
+                    // lock-step by contract).
                     //
-                    // KNOWN GAP: this is now wrong for Apple Immersive and
-                    // custom fields in a way it was only arguably wrong for
-                    // 180° — their sweep is neither π nor 2π, so no
-                    // full-sphere mapping approximates them. The correct fix
-                    // is to build the shell from `field.horizontalDegrees`,
-                    // the way the Mac's `BackdropMesh` does via
-                    // `MaestroKit.BackdropGeometry`. Tracked in STATUS.
-                    mesh = MeshResource.generateSphere(radius: radius)
+                    // NOTE: Apple Immersive remains an EDITOR APPROXIMATION
+                    // here — Apple's projection is parametric fisheye, not
+                    // equirectangular, so the equirect mapping onto the
+                    // correct angular span is coverage-true but not
+                    // lens-true. Real AIV playback goes through
+                    // VideoPlayerComponent, never this path.
+                    let shellData = ShellGeometry.shell(field: field, radius: radius)
+                    var descriptor = MeshDescriptor(name: "backdrop_\(Int(field.horizontalDegrees))")
+                    descriptor.positions = MeshBuffer(shellData.positions)
+                    descriptor.normals = MeshBuffer(shellData.normals)
+                    descriptor.textureCoordinates = MeshBuffer(shellData.uvs)
+                    descriptor.primitives = .triangles(shellData.indices)
+                    if let generated = try? MeshResource.generate(from: [descriptor]) {
+                        mesh = generated
+                    } else {
+                        logger.warning("Partial shell generation failed for \(field.horizontalDegrees)°; falling back to a full sphere.")
+                        mesh = MeshResource.generateSphere(radius: radius)
+                    }
                 }
                 var material = UnlitMaterial()
                 material.color = .init(tint: .white, texture: .init(texture))
