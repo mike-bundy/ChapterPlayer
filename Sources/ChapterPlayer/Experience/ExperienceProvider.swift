@@ -21,6 +21,15 @@ public struct LoadedExperience: Sendable {
     public let mediaResolver: MediaResolver
     /// On-disk root the experience was loaded from. `nil` for synthetic / in-memory loads.
     public let rootURL: URL?
+
+    /// Public so hosts can adopt synthetic / in-memory documents through
+    /// the SAME path a provider load lands in (editor QA fixtures, tests)
+    /// instead of inventing a second load path.
+    public init(document: ChapterDocument, mediaResolver: MediaResolver, rootURL: URL?) {
+        self.document = document
+        self.mediaResolver = mediaResolver
+        self.rootURL = rootURL
+    }
 }
 
 public enum ExperienceLoaderError: Error, CustomStringConvertible, LocalizedError {
