@@ -30,6 +30,18 @@ public struct LiveServerDescriptor: Hashable, Identifiable, Sendable {
     /// Resolved host:port endpoint. Filled in by `LiveServerBrowser` after a resolve pass.
     public let endpoint: NWEndpoint?
 
+    /// Public so a QA harness can mint a DIRECT descriptor at the
+    /// discovery boundary (a fixed host:port peer with Bonjour left
+    /// out). Everything past the descriptor — transport, revisions,
+    /// ops, SSE — stays the one production path.
+    public init(serviceName: String,
+                serviceType: String = "_maestro._tcp",
+                endpoint: NWEndpoint?) {
+        self.serviceName = serviceName
+        self.serviceType = serviceType
+        self.endpoint = endpoint
+    }
+
     public var id: String { "\(serviceName)|\(serviceType)" }
 }
 
