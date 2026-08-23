@@ -275,14 +275,14 @@ public final class EntityFactory {
             var light = PointLightComponent()
             light.color = uiColor(spec.color)
             light.intensity = spec.intensity
-            light.attenuationRadius = spec.range ?? 5
+            light.attenuationRadius = spec.range ?? LightSpec.defaultRange
             entity.components.set(light)
         case .spot:
             var light = SpotLightComponent()
             light.color = uiColor(spec.color)
             light.intensity = spec.intensity
-            light.attenuationRadius = spec.range ?? 5
-            light.outerAngleInDegrees = spec.spotAngle ?? 45
+            light.attenuationRadius = spec.range ?? LightSpec.defaultRange
+            light.outerAngleInDegrees = spec.spotAngle ?? LightSpec.defaultSpotAngleDegrees
             entity.components.set(light)
         case .ambient:
             // RealityKit doesn't have an ambient light component; approximate
