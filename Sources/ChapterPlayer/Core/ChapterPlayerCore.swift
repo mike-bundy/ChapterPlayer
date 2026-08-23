@@ -282,6 +282,15 @@ open class ChapterPlayerCore {
         }
     }
 
+    /// The wearer's current device transform from the live
+    /// world-tracking session (nil before the immersive space has one,
+    /// or mid-relocalization). `leveled` strips pitch/roll, leaving
+    /// yaw + position — the sample an editor uses to align its
+    /// presentation root to the wearer. Read-only: nothing here moves.
+    public func sampleHeadTransform(leveled: Bool) -> Transform? {
+        worldTracking?.sampleDeviceTransform(leveled: leveled)
+    }
+
     // MARK: - Window / Space IDs
 
     /// Identifier the consumer's `ImmersiveSpace` scene was declared
