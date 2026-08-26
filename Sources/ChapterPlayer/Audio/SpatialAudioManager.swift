@@ -168,6 +168,19 @@ public class SpatialAudioManager {
 
     // MARK: - Mix State (1A)
 
+    /// MONITORING GAIN — the editor's preview mute, and NOT part of the
+    /// Chapter.
+    ///
+    /// `mixState.masterVolume` is AUTHORED: an action sets it and it is
+    /// what the audience hears. Muting a preview is a decision about this
+    /// room and this moment, so writing it there would silence the piece
+    /// for everyone who ever plays it. This rides on the engine's output
+    /// instead: nothing about it is serialized, synced, undone, or
+    /// readable by any authored action.
+    public var monitorVolume: Float = 1.0 {
+        didSet { audioEngine.mainMixerNode.outputVolume = max(0, min(1, monitorVolume)) }
+    }
+
     public var mixState = AudioMixState() {
         didSet { applyMixToAllChannels() }
     }

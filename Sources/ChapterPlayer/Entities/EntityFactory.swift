@@ -69,6 +69,8 @@ public final class EntityFactory {
             entity = makeLightEntity(definition)
         case .videoPanel:
             entity = makeVideoPanel(definition)
+        case .imagePanel:
+            entity = makeImagePanel(definition)
         case .particles:
             entity = makeParticleEmitter(definition)
         case .audioEmitter:
@@ -175,6 +177,54 @@ public final class EntityFactory {
     /// Build a flat plane textured with an image asset (an "Add Image"
     /// reveal). Returns a neutral placeholder immediately and swaps in the
     /// texture (and the image's aspect ratio) once it loads asynchronously.
+    /// A STILL ON A PLATE — the authored kind, not the filename-sniffed one.
+    ///
+    /// The size comes from `ImagePanelSpec`, which the editor computed once
+    /// from the source's real pixel dimensions, so the picture is never
+    /// stretched and never cropped. An absent spec means the editor had not
+    /// measured the file, and a bare entity is the honest render for that: it
+    /// says "not ready" rather than showing a photograph at a shape nobody
+    /// chose.
+    ///
+    /// AN APPLE SPATIAL PHOTO KEEPS ITS TWO EYES. `ImagePresentationComponent`
+    /// is the platform's own path for that, and the alternative — sampling one
+    /// eye into a texture — is a silent flatten: it looks completely correct on
+    /// a Mac and is wrong only through a headset. The mode is requested only
+    /// after `availableViewingModes` says the file supports it, so an ordinary
+    /// picture takes the plain plate and nothing has to know in advance which
+    /// it is.
+    private func makeImagePanel(_ def: EntityDefinition) -> Entity {
+        guard let spec = def.imagePanel else { return Entity() }
+        let model = ModelEntity(
+            mesh: .generatePlane(width: spec.width, height: spec.height,
+                                 cornerRadius: spec.cornerRadius ?? 0),
+            materials: [UnlitMaterial(color: .gray)]
+        )
+        guard let url = mediaResolver?.url(for: spec.file, kind: .image) else { return model }
+
+        Task { @MainActor in
+            #if os(visionOS)
+            if spec.preferStereoPresentation != false,
+               let presentation = try? await ImagePresentationComponent(contentsOf: url),
+               presentation.availableViewingModes.contains(.spatialStereo) {
+                var component = presentation
+                component.desiredViewingMode = .spatialStereo
+                // The component draws the picture itself, so the holding plate
+                // must go — leaving both would put a grey quad behind a stereo
+                // image at the same depth.
+                model.model = nil
+                model.components.set(component)
+                return
+            }
+            #endif
+            guard let texture = try? await TextureResource(contentsOf: url) else { return }
+            var material = UnlitMaterial()
+            material.color = .init(tint: .white, texture: .init(texture))
+            model.model?.materials = [material]
+        }
+        return model
+    }
+
     private func makeImagePlane(_ def: EntityDefinition) -> Entity {
         let model = ModelEntity(
             mesh: .generatePlane(width: 1.0, height: 1.0),
