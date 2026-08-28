@@ -332,6 +332,11 @@ open class ChapterPlayerCore {
     /// image / no-backdrop sequences.
     public var currentBackdropUSDZ: Entity?
 
+    /// Which backdrop USDZ load is the current one. Bumped on every apply and
+    /// on every teardown; a completion whose generation has moved on discards
+    /// itself instead of installing a second copy.
+    private var backdropUSDZGeneration: UInt64 = 0
+
     /// Whether the skybox entity currently holds a `.image` backdrop's
     /// sphere mesh + UnlitMaterial. Tracked separately from the
     /// VideoPlayerComponent path so sequence transitions know which
@@ -939,6 +944,9 @@ open class ChapterPlayerCore {
         // First, drop whatever was bound for the previous sequence so
         // the new sequence starts from a clean slate.
         videoManager.stop(channel: Self.backdropVideoChannel)
+        // A load in flight is now stale by definition — see the generation
+        // note at the USDZ branch below.
+        backdropUSDZGeneration &+= 1
         currentBackdropUSDZ?.removeFromParent()
         currentBackdropUSDZ = nil
         tearDownImageSkybox()
@@ -994,11 +1002,35 @@ open class ChapterPlayerCore {
                 logger.warning("Backdrop USDZ '\(assetId)' could not be located on disk.")
                 return
             }
+            // ONE LOAD WINS, AND IT INSTALLS INTO THE ROOT THAT IS CURRENT.
+            //
+            // The staleness guard here used to be `activeSequenceId ==
+            // sequenceId`, which cannot see a RE-ENTRY into the same Sequence —
+            // a Restart, or a Go To back to it. Both loads then passed, both
+            // called `addChild`, and `currentBackdropUSDZ` kept only the
+            // second: the first copy was stranded under the root with no
+            // reference left to remove it. The generation counter answers
+            // "is this still the load anyone asked for?", which is the actual
+            // question.
+            //
+            // The root is also re-read on completion rather than captured at
+            // dispatch: an immersive remount between the two would otherwise
+            // install the backdrop into the torn-down scene.
+            backdropUSDZGeneration &+= 1
+            let generation = backdropUSDZGeneration
             Task { @MainActor in
                 do {
                     let entity = try await Entity(contentsOf: url)
-                    guard self.activeSequenceId == sequenceId else { return }
-                    sceneRoot.addChild(entity)
+                    guard self.backdropUSDZGeneration == generation,
+                          self.activeSequenceId == sequenceId else { return }
+                    guard let liveRoot = self.immersiveSceneRoot else {
+                        logger.warning("Backdrop USDZ '\(assetId)' finished loading after the immersive root went away — discarding.")
+                        return
+                    }
+                    // Anything a previous load installed goes first: this is
+                    // the only reference to it that will ever exist.
+                    self.currentBackdropUSDZ?.removeFromParent()
+                    liveRoot.addChild(entity)
                     self.currentBackdropUSDZ = entity
                 } catch {
                     logger.warning("Failed to load backdrop USDZ '\(assetId)': \(String(describing: error))")

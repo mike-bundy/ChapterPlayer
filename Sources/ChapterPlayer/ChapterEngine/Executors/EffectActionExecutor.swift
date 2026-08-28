@@ -44,7 +44,55 @@ public final class EffectActionExecutor: EffectActionExecutorProtocol {
 
     public init() {}
     /// Root entity that owns all effect entities. Wired by ImmersiveView at setup.
-    public weak var sceneRoot: Entity?
+    ///
+    /// WEAK, AND RE-WIRED ON EVERY IMMERSIVE MOUNT — which is exactly why the
+    /// effect entities below cannot be parented once and cached forever.
+    public weak var sceneRoot: Entity? {
+        didSet {
+            guard oldValue !== sceneRoot else { return }
+            // THE ROOT WENT AWAY OR CHANGED. Detach what we own from the old
+            // one rather than leaving it stranded there: the old subtree may
+            // outlive the mount, and an enabled effect under a dead root is a
+            // running animation nobody can see and nobody can stop.
+            //
+            // The entities are KEPT — they are ours, they are cheap, and they
+            // re-attach on the next show. What must not survive is the
+            // PARENTING, because that is the thing that says which scene they
+            // belong to.
+            for entity in [pulseRingEntity as Entity?, sparkBurstEntity as Entity?] {
+                guard let entity, entity.parent !== sceneRoot else { continue }
+                entity.isEnabled = false
+                entity.removeFromParent()
+            }
+        }
+    }
+
+    /// AN EFFECT ENTITY BELONGS TO THE ROOT THAT IS CURRENT WHEN IT IS SHOWN.
+    ///
+    /// This used to be `if existing == nil { sceneRoot?.addChild(entity) }` —
+    /// parented on FIRST show and never again. Two ways that failed, both
+    /// silent and both permanent for the rest of the session:
+    ///
+    ///   • the immersive space remounts, `sceneRoot` becomes a different
+    ///     entity, and the cached effect stays a child of the old (dead) root —
+    ///     `isEnabled = true` then enables something that is not in any scene,
+    ///     so the effect simply never appears again;
+    ///   • the very first show happens before the root is wired, so
+    ///     `sceneRoot?.addChild` no-ops — and because the entity was cached
+    ///     anyway, `existing == nil` is false ever after and it never recovers.
+    ///
+    /// Re-parenting is idempotent: `addChild` on the entity's current parent is
+    /// a no-op, so the steady state costs an identity comparison.
+    private func attachToCurrentRoot(_ entity: Entity, what: String) {
+        guard let root = sceneRoot else {
+            logger.warning("\(what) has no scene root to attach to — it will attach on the next show")
+            entity.removeFromParent()
+            return
+        }
+        guard entity.parent !== root else { return }
+        entity.removeFromParent()
+        root.addChild(entity)
+    }
 
     public private(set) var pulseRingEntity: PulseRingEntity?
     public private(set) var sparkBurstEntity: SparkBurstEntity?
@@ -57,14 +105,11 @@ public final class EffectActionExecutor: EffectActionExecutorProtocol {
     // MARK: - Pulse Ring
 
     public func showPulseRing(config: PulseRingConfig) {
-        let existing = pulseRingEntity
-        let entity = existing ?? PulseRingEntity()
+        let entity = pulseRingEntity ?? PulseRingEntity()
         entity.configure(config)
         entity.isEnabled = true
-        if existing == nil {
-            sceneRoot?.addChild(entity)
-            pulseRingEntity = entity
-        }
+        attachToCurrentRoot(entity, what: "pulse ring")
+        pulseRingEntity = entity
         logger.info("showPulseRing — \(config.ringCount) discs at radius \(config.radius)m")
     }
 
@@ -76,14 +121,11 @@ public final class EffectActionExecutor: EffectActionExecutorProtocol {
     // MARK: - Spark Burst
 
     public func startSparkBurst(config: SparkBurstConfig) {
-        let existing = sparkBurstEntity
-        let entity = existing ?? SparkBurstEntity()
+        let entity = sparkBurstEntity ?? SparkBurstEntity()
         entity.configure(config)
         entity.isEnabled = true
-        if existing == nil {
-            sceneRoot?.addChild(entity)
-            sparkBurstEntity = entity
-        }
+        attachToCurrentRoot(entity, what: "spark burst")
+        sparkBurstEntity = entity
         entity.trigger(duration: config.duration)
         logger.info("startSparkBurst — duration \(config.duration)s at \(String(describing: config.position))")
     }

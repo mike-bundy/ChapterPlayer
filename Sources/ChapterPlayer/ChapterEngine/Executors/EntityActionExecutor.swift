@@ -355,19 +355,44 @@ public final class EntityActionExecutor: EntityActionExecutorProtocol {
         }
     }
 
+    /// RESET MEANS "RETURN TO THE AUTHORED REST FOR THE SEQUENCE IN CONTEXT".
+    ///
+    /// This used to move every entity to `originalTransforms` — the
+    /// CHAPTER-global rest — and ignore `sequenceRestOverrides` entirely. Every
+    /// path into a Sequence goes `playSequence` → `applyRestPlacements` →
+    /// `SequenceEngine.play` → `stop(resetEntities: true)` → here, so a
+    /// Sequence-local placement was applied and then **immediately wiped**, one
+    /// call later, before the first frame. The object played from its
+    /// Chapter-global pose while `restTransformData` — which DID consult the
+    /// overrides — fed the local one to the animation evaluator, so an
+    /// unanimated object sat at one pose and an animated one jumped to another
+    /// the moment its first sample landed.
+    ///
+    /// Resolving it here rather than re-ordering the calls is deliberate: the
+    /// executor is the thing that knows what an entity's rest IS, and a fix
+    /// that depends on two call sites staying in a particular order is one
+    /// refactor away from breaking again. It is also why nothing re-applies the
+    /// placement per frame — this runs once per Sequence entry, exactly as
+    /// before.
     public func resetAllEntities() {
         clearAllMotions()
-        for (name, originalTransform) in originalTransforms {
+        for name in originalTransforms.keys {
             guard let entity = entityRegistry[name] else { continue }
             if persistedEntityNames.contains(name) {
                 logger.debug("resetAllEntities: skipping persisted entity '\(name)'")
                 continue
             }
-            entity.move(
-                to: originalTransform,
-                relativeTo: entity.parent,
-                duration: 0
-            )
+            guard let restTransform = authoredRestTransform(for: name) else { continue }
+            // ASSIGNED, NOT ANIMATED. `move(to:relativeTo:duration: 0)` is the
+            // animation API asked to take no time, and it is not equivalent: it
+            // goes through RealityKit's animation system, which does nothing
+            // for an entity that is not in a scene — so a reset that ought to
+            // be a plain state restore silently did nothing in exactly the
+            // conditions a test can create, and depends on scene membership on
+            // device. `transform` IS parent-relative, so this is the same
+            // pose by definition, and it is what `applyRestPlacements` two
+            // methods below has always done. One restore, one mechanism.
+            entity.transform = restTransform
             if entity.components.has(OpacityComponent.self) {
                 entity.opacity = 1.0
             }
@@ -478,9 +503,25 @@ public final class EntityActionExecutor: EntityActionExecutorProtocol {
             // RESOLVED BEFORE the behaviors rather than after: an orbit is
             // defined by its centre, so the resolver needs to know where the
             // object sits.
-            let resolvedBase = sequenceAnimationTracks.contains { $0.entity == name }
-                ? entity.transform
-                : (originalTransforms[name] ?? entity.transform)
+            // THE KEYED BRANCH READS `entity.transform` ONLY BECAUSE
+            // `applySequenceAnimationTracks` WROTE IT THIS FRAME — that pass
+            // bails out when there is no clock, and without this guard the read
+            // silently became the PREVIOUS frame's composed pose, folding each
+            // frame's offset back into the next one. That is the "walk away
+            // over time" this method's own header warns about.
+            let trackWroteThisFrame = authoredNow != nil
+                && sequenceAnimationTracks.contains { $0.entity == name }
+            let resolvedBase: Transform
+            if trackWroteThisFrame {
+                resolvedBase = entity.transform
+            } else if let rest = authoredRestTransform(for: name) {
+                // The Sequence-local placement when there is one: a behavior on
+                // a locally-staged object used to compose onto the
+                // CHAPTER-global pose, so it entered from the wrong place.
+                resolvedBase = rest
+            } else {
+                continue
+            }
             let restForMotion = resolvedBase.translation
 
             var combined = ChapterScript.MotionOffset.identity
@@ -612,7 +653,9 @@ public final class EntityActionExecutor: EntityActionExecutorProtocol {
             guard let entity = entityRegistry[track.entity] else { continue }
             // The overlay wins for this entity, if one is installed.
             let time = animationLoopOverrides[track.entity] ?? time
-            let rest = restTransformData(for: track.entity, entity: entity)
+            // NO AUTHORED REST ⇒ NO SAMPLE. Evaluating against a fabricated
+            // rest writes the unkeyed channels somewhere nobody authored.
+            guard let rest = authoredRest(for: track.entity) else { continue }
             let pose = SequenceAnimationEvaluator.samplePose(track, at: time, rest: rest)
             entity.position = SIMD3(pose.position.x, pose.position.y, pose.position.z)
             entity.orientation = simd_quatf(
@@ -656,12 +699,30 @@ public final class EntityActionExecutor: EntityActionExecutorProtocol {
         }
     }
 
-    /// The entity's rest pose for unkeyed channels: this sequence's
-    /// local placement when one exists, else its registration-time
-    /// transform (the document's Chapter-global rest).
-    private func restTransformData(for name: String, entity: Entity) -> TransformData {
+    /// THE AUTHORED REST — this Sequence's local placement when it has one,
+    /// else the registration-time transform (the Chapter-global rest).
+    ///
+    /// OPTIONAL, AND THAT IS THE POINT. Both readers used to end
+    /// `?? entity.transform`, which makes the RENDERED pose the authored one
+    /// the moment an entity is in the registry without a registration snapshot
+    /// — and a rendered pose is animation, motion offsets and effects already
+    /// composed in. Folding that back in as "rest" is how an object walks away
+    /// from where it was authored, a frame at a time, with the document saying
+    /// something else the whole way. Authored state flows to rendered state and
+    /// never back. If there is no authored rest for a name, this executor does
+    /// not know where that object belongs and must not invent an answer from
+    /// the screen.
+    ///
+    /// (The gap it papered over was real: a host that puts an entity straight
+    /// into `entityRegistry` instead of calling `register(_:name:)` gets no
+    /// snapshot. That is fixed at the host — see MaestroVision's placeholder
+    /// proxies — so this returning nil now means a genuine bug, and says so.)
+    private func authoredRest(for name: String) -> TransformData? {
         if let local = sequenceRestOverrides[name] { return local }
-        let t = originalTransforms[name] ?? entity.transform
+        guard let t = originalTransforms[name] else {
+            logger.warning("no authored rest for '\(name)' — it was never registered; leaving its pose alone")
+            return nil
+        }
         return TransformData(
             position: Vec3(t.translation.x, t.translation.y, t.translation.z),
             rotation: Quat(
@@ -669,6 +730,18 @@ public final class EntityActionExecutor: EntityActionExecutorProtocol {
                 z: t.rotation.vector.z, w: t.rotation.vector.w
             ),
             scale: Vec3(t.scale.x, t.scale.y, t.scale.z)
+        )
+    }
+
+    /// The same answer as a RealityKit `Transform`.
+    private func authoredRestTransform(for name: String) -> Transform? {
+        guard let data = authoredRest(for: name) else { return nil }
+        return Transform(
+            scale: SIMD3(data.scale.x, data.scale.y, data.scale.z),
+            rotation: simd_quatf(vector: SIMD4(
+                data.rotation.x, data.rotation.y, data.rotation.z, data.rotation.w
+            )),
+            translation: SIMD3(data.position.x, data.position.y, data.position.z)
         )
     }
 
