@@ -573,7 +573,77 @@ open class ChapterPlayerCore {
         // stages them (and return anything the previous sequence placed
         // to its Chapter rest) before the first frame plays.
         entityExecutor.applyRestPlacements(sequence.restPlacements)
+        // SEQUENCE-LOCAL PANEL STYLE: the style twin of the line above —
+        // corner radius / spatial presentation / passthrough tinting as
+        // THIS sequence presents them, before the first frame plays. The
+        // DTO is resolved from the current document (the editor overrides
+        // `currentDocumentForStyling`, same reason as
+        // `sequenceFromLoadedDocument`: its edits never reach the frozen
+        // load-time snapshot).
+        if let document = currentDocumentForStyling(),
+           let dto = document.sequences.first(where: { $0.id == sequence.id }) {
+            applyPanelStyles(for: dto, in: document)
+        }
         sequenceEngine.play(sequence: sequence, startingAtStepIndex: startIndex)
+    }
+
+    /// The document panel styling resolves against — the load-time snapshot
+    /// by default; an editor host with a live synced copy overrides.
+    open func currentDocumentForStyling() -> ChapterDocument? {
+        loadedExperience?.document
+    }
+
+    /// Apply a sequence's panel-style overrides (`SequenceDefinitionDTO
+    /// .panelStyles`) to the live entities — and, symmetrically, RETURN any
+    /// panel the previous sequence styled to its Chapter spec. The resolved
+    /// values ride on `VideoPanelStyleComponent`, which is where the video
+    /// manager reads style at bind time; a plane already bound regenerates
+    /// its mesh in place, exactly as an editor's live corner-radius slider
+    /// does. Recomputed from the CHAPTER BASE each entry, so entering a
+    /// sequence with no override restores the default by construction.
+    /// `document` defaults to the loaded experience's; an editor host whose
+    /// live document lives elsewhere (MaestroVision's synced copy) passes
+    /// its own.
+    public func applyPanelStyles(for sequence: SequenceDefinitionDTO,
+                                 in explicitDocument: ChapterDocument? = nil) {
+        guard let document = explicitDocument ?? loadedExperience?.document else { return }
+        for definition in document.entities {
+            let base: PanelStyleOverride
+            if let panel = definition.videoPanel {
+                base = PanelStyleOverride(
+                    cornerRadius: panel.cornerRadius,
+                    spatialPresentation: panel.spatialPresentation,
+                    passthroughTinting: panel.passthroughTinting)
+            } else if let placeholder = definition.placeholder,
+                      placeholder.role == .videoPanel {
+                base = PanelStyleOverride(cornerRadius: placeholder.cornerRadius)
+            } else {
+                continue
+            }
+            guard let entity = entityExecutor.entityRegistry[definition.id] else { continue }
+            let resolved = sequence.panelStyle(for: definition.id, base: base)
+            let radius = resolved.cornerRadius ?? 0
+            var component = entity.components[VideoPanelStyleComponent.self]
+                ?? VideoPanelStyleComponent(cornerRadius: 0,
+                                            spatialPresentation: .flat,
+                                            passthroughTinting: false)
+            let radiusChanged = component.cornerRadius != radius
+            component.cornerRadius = radius
+            component.spatialPresentation = resolved.spatialPresentation ?? .flat
+            component.passthroughTinting = resolved.passthroughTinting ?? false
+            entity.components.set(component)
+            // A bound panel regenerates its plane immediately; an unbound
+            // one picks the component up when the manager binds it.
+            if radiusChanged, var model = entity.components[ModelComponent.self] {
+                let extents = model.mesh.bounds.extents
+                if extents.x > 0.01, extents.y > 0.01 {
+                    model.mesh = .generatePlane(
+                        width: extents.x, height: extents.y,
+                        cornerRadius: min(radius, min(extents.x, extents.y) / 2))
+                    entity.components.set(model)
+                }
+            }
+        }
     }
 
     /// APPLY ONE CONTINUATION BEHAVIOUR, using the playback the runtime already
