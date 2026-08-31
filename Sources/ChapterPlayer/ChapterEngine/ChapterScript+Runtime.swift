@@ -228,7 +228,9 @@ private extension AudioAction {
             // reached the runtime and `SpatialAudioManager` had nothing to
             // route on but `spatial != nil`.
             playbackModel: dto.playbackModel,
-            spatialPresentation: dto.spatialPresentation
+            spatialPresentation: dto.spatialPresentation,
+            retime: dto.retime,
+            pitch: dto.pitch
         )
     }
 }
@@ -250,7 +252,9 @@ extension VideoAction {
             crop: dto.crop,
             effects: dto.effects,
             blendMode: dto.blendMode,
-            videoTransition: dto.videoTransition
+            videoTransition: dto.videoTransition,
+            retime: dto.retime,
+            pitch: dto.pitch
         )
     }
 }

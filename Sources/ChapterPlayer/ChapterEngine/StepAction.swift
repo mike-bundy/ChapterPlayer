@@ -297,6 +297,10 @@ public struct AudioAction: Sendable {
     /// fixed. A rendering concept, not a transform; meaningful only for
     /// `.spatialMix`.
     public let spatialPresentation: AudioSpatialPresentation?
+    /// The retime curve (FL-13), carried faithfully — see VideoAction.
+    public let retime: RetimeCurve?
+    /// Pitch under retime (FL-13).
+    public let pitch: PitchHandling?
 
     public init(
         file: String,
@@ -311,7 +315,9 @@ public struct AudioAction: Sendable {
         loopConfig: LoopConfig? = nil,
         sourceRange: MediaSourceRange = .full,
         playbackModel: AudioPlaybackModel? = nil,
-        spatialPresentation: AudioSpatialPresentation? = nil
+        spatialPresentation: AudioSpatialPresentation? = nil,
+        retime: RetimeCurve? = nil,
+        pitch: PitchHandling? = nil
     ) {
         self.file = file
         self.channel = channel
@@ -326,6 +332,8 @@ public struct AudioAction: Sendable {
         self.sourceRange = sourceRange
         self.playbackModel = playbackModel
         self.spatialPresentation = spatialPresentation
+        self.retime = retime
+        self.pitch = pitch
     }
 
     /// Where this cue should play, and whether that honours the authored
@@ -417,6 +425,12 @@ public struct VideoAction: Sendable {
     /// The two-source transition (FL-12), carried faithfully — rendered
     /// when the runtime gains its per-frame surface, never approximated.
     public let videoTransition: VideoTransitionSpec?
+    /// The retime curve (FL-13), carried faithfully. Consumption needs
+    /// the occurrence SPAN (the curve domain is span-relative), which the
+    /// engine will plumb with the per-frame surface — never guessed here.
+    public let retime: RetimeCurve?
+    /// Pitch under retime (FL-13). nil follows speed.
+    public let pitch: PitchHandling?
 
     public init(
         file: String,
@@ -430,7 +444,9 @@ public struct VideoAction: Sendable {
         crop: VideoCropRect? = nil,
         effects: [EffectInstance]? = nil,
         blendMode: ChapterScript.BlendMode? = nil,
-        videoTransition: VideoTransitionSpec? = nil
+        videoTransition: VideoTransitionSpec? = nil,
+        retime: RetimeCurve? = nil,
+        pitch: PitchHandling? = nil
     ) {
         self.file = file
         self.channel = channel
@@ -444,6 +460,8 @@ public struct VideoAction: Sendable {
         self.effects = effects
         self.blendMode = blendMode
         self.videoTransition = videoTransition
+        self.retime = retime
+        self.pitch = pitch
     }
 }
 
