@@ -53,6 +53,10 @@ public class VideoPlaybackManager {
         let sourceIn: Double?
         let sourceOut: Double?
         let loop: Bool
+        /// The occurrence's Effect stack (FL-09): part of the channel's
+        /// identity — two occurrences of one master with different stacks
+        /// must never reuse a channel.
+        let effects: [EffectInstance]?
         /// Manual-loop DidPlayToEndTime observer token (plain-AVPlayer
         /// loops: immersive, in-only trims, and warmed channels). Removed
         /// on `stop` so tokens don't accumulate across channel rebuilds.
@@ -337,7 +341,8 @@ public class VideoPlaybackManager {
                 file: action.file,
                 sourceIn: action.sourceIn,
                 sourceOut: action.sourceOut,
-                loop: action.loop
+                loop: action.loop,
+                effects: action.effects
             )
             attachToPresentation(player: queuePlayer, presentation: action.presentation, channelKey: action.channel, channel: &channel, crop: action.crop)
             channels[action.channel] = channel
@@ -362,7 +367,8 @@ public class VideoPlaybackManager {
                 file: action.file,
                 sourceIn: action.sourceIn,
                 sourceOut: action.sourceOut,
-                loop: action.loop
+                loop: action.loop,
+                effects: action.effects
             )
             // Manual loop for immersive backdrops and in-only trims.
             // Observer loops back to the window start, not frame 0.
@@ -530,7 +536,8 @@ public class VideoPlaybackManager {
         guard ch.file == action.file,
               max(0, ch.sourceIn ?? 0) == max(0, action.sourceIn ?? 0),
               ch.sourceOut == action.sourceOut,
-              ch.loop == action.loop
+              ch.loop == action.loop,
+              ch.effects == action.effects
         else { return false }
         switch (ch.presentation, action.presentation) {
         case (.attachment(let a), .attachment(let b)):
@@ -656,7 +663,8 @@ public class VideoPlaybackManager {
             file: action.file,
             sourceIn: action.sourceIn,
             sourceOut: action.sourceOut,
-            loop: action.loop
+            loop: action.loop,
+            effects: action.effects
         )
         channels[action.channel] = channel
 

@@ -247,7 +247,8 @@ extension VideoAction {
             layout: VideoLayout(dto.layout),
             sourceIn: dto.sourceIn,
             sourceOut: dto.sourceOut,
-            crop: dto.crop
+            crop: dto.crop,
+            effects: dto.effects
         )
     }
 }

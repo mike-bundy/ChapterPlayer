@@ -404,6 +404,11 @@ public struct VideoAction: Sendable {
     /// editor refuses to author one on projected media. `nil` shows the
     /// full frame.
     public let crop: VideoCropRect?
+    /// The occurrence's ordered Effect stack (FL-09). CARRIED, faithfully:
+    /// the runtime has no per-frame pixel path yet (`VideoMaterial` owns
+    /// panel frames end to end), so an authored stack is preserved and
+    /// reported unrendered — never mapped onto something else to compile.
+    public let effects: [EffectInstance]?
 
     public init(
         file: String,
@@ -414,7 +419,8 @@ public struct VideoAction: Sendable {
         layout: VideoLayout = .mono,
         sourceIn: Double? = nil,
         sourceOut: Double? = nil,
-        crop: VideoCropRect? = nil
+        crop: VideoCropRect? = nil,
+        effects: [EffectInstance]? = nil
     ) {
         self.file = file
         self.channel = channel
@@ -425,6 +431,7 @@ public struct VideoAction: Sendable {
         self.sourceIn = sourceIn
         self.sourceOut = sourceOut
         self.crop = crop
+        self.effects = effects
     }
 }
 
