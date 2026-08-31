@@ -16,6 +16,7 @@
 
 import Foundation
 import RealityKit
+import simd
 import OSLog
 import ChapterScript
 
@@ -123,7 +124,45 @@ public final class DocumentEntityLoader {
             built += 1
         }
 
+        // FL-15 SECOND PASS: parent each rig member under its rig, through
+        // a STATIC bind-correction node, so
+        //     world(c,t) = L_r(t) · inverse(bindParentRest) · local(c,t)
+        // falls out of the scene graph. The executor keeps writing the
+        // member's own local pose - exactly what it writes today - and the
+        // member's definition is never touched: joining stays byte-identity.
+        // `addChild` reparents with preservingWorldTransform at its default
+        // false, which is precisely the non-destructive behaviour FL-15's
+        // audit bans the `true` variant for.
+        for definition in document.entities where definition.kind == .rig {
+            guard let rigEntity = entityExecutor.entityRegistry[definition.id] else { continue }
+            for member in definition.members ?? [] {
+                // Dangling members are skipped, not fatal.
+                guard let memberEntity = entityExecutor.entityRegistry[member.id] else { continue }
+                let wrapper = Entity()
+                wrapper.name = "rigbind:\(member.id)"
+                if let bind = member.bindParentRest {
+                    wrapper.transform = Transform(matrix: simd_inverse(Self.matrix(bind)))
+                }
+                rigEntity.addChild(wrapper)
+                wrapper.addChild(memberEntity)
+            }
+        }
+
         docEntityLogger.info("Materialized \(built) document entit\(built == 1 ? "y" : "ies") into the scene")
+    }
+
+    /// TRS -> matrix for the bind correction. Realization arithmetic only:
+    /// the one COMPOSITION rule lives in the shared core; this merely
+    /// expresses a stored TransformData as the matrix RealityKit needs.
+    private static func matrix(_ t: TransformData) -> simd_float4x4 {
+        let q = simd_quatf(vector: SIMD4(t.rotation.x, t.rotation.y,
+                                         t.rotation.z, t.rotation.w))
+        var m = simd_float4x4(q)
+        m.columns.0 *= t.scale.x
+        m.columns.1 *= t.scale.y
+        m.columns.2 *= t.scale.z
+        m.columns.3 = SIMD4(t.position.x, t.position.y, t.position.z, 1)
+        return m
     }
 
     /// Incrementally build (or rebuild) ONE entity from a live-edit

@@ -73,6 +73,14 @@ public final class EntityFactory {
             entity = makeImagePanel(definition)
         case .particles:
             entity = makeParticleEmitter(definition)
+        case .rig:
+            // A RIG (FL-15): a transform parent with no geometry. A bare
+            // Entity, like a light - building it registers the name so the
+            // rig's own EntityAnimationTrack drives it, and the loader's
+            // second pass parents the members under it. RealityKit's scene
+            // graph then supplies the composition for free: moving a rig
+            // is ONE node write.
+            entity = Entity()
         case .audioEmitter:
             // A bare Entity, like a light — no geometry, nothing to see.
             // Building it is what registers the name, and registration is the
