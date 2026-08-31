@@ -414,6 +414,9 @@ public struct VideoAction: Sendable {
     /// the composited buffer when the runtime gains its pixel surface —
     /// never approximated through material blending.
     public let blendMode: ChapterScript.BlendMode?
+    /// The two-source transition (FL-12), carried faithfully — rendered
+    /// when the runtime gains its per-frame surface, never approximated.
+    public let videoTransition: VideoTransitionSpec?
 
     public init(
         file: String,
@@ -426,7 +429,8 @@ public struct VideoAction: Sendable {
         sourceOut: Double? = nil,
         crop: VideoCropRect? = nil,
         effects: [EffectInstance]? = nil,
-        blendMode: ChapterScript.BlendMode? = nil
+        blendMode: ChapterScript.BlendMode? = nil,
+        videoTransition: VideoTransitionSpec? = nil
     ) {
         self.file = file
         self.channel = channel
@@ -439,6 +443,7 @@ public struct VideoAction: Sendable {
         self.crop = crop
         self.effects = effects
         self.blendMode = blendMode
+        self.videoTransition = videoTransition
     }
 }
 
