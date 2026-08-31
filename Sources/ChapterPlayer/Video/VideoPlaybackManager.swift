@@ -8,6 +8,7 @@
 //
 
 import AVFoundation
+import ChapterScript
 import RealityKit
 import OSLog
 #if canImport(UIKit)
@@ -246,7 +247,8 @@ public class VideoPlaybackManager {
                 player: ch.player,
                 presentation: action.presentation,
                 channelKey: action.channel,
-                channel: &ch
+                channel: &ch,
+                crop: action.crop
             )
             channels[action.channel] = ch
             let sourceIn = max(0, action.sourceIn ?? 0)
@@ -337,7 +339,7 @@ public class VideoPlaybackManager {
                 sourceOut: action.sourceOut,
                 loop: action.loop
             )
-            attachToPresentation(player: queuePlayer, presentation: action.presentation, channelKey: action.channel, channel: &channel)
+            attachToPresentation(player: queuePlayer, presentation: action.presentation, channelKey: action.channel, channel: &channel, crop: action.crop)
             channels[action.channel] = channel
             // The looper already restricts playback to the source window,
             // so no cue seek is needed — just gate the start on readiness.
@@ -930,7 +932,7 @@ public class VideoPlaybackManager {
 
     // MARK: - Presentation Attachment
 
-    private func attachToPresentation(player: AVPlayer, presentation: VideoPresentation, channelKey: String, channel: inout VideoChannel) {
+    private func attachToPresentation(player: AVPlayer, presentation: VideoPresentation, channelKey: String, channel: inout VideoChannel, crop: VideoCropRect? = nil) {
         switch presentation {
         case .attachment:
             // SwiftUI attachment handles video display — just need the player reference
@@ -954,10 +956,15 @@ public class VideoPlaybackManager {
                 // the video texture stays rect-mapped.
                 let style = entity.components[VideoPanelStyleComponent.self]
                 let radius = style?.cornerRadius ?? 0
-                let mesh = MeshResource.generatePlane(
+                // FL-04 CROP, stage 1: the plane shrinks to the trimmed
+                // fraction, shifts so surviving pixels stay put, and its UVs
+                // sample the crop's sub-rect — the same rule Maestro Studio's
+                // Viewer and export apply, duplicated here because the player
+                // deliberately depends on ChapterScript alone.
+                let mesh = VideoPanelCropMesh.make(
                     width: width, height: height,
-                    cornerRadius: min(radius, min(width, height) / 2)
-                )
+                    cornerRadius: min(radius, min(width, height) / 2),
+                    crop: crop)
                 let material = VideoMaterial(avPlayer: player)
                 entity.components.set(ModelComponent(mesh: mesh, materials: [material]))
 
@@ -1226,5 +1233,54 @@ public class VideoPlaybackManager {
     /// Get the AVPlayer for a channel (used by SwiftUI attachment views)
     public func player(for channel: String) -> AVPlayer? {
         channels[channel]?.player
+    }
+}
+
+
+// MARK: - FL-04 crop mesh
+
+/// The cropped-panel mesh rule (FL-04). Mirrors Maestro Studio's
+/// `CroppedPanelMesh` — one behaviour, stated twice because this package
+/// depends only on ChapterScript. Change one, change both.
+enum VideoPanelCropMesh {
+    static func make(width: Float, height: Float,
+                     cornerRadius: Float,
+                     crop: VideoCropRect?) -> MeshResource {
+        // Normalize; the editor's write path already refuses degenerate and
+        // projected crops, so this is belt-and-braces, not policy.
+        var c = crop
+        if let raw = c {
+            let x = min(max(raw.x, 0), 1), y = min(max(raw.y, 0), 1)
+            let w = min(max(raw.width, 0), 1 - x), h = min(max(raw.height, 0), 1 - y)
+            c = (w > 0.0005 && h > 0.0005) ? VideoCropRect(x: x, y: y, width: w, height: h) : nil
+            if c == VideoCropRect(x: 0, y: 0, width: 1, height: 1) { c = nil }
+        }
+        guard let c else {
+            return .generatePlane(width: width, height: height,
+                                  cornerRadius: min(cornerRadius, min(width, height) / 2))
+        }
+        let quadW = width * c.width
+        let quadH = height * c.height
+        let ox = (c.x + c.width / 2 - 0.5) * width
+        let oy = (0.5 - (c.y + c.height / 2)) * height
+        let halfW = quadW / 2, halfH = quadH / 2
+        let positions: [SIMD3<Float>] = [
+            SIMD3(ox - halfW, oy - halfH, 0),
+            SIMD3(ox + halfW, oy - halfH, 0),
+            SIMD3(ox + halfW, oy + halfH, 0),
+            SIMD3(ox - halfW, oy + halfH, 0),
+        ]
+        let u0 = c.x, u1 = c.x + c.width
+        let vTop = 1 - c.y, vBottom = 1 - (c.y + c.height)
+        let uvs: [SIMD2<Float>] = [
+            SIMD2(u0, vBottom), SIMD2(u1, vBottom), SIMD2(u1, vTop), SIMD2(u0, vTop),
+        ]
+        var descriptor = MeshDescriptor(name: "croppedVideoPanel")
+        descriptor.positions = MeshBuffer(positions)
+        descriptor.normals = MeshBuffer([SIMD3<Float>](repeating: SIMD3(0, 0, 1), count: 4))
+        descriptor.textureCoordinates = MeshBuffer(uvs)
+        descriptor.primitives = .triangles([0, 1, 2, 0, 2, 3])
+        if let mesh = try? MeshResource.generate(from: [descriptor]) { return mesh }
+        return .generatePlane(width: width, height: height)
     }
 }

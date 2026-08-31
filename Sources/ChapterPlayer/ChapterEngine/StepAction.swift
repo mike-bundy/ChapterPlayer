@@ -399,6 +399,11 @@ public struct VideoAction: Sendable {
     /// Exclusive end of the source window (master-file seconds). `nil`
     /// plays to the natural end. Looping loops `[sourceIn, sourceOut)`.
     public let sourceOut: Double?
+    /// Source-space trim (FL-04): a normalized rectangle over the decoded
+    /// frame, origin top-left. Applied to PANEL presentations only — the
+    /// editor refuses to author one on projected media. `nil` shows the
+    /// full frame.
+    public let crop: VideoCropRect?
 
     public init(
         file: String,
@@ -408,7 +413,8 @@ public struct VideoAction: Sendable {
         presentation: VideoPresentation = .attachment(id: "video"),
         layout: VideoLayout = .mono,
         sourceIn: Double? = nil,
-        sourceOut: Double? = nil
+        sourceOut: Double? = nil,
+        crop: VideoCropRect? = nil
     ) {
         self.file = file
         self.channel = channel
@@ -418,6 +424,7 @@ public struct VideoAction: Sendable {
         self.layout = layout
         self.sourceIn = sourceIn
         self.sourceOut = sourceOut
+        self.crop = crop
     }
 }
 
