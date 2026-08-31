@@ -173,8 +173,15 @@ public final class EntityFactory {
     /// Public: editors reuse this for live toggling.
     public static func playEmbeddedAnimations(on entity: Entity, spec: UsdzAnimationSpec) {
         var stack: [Entity] = [entity]
+        // CD-25 (FL-16): a named clip plays ALONE; absent = every clip,
+        // today's behaviour. Naming a clip the file does not have plays
+        // NOTHING - not every clip, which would be a surprising fallback.
+        // THE SHARED STATIC: both editors reuse this, so the narrowing
+        // lands everywhere in lock-step.
         while let e = stack.popLast() {
             for animation in e.availableAnimations {
+                if let wanted = spec.clipName,
+                   animation.name != wanted { continue }
                 let resource = spec.loop ? animation.repeat() : animation
                 let controller = e.playAnimation(resource, transitionDuration: 0, startsPaused: false)
                 controller.speed = spec.speed
