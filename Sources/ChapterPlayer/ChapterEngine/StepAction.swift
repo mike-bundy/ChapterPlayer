@@ -409,6 +409,11 @@ public struct VideoAction: Sendable {
     /// panel frames end to end), so an authored stack is preserved and
     /// reported unrendered — never mapped onto something else to compile.
     public let effects: [EffectInstance]?
+    /// The display blend (FL-11), carried faithfully. A-5 recorded: the
+    /// material system has no blend-mode parity, so a mode resolves in
+    /// the composited buffer when the runtime gains its pixel surface —
+    /// never approximated through material blending.
+    public let blendMode: ChapterScript.BlendMode?
 
     public init(
         file: String,
@@ -420,7 +425,8 @@ public struct VideoAction: Sendable {
         sourceIn: Double? = nil,
         sourceOut: Double? = nil,
         crop: VideoCropRect? = nil,
-        effects: [EffectInstance]? = nil
+        effects: [EffectInstance]? = nil,
+        blendMode: ChapterScript.BlendMode? = nil
     ) {
         self.file = file
         self.channel = channel
@@ -432,6 +438,7 @@ public struct VideoAction: Sendable {
         self.sourceOut = sourceOut
         self.crop = crop
         self.effects = effects
+        self.blendMode = blendMode
     }
 }
 

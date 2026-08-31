@@ -248,7 +248,8 @@ extension VideoAction {
             sourceIn: dto.sourceIn,
             sourceOut: dto.sourceOut,
             crop: dto.crop,
-            effects: dto.effects
+            effects: dto.effects,
+            blendMode: dto.blendMode
         )
     }
 }
