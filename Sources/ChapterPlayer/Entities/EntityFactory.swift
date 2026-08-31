@@ -131,18 +131,29 @@ public final class EntityFactory {
             // Fall back to the main bundle so apps that ship USDZs as
             // resources still resolve.
             if let bundled = Bundle.main.url(forResource: (assetId as NSString).deletingPathExtension, withExtension: "usdz") {
-                loadUSDZ(from: bundled, into: container, animation: def.usdzAnimation)
+                loadUSDZ(from: bundled, into: container, animation: def.usdzAnimation,
+                     overrides: def.materialOverrides)
             }
             return container
         }
-        loadUSDZ(from: url, into: container, animation: def.usdzAnimation)
+        loadUSDZ(from: url, into: container, animation: def.usdzAnimation,
+                 overrides: def.materialOverrides)
         return container
     }
 
-    private func loadUSDZ(from url: URL, into container: Entity, animation: UsdzAnimationSpec? = nil) {
+    private func loadUSDZ(from url: URL, into container: Entity,
+                          animation: UsdzAnimationSpec? = nil,
+                          overrides: [MaterialOverrideSpec]? = nil) {
         Task { @MainActor in
             guard let loaded = try? await Entity(contentsOf: url) else { return }
             container.addChild(loaded)
+            // FL-14: the authored per-slot looks, index by index — the
+            // runtime half of CD-3's repair.
+            if let overrides, !overrides.isEmpty {
+                MaterialRealizationRuntime.apply(overrides, under: loaded) { [weak self] file in
+                    self?.mediaResolver?.url(for: file, kind: .image)
+                }
+            }
             if let animation, animation.enabled {
                 Self.playEmbeddedAnimations(on: loaded, spec: animation)
             }
