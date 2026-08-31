@@ -506,6 +506,7 @@ extension SequenceDefinition {
             presentation: SequencePresentation(dto.presentation),
             immersiveBackdrop: dto.immersiveBackdrop.flatMap { SequenceBackdrop($0) },
             backdropTrack: dto.backdropTrack,
+            captionTracks: dto.captionTracks ?? [],
             steps: try dto.steps.map { try StepDefinition(dto: $0) },
             animationTracks: dto.animationTracks,
             audioTracks: dto.audioTracks,

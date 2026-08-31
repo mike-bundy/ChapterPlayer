@@ -36,6 +36,8 @@ public struct SequenceDefinition: Sendable {
     /// Format types used directly (like `animationTracks`): these are pure
     /// data the backdrop driver resolves, not something the engine models.
     public let backdropTrack: [BackdropCue]
+    /// Caption Tracks (FL-08): timed text at absolute Sequence seconds.
+    public let captionTracks: [CaptionTrack]
     public let steps: [StepDefinition]
     /// Sequence-level keyframe animation tracks (format types used directly —
     /// the curves are pure data sampled by `SequenceAnimationEvaluator`).
@@ -67,6 +69,7 @@ public struct SequenceDefinition: Sendable {
         presentation: SequencePresentation = .immersive,
         immersiveBackdrop: SequenceBackdrop? = nil,
         backdropTrack: [BackdropCue] = [],
+        captionTracks: [CaptionTrack] = [],
         steps: [StepDefinition],
         animationTracks: [EntityAnimationTrack] = [],
         audioTracks: [AudioAutomationTrack] = [],
@@ -81,6 +84,7 @@ public struct SequenceDefinition: Sendable {
         self.presentation = presentation
         self.immersiveBackdrop = immersiveBackdrop
         self.backdropTrack = backdropTrack
+        self.captionTracks = captionTracks
         self.steps = steps
         self.animationTracks = animationTracks
         self.audioTracks = audioTracks

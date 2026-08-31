@@ -156,6 +156,12 @@ public final class SequenceEngine {
     /// animation and audio-automation clocks are, so a gate holds a backdrop
     /// cue exactly where it holds a curve.
     public weak var backdropDriver: BackdropCueDriver?
+    /// The caption follower (FL-08) — same relationship as the backdrop
+    /// driver: hangs off the engine, is not part of it.
+    public weak var captionDriver: CaptionCueDriver?
+    /// The Chapter's caption style library, resolved by the host — the
+    /// engine knows Sequences, not the whole document.
+    public var captionStylesProvider: (() -> [CaptionStyle]?)?
 
     // MARK: - Computed
 
@@ -297,6 +303,14 @@ public final class SequenceEngine {
             presentation: sequence.presentation,
             clock: { [weak self] in self?.sequenceAnimationTime ?? 0 }
         )
+        // Captions ride the SAME authored clock: a viewer held at a gate
+        // keeps reading the caption that belongs to the moment they are
+        // held in (FL-08).
+        captionDriver?.begin(
+            tracks: sequence.captionTracks,
+            styles: captionStylesProvider?(),
+            clock: { [weak self] in self?.sequenceAnimationTime ?? 0 }
+        )
     }
 
     /// Every channel's authored fades, gathered once when a sequence starts.
@@ -368,6 +382,7 @@ public final class SequenceEngine {
         // zero, and blanking in between is a black flash between sequences.
         // A full reset is the case that genuinely wants it gone.
         backdropDriver?.stop(tearDown: fullReset)
+        captionDriver?.stop(tearDown: fullReset)
         isPaused = false
         isPlaying = false
         stepPausedDuration = 0

@@ -88,6 +88,13 @@ open class ChapterPlayerCore {
     /// on each cue swap.
     @ObservationIgnored
     public private(set) lazy var backdropCues = BackdropCueDriver(presenter: self)
+    /// The caption follower (FL-08), on the same authored clock — a
+    /// driver, not rendered state, exactly like the backdrop's.
+    @ObservationIgnored
+    public private(set) lazy var captionCues = CaptionCueDriver(presenter: self)
+    /// The mounted caption blocks; replaced whole when the showing set changes.
+    @ObservationIgnored
+    var captionRootEntity: Entity?
 
     // MARK: - Sequence routing
 
@@ -392,6 +399,10 @@ open class ChapterPlayerCore {
         // (`rebaseSceneRootToHead`).
         sequenceEngine.gateDetector = gateDetection
         sequenceEngine.backdropDriver = backdropCues
+        sequenceEngine.captionDriver = captionCues
+        sequenceEngine.captionStylesProvider = { [weak self] in
+            self?.loadedExperience?.document.captionStyles
+        }
         spatialTriggers.entityProvider = { [weak self] name in
             self?.entityExecutor.entityRegistry[name]
         }
