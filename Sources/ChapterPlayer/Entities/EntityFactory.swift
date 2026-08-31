@@ -292,24 +292,18 @@ public final class EntityFactory {
     }
 
     private func makeTextEntity(_ def: EntityDefinition) -> Entity {
-        guard let text = def.text else { return Entity() }
-        let mesh = MeshResource.generateText(
-            text.text,
-            extrusionDepth: 0.005,
-            font: .systemFont(ofSize: CGFloat(text.fontSize)),
-            containerFrame: text.maxWidth.map { CGRect(x: 0, y: 0, width: CGFloat($0), height: 0) } ?? .zero,
-            alignment: .center,
-            lineBreakMode: .byTruncatingTail
-        )
-        let color = UIColor(
-            red: CGFloat(text.color.r),
-            green: CGFloat(text.color.g),
-            blue: CGFloat(text.color.b),
-            alpha: CGFloat(text.color.a)
-        )
-        var material = UnlitMaterial()
-        material.color = .init(tint: color)
-        return ModelEntity(mesh: mesh, materials: [material])
+        guard let text = def.text, !text.text.isEmpty else { return Entity() }
+        // THE MIRRORED CONTRACT (FL-07): the same geometry recipe Maestro's
+        // editors build — extrusion, cap-height sizing, real shaping — so a
+        // title plays exactly as it was authored. Absent depth now resolves
+        // to the EDITOR's 0.02 (the 0.005 here was never authored; the
+        // change is a correction toward what the author saw).
+        guard let built = try? TitleMesh.build(spec: text) else {
+            // Geometry failure never blanks a title's Object silently — an
+            // empty entity keeps the id and the animations meaningful.
+            return Entity()
+        }
+        return ModelEntity(mesh: built.mesh, materials: built.materials)
     }
 
     private func makeLightEntity(_ def: EntityDefinition) -> Entity {
