@@ -517,6 +517,7 @@ extension SequenceDefinition {
             steps: try dto.steps.map { try StepDefinition(dto: $0) },
             animationTracks: dto.animationTracks,
             audioTracks: dto.audioTracks,
+            mutedDestinations: dto.mutedDestinations ?? [],
             storyRegions: dto.storyRegions,
             restPlacements: dto.restPlacements ?? [:],
             visibility: VisibilityState(dto.visibility),

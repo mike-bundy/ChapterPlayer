@@ -292,7 +292,8 @@ public final class SequenceEngine {
             // AUTHORED FADES travel with the automation, because they are the
             // same question: how loud is this clip right now. Gathered once
             // per sequence start — a document walk, never a per-frame one.
-            fades: Self.authoredFades(in: sequence)
+            fades: Self.authoredFades(in: sequence),
+            muted: Set(sequence.mutedDestinations)
         )
         // Backdrop cues ride the SAME authored clock. On wall time a viewer
         // held at a gate would watch the backdrop cut ahead of the step they

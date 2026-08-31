@@ -39,7 +39,8 @@ public protocol AudioActionExecutorProtocol {
     func setSequenceAudioAutomation(
         tracks: [AudioAutomationTrack],
         clock: (@MainActor () -> TimeInterval)?,
-        fades: [String: [AudioFade]]
+        fades: [String: [AudioFade]],
+        muted: Set<String>
     )
     // Audio Zones
     func addAudioZone(_ zone: AudioZone)
@@ -58,7 +59,8 @@ public extension AudioActionExecutorProtocol {
     func setSequenceAudioAutomation(
         tracks: [AudioAutomationTrack],
         clock: (@MainActor () -> TimeInterval)?,
-        fades: [String: [AudioFade]]
+        fades: [String: [AudioFade]],
+        muted: Set<String> = []
     ) {}
 }
 
@@ -90,9 +92,10 @@ public final class AudioActionExecutor: AudioActionExecutorProtocol {
     public func setSequenceAudioAutomation(
         tracks: [AudioAutomationTrack],
         clock: (@MainActor () -> TimeInterval)?,
-        fades: [String: [AudioFade]]
+        fades: [String: [AudioFade]],
+        muted: Set<String> = []
     ) {
-        audioManager.setSequenceAudioAutomation(tracks: tracks, clock: clock, fades: fades)
+        audioManager.setSequenceAudioAutomation(tracks: tracks, clock: clock, fades: fades, muted: muted)
     }
 
     public init(audioManager: SpatialAudioManager) {

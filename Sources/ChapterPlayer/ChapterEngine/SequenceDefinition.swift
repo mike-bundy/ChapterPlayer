@@ -48,6 +48,8 @@ public struct SequenceDefinition: Sendable {
     /// `animationTracks`, so a volume ride holds at a gate exactly like a
     /// transform curve does.
     public let audioTracks: [AudioAutomationTrack]
+    /// Muted destinations (FL-17) - a document fact; solo never arrives.
+    public let mutedDestinations: [String]
     /// EXPLORE SPANS. Format types used directly, like `animationTracks` — pure
     /// authored data the region controller reads, not something the engine
     /// models. Empty = the Sequence is entirely Directed, which is every
@@ -73,6 +75,7 @@ public struct SequenceDefinition: Sendable {
         steps: [StepDefinition],
         animationTracks: [EntityAnimationTrack] = [],
         audioTracks: [AudioAutomationTrack] = [],
+        mutedDestinations: [String] = [],
         storyRegions: [StoryRegion] = [],
         restPlacements: [String: TransformData] = [:],
         visibility: VisibilityState = VisibilityState(),
@@ -88,6 +91,7 @@ public struct SequenceDefinition: Sendable {
         self.steps = steps
         self.animationTracks = animationTracks
         self.audioTracks = audioTracks
+        self.mutedDestinations = mutedDestinations
         self.storyRegions = storyRegions
         self.restPlacements = restPlacements
         self.visibility = visibility

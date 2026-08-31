@@ -638,6 +638,9 @@ public class SpatialAudioManager {
         // Authored volume automation rides here, as one more multiplier in the
         // existing pipeline rather than a competing notion of "how loud". It
         // is 1.0 for every channel in a document with no automation.
+        // TRACK MUTE (FL-17): a DOCUMENT fact, one more factor - never a
+        // second notion of "how loud". Solo NEVER reaches the runtime.
+        if mutedChannels.contains(channel) { return 0 }
         let automation = automationMultipliers[channel] ?? 1.0
         return requested * busVol * categoryVol * mixState.masterVolume * duckMul * automation
     }
@@ -649,6 +652,14 @@ public class SpatialAudioManager {
     /// automation composes with buses, categories and ducking instead of
     /// fighting them.
     private var automationMultipliers: [String: Float] = [:]
+    /// Muted destinations for the current sequence (FL-17), installed at
+    /// sequence entry beside the automation tracks.
+    private var mutedChannels: Set<String> = []
+
+    public func setMutedChannels(_ channels: Set<String>) {
+        mutedChannels = channels
+        applyMixToAllChannels()
+    }
     private var audioAutomationTracks: [AudioAutomationTrack] = []
     /// Authored fades per channel, in force for the current sequence.
     ///
@@ -670,8 +681,10 @@ public class SpatialAudioManager {
     public func setSequenceAudioAutomation(
         tracks: [AudioAutomationTrack],
         clock: (@MainActor () -> TimeInterval)?,
-        fades: [String: [AudioFade]] = [:]
+        fades: [String: [AudioFade]] = [:],
+        muted: Set<String> = []
     ) {
+        mutedChannels = muted
         audioAutomationTask?.cancel()
         audioAutomationTask = nil
         audioAutomationTracks = tracks
