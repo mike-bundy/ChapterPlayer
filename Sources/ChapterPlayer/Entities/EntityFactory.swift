@@ -73,6 +73,11 @@ public final class EntityFactory {
             entity = makeImagePanel(definition)
         case .particles:
             entity = makeParticleEmitter(definition)
+        case .vector:
+            // FL-22: a kind this build KNOWS must be BUILT - mapping it to
+            // .custom to compile would ship an invisible logo. The mirrored
+            // contract (VectorMesh) builds the same geometry the editors do.
+            entity = makeVectorEntity(definition)
         case .rig:
             // A RIG (FL-15): a transform parent with no geometry. A bare
             // Entity, like a light - building it registers the name so the
@@ -315,6 +320,26 @@ public final class EntityFactory {
         // `MaterialBlending` mapping is a Phase 3 concern — PhysicallyBasedMaterial
         // doesn't carry a 1:1 "additive vs alpha" toggle the way ParticleEmitter does.
         return material
+    }
+
+    private func makeVectorEntity(_ def: EntityDefinition) -> Entity {
+        guard let spec = def.vector else { return Entity() }
+        // The manifest-first resolver translates the Source id to its file;
+        // MediaKind has no vector case and the manifest hit does not need
+        // one - .image is the nearest fallback search family.
+        guard let url = mediaResolver?.url(for: spec.sourceId, kind: .image)
+                ?? Bundle.main.url(
+                    forResource: (spec.sourceId as NSString).deletingPathExtension,
+                    withExtension: "svg"),
+              let data = try? Data(contentsOf: url),
+              let result = try? VectorMesh.build(spec: spec, svgData: data)
+        else {
+            // A missing SVG never blanks the Object silently - the bare
+            // entity keeps the id, the transform and the animations
+            // meaningful, exactly as a missing Title font does.
+            return Entity()
+        }
+        return ModelEntity(mesh: result.mesh, materials: result.materials)
     }
 
     private func makeTextEntity(_ def: EntityDefinition) -> Entity {
