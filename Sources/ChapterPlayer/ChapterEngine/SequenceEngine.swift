@@ -295,6 +295,19 @@ public final class SequenceEngine {
             fades: Self.authoredFades(in: sequence),
             muted: Set(sequence.mutedDestinations)
         )
+        audioExecutor?.setTrackGains(sequence.trackGains)
+        // FL-18: authored duckers map onto the ducking machinery the
+        // runtime has always run - dB depth to a linear multiplier,
+        // attack/release to the existing fade durations. Explicit and
+        // named; nothing implicit is inferred.
+        audioExecutor?.setDuckingRules(sequence.duckers.map { spec in
+            DuckingRule(trigger: spec.triggerDestinationId,
+                        targets: [DuckTarget(
+                            channel: spec.targetDestinationId,
+                            duckLevel: pow(10, spec.depthDB / 20),
+                            fadeInDuration: spec.attack,
+                            fadeOutDuration: spec.release)])
+        })
         // Backdrop cues ride the SAME authored clock. On wall time a viewer
         // held at a gate would watch the backdrop cut ahead of the step they
         // are still waiting on.

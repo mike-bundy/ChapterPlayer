@@ -50,6 +50,10 @@ public struct SequenceDefinition: Sendable {
     public let audioTracks: [AudioAutomationTrack]
     /// Muted destinations (FL-17) - a document fact; solo never arrives.
     public let mutedDestinations: [String]
+    /// Track gains in dB (FL-18) - one more scope of the one formula.
+    public let trackGains: [String: Float]
+    /// Authored duckers (FL-18) - mapped onto the ducking machinery.
+    public let duckers: [DuckerSpec]
     /// EXPLORE SPANS. Format types used directly, like `animationTracks` — pure
     /// authored data the region controller reads, not something the engine
     /// models. Empty = the Sequence is entirely Directed, which is every
@@ -76,6 +80,8 @@ public struct SequenceDefinition: Sendable {
         animationTracks: [EntityAnimationTrack] = [],
         audioTracks: [AudioAutomationTrack] = [],
         mutedDestinations: [String] = [],
+        trackGains: [String: Float] = [:],
+        duckers: [DuckerSpec] = [],
         storyRegions: [StoryRegion] = [],
         restPlacements: [String: TransformData] = [:],
         visibility: VisibilityState = VisibilityState(),
@@ -92,6 +98,8 @@ public struct SequenceDefinition: Sendable {
         self.animationTracks = animationTracks
         self.audioTracks = audioTracks
         self.mutedDestinations = mutedDestinations
+        self.trackGains = trackGains
+        self.duckers = duckers
         self.storyRegions = storyRegions
         self.restPlacements = restPlacements
         self.visibility = visibility

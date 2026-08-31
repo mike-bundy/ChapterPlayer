@@ -518,6 +518,8 @@ extension SequenceDefinition {
             animationTracks: dto.animationTracks,
             audioTracks: dto.audioTracks,
             mutedDestinations: dto.mutedDestinations ?? [],
+            trackGains: dto.trackGains ?? [:],
+            duckers: dto.duckers ?? [],
             storyRegions: dto.storyRegions,
             restPlacements: dto.restPlacements ?? [:],
             visibility: VisibilityState(dto.visibility),

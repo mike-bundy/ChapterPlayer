@@ -17,6 +17,10 @@ private let logger = Logger(
 
 @MainActor
 public protocol AudioActionExecutorProtocol {
+    /// FL-17/18: document mix facts installed at sequence entry.
+    func setTrackGains(_ gains: [String: Float])
+    func setDuckingRules(_ rules: [DuckingRule])
+
     func play(_ action: AudioAction, stepContext: String?)
     func stop(channel: String)
     func fade(channel: String, to: Float, duration: TimeInterval)
@@ -84,6 +88,14 @@ public final class AudioActionExecutor: AudioActionExecutorProtocol {
     public var protectedChannels: Set<String> = []
 
     /// Completion callback — wired by SequenceEngine for .onAudioComplete actions
+    public func setTrackGains(_ gains: [String: Float]) {
+        audioManager.setTrackGains(gains)
+    }
+
+    public func setDuckingRules(_ rules: [DuckingRule]) {
+        audioManager.duckingRules = rules
+    }
+
     public var onChannelFinished: ((String) -> Void)? {
         get { self.audioManager.onChannelFinished }
         set { self.audioManager.onChannelFinished = newValue }

@@ -641,8 +641,11 @@ public class SpatialAudioManager {
         // TRACK MUTE (FL-17): a DOCUMENT fact, one more factor - never a
         // second notion of "how loud". Solo NEVER reaches the runtime.
         if mutedChannels.contains(channel) { return 0 }
+        // TRACK GAIN (FL-18): dB to linear, one more factor.
+        let db = trackGainsDB[channel] ?? 0
+        let trackGain: Float = db == 0 ? 1 : pow(10, db / 20)
         let automation = automationMultipliers[channel] ?? 1.0
-        return requested * busVol * categoryVol * mixState.masterVolume * duckMul * automation
+        return requested * trackGain * busVol * categoryVol * mixState.masterVolume * duckMul * automation
     }
 
     // MARK: - Sequence volume automation
@@ -658,6 +661,14 @@ public class SpatialAudioManager {
 
     public func setMutedChannels(_ channels: Set<String>) {
         mutedChannels = channels
+        applyMixToAllChannels()
+    }
+
+    /// Track gains in dB (FL-18), installed beside the mute set.
+    private var trackGainsDB: [String: Float] = [:]
+
+    public func setTrackGains(_ gains: [String: Float]) {
+        trackGainsDB = gains
         applyMixToAllChannels()
     }
     private var audioAutomationTracks: [AudioAutomationTrack] = []
