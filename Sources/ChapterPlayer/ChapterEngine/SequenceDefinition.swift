@@ -38,6 +38,9 @@ public struct SequenceDefinition: Sendable {
     public let backdropTrack: [BackdropCue]
     /// Caption Tracks (FL-08): timed text at absolute Sequence seconds.
     public let captionTracks: [CaptionTrack]
+    /// FL-09: Key curves over Effect parameters, by Effect instance id —
+    /// the player evaluates a keyed parameter exactly as the editors do.
+    public let effectKeyTracks: [EffectKeyTrack]
     public let steps: [StepDefinition]
     /// Sequence-level keyframe animation tracks (format types used directly —
     /// the curves are pure data sampled by `SequenceAnimationEvaluator`).
@@ -76,6 +79,7 @@ public struct SequenceDefinition: Sendable {
         immersiveBackdrop: SequenceBackdrop? = nil,
         backdropTrack: [BackdropCue] = [],
         captionTracks: [CaptionTrack] = [],
+        effectKeyTracks: [EffectKeyTrack] = [],
         steps: [StepDefinition],
         animationTracks: [EntityAnimationTrack] = [],
         audioTracks: [AudioAutomationTrack] = [],
@@ -94,6 +98,7 @@ public struct SequenceDefinition: Sendable {
         self.immersiveBackdrop = immersiveBackdrop
         self.backdropTrack = backdropTrack
         self.captionTracks = captionTracks
+        self.effectKeyTracks = effectKeyTracks
         self.steps = steps
         self.animationTracks = animationTracks
         self.audioTracks = audioTracks

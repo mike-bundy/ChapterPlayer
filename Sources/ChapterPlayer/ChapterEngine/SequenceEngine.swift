@@ -56,6 +56,10 @@ public final class SequenceEngine {
 
     public private(set) var currentSequence: SequenceDefinition?
     public private(set) var currentStepIndex: Int = 0
+    /// The offset into the current Step of the action being fired — 0 for
+    /// a Step's immediate actions, `at` for a scheduled one. Read by the
+    /// video stamp so an occurrence knows where it starts.
+    private var currentFiringOffset: TimeInterval = 0
     public private(set) var isPaused: Bool = false
     public private(set) var isPlaying: Bool = false
 
@@ -570,6 +574,7 @@ public final class SequenceEngine {
             // `resetAllEntities()`.
             entityExecutor?.clearStepMotions()
 
+            currentFiringOffset = 0
             await executeActions(step.actions)
             let actionsElapsed = Date.now.timeIntervalSince(stepStartTime)
             logger.info("executeActions: \(String(format: "%.3f", actionsElapsed))s for step \(step.id)")
@@ -635,6 +640,7 @@ public final class SequenceEngine {
                     let scheduled = scheduledInFireOrder[nextScheduled]
                     nextScheduled += 1
                     logger.info("Scheduled action fired at +\(String(format: "%.1f", scheduled.at))s in step \(step.id)")
+                    currentFiringOffset = scheduled.at
                     if scheduled.action.isAsync {
                         await executeAction(scheduled.action)
                     } else {
@@ -871,6 +877,63 @@ public final class SequenceEngine {
         }
     }
 
+    // MARK: - Occurrence stamps (FL-12 / FL-13)
+
+    /// The current Step, when one is playing.
+    private var firingStep: (step: StepDefinition, start: TimeInterval)? {
+        guard let sequence = currentSequence,
+              sequence.steps.indices.contains(currentStepIndex) else { return nil }
+        var start: TimeInterval = 0
+        for i in 0..<currentStepIndex { start += sequence.steps[i].duration }
+        return (sequence.steps[currentStepIndex], start)
+    }
+
+    /// The play, stamped with where it starts on the Sequence clock and how
+    /// long its occurrence runs — the Kit's `Occurrence.start` / `end`.
+    private func stamped(_ action: VideoAction) -> VideoAction {
+        guard let (step, start) = firingStep else { return action }
+        var stamped = action
+        stamped.firedAt = start + currentFiringOffset
+        stamped.timelineSpan = Self.occurrenceSpan(
+            channel: action.channel, firedAt: currentFiringOffset, in: step)
+        return stamped
+    }
+
+    /// THE SPAN RULE, mirrored from the Kit's Timeline projection: an
+    /// occurrence that fires at `offset` into `step` runs until the same
+    /// channel's next stop or play LATER in the Step (a same-instant action
+    /// precedes it by authored order, so it does not end it), else until
+    /// the Step's end.
+    public static func occurrenceSpan(channel: String, firedAt offset: TimeInterval,
+                                      in step: StepDefinition) -> TimeInterval {
+        var end = step.duration
+        let timed: [(TimeInterval, StepAction)] =
+            step.actions.map { (0, $0) } + step.scheduledActions.map { ($0.at, $0.action) }
+        for (at, action) in timed where at > offset + 1e-6 && at < end {
+            switch action {
+            case .stopVideo(let c) where c == channel: end = at
+            case .playVideo(let v) where v.channel == channel: end = at
+            default: break
+            }
+        }
+        return max(0, end - offset)
+    }
+
+    /// Whether a renderable dissolve play on `channel` fires at the SAME
+    /// instant as the stop being dispatched — the butted predecessor the
+    /// Kit's overlap arbiter requires.
+    private func dissolveFollowsStop(on channel: String) -> Bool {
+        guard let (step, _) = firingStep else { return false }
+        let offset = currentFiringOffset
+        let timed: [(TimeInterval, StepAction)] =
+            step.actions.map { (0, $0) } + step.scheduledActions.map { ($0.at, $0.action) }
+        return timed.contains { at, action in
+            guard abs(at - offset) < 1e-6, case .playVideo(let v) = action,
+                  v.channel == channel, let spec = v.videoTransition else { return false }
+            return spec.isRenderable && spec.duration > 0
+        }
+    }
+
     /// Async action dispatch — for actions where the executor is actually async.
     private func executeAction(_ action: StepAction) async {
         switch action {
@@ -929,11 +992,15 @@ public final class SequenceEngine {
 
         // Video
         case .playVideo(let videoAction):
-            videoExecutor?.play(videoAction)
+            videoExecutor?.play(stamped(videoAction))
         case .prepareVideo(let videoAction):
             videoExecutor?.prepare(videoAction)
         case .stopVideo(let channel):
-            videoExecutor?.stop(channel: channel)
+            // A stop that a same-instant dissolve play follows on the same
+            // channel HOLDS the outgoing panel for the mix (FL-12); the
+            // executor's default is the plain stop.
+            videoExecutor?.stop(channel: channel,
+                                holdingForDissolve: dissolveFollowsStop(on: channel))
 
         // Effects
         case .showPulseRing(let config):

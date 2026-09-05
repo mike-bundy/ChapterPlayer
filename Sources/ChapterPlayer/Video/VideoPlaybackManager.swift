@@ -61,11 +61,52 @@ public class VideoPlaybackManager {
         /// loops: immersive, in-only trims, and warmed channels). Removed
         /// on `stop` so tokens don't accumulate across channel rebuilds.
         var loopObserver: NSObjectProtocol?
+        /// THE OCCURRENCE STAMP (FL-12 / FL-13), from the engine's dispatch:
+        /// where this play sits on the Sequence clock and how long it runs.
+        var firedAt: TimeInterval? = nil
+        var span: TimeInterval? = nil
+        var retime: RetimeCurve? = nil
+        var pitch: PitchHandling? = nil
+        var transition: VideoTransitionSpec? = nil
+        var crop: VideoCropRect? = nil
     }
 
     // MARK: - State
 
     private var channels: [String: VideoChannel] = [:]
+
+    // MARK: - The per-frame surface (FL-09 … FL-13)
+
+    /// The AUTHORED Sequence clock, wired by the core — the caption
+    /// driver's clock. Nil ⇒ no retime, no dissolve, no keyed parameters
+    /// (a host that never wired it plays every occurrence plainly).
+    public var sequenceClock: (() -> TimeInterval)?
+    /// The Sequence's Effect Key curves, by Effect instance id.
+    public var effectKeyTracksProvider: (() -> [EffectKeyTrack])?
+    let effectSurface = EffectPanelSurface()
+    private var surfaceTicker: Task<Void, Never>?
+    private var lutBytes: [String: Data] = [:]
+    /// A stopped channel HELD for a same-instant dissolve (FL-12): its
+    /// player paused on its last frame, its panel still shown, until the
+    /// incoming play adopts it or the hold lapses.
+    private struct HeldChannel {
+        let channel: VideoChannel
+        let entityName: String
+        let heldAt: TimeInterval
+    }
+    private var held: [String: HeldChannel] = [:]
+    /// A live dissolve on a channel: the outgoing side's held frame and
+    /// the window's place on the clock.
+    private struct LiveDissolve {
+        var outgoing: CIImage?
+        let outgoingEffects: [EffectInstance]
+        let outgoingChannel: VideoChannel
+        let startedAt: TimeInterval
+        let duration: TimeInterval
+    }
+    private var dissolves: [String: LiveDissolve] = [:]
+    /// TEST SEAM: how many surface ticks composited something.
+    public private(set) var surfaceCompositions: Int { get { effectSurface.compositions } set {} }
 
     /// Monotonic teardown counter, bumped by every `stop(channel:)` /
     /// `stopAll()`. `prepareAsync` snapshots it right after its own entry
@@ -161,6 +202,29 @@ public class VideoPlaybackManager {
     // MARK: - Play
 
     public func play(action: VideoAction) {
+        playCore(action: action)
+        // THE OCCURRENCE STAMP rides the channel, and the per-frame surface
+        // begins when the occurrence needs it: an enabled stack, a
+        // dissolve, or a retime. A play the engine did not stamp carries no
+        // clock position, so it plays plainly.
+        guard var ch = channels[action.channel] else { return }
+        ch.firedAt = action.firedAt
+        ch.span = action.timelineSpan
+        ch.retime = action.retime
+        ch.pitch = action.pitch
+        ch.transition = action.videoTransition
+        ch.crop = action.crop
+        channels[action.channel] = ch
+        if let pitch = action.pitch, let item = ch.player.currentItem {
+            // FL-13: pitch is AUDIBLE LIVE — the algorithm rides the item,
+            // chosen by the occurrence's pitch handling (the Mac's rule).
+            item.audioTimePitchAlgorithm = pitch == .locked ? .spectral : .varispeed
+        }
+        adoptHeldForDissolve(action: action)
+        refreshSurfaceTicker()
+    }
+
+    private func playCore(action: VideoAction) {
         logger.info("[video] play file='\(action.file)' channel='\(action.channel)' presentation=\(String(describing: action.presentation)) layout=\(String(describing: action.layout)) volume=\(action.volume) loop=\(action.loop)")
         // Fast path: channel already created by prepareAsync. If the
         // ModelComponent + VideoMaterial were bound during preheat we
@@ -808,13 +872,55 @@ public class VideoPlaybackManager {
 
     // MARK: - Stop
 
+    /// A stop that a same-instant dissolve play follows on the same channel
+    /// HOLDS the outgoing panel: the player pauses on its last frame, the
+    /// panel stays shown, and the incoming play adopts it as the mix's
+    /// outgoing side. A hold nothing adopts lapses into the plain stop.
+    public func stop(channel: String, holdingForDissolve: Bool) {
+        guard holdingForDissolve, let ch = channels[channel],
+              case .entity(let name, _, _) = ch.presentation,
+              let clock = sequenceClock else {
+            stop(channel: channel)
+            return
+        }
+        stopEpoch += 1
+        channels.removeValue(forKey: channel)
+        ch.player.pause()
+        held[channel] = HeldChannel(channel: ch, entityName: name, heldAt: clock())
+        Task { [weak self] in
+            try? await Task.sleep(for: .milliseconds(150))
+            self?.lapseHold(channel: channel)
+        }
+    }
+
+    /// A hold no play adopted: finish the stop the panel was owed.
+    private func lapseHold(channel: String) {
+        guard let holding = held.removeValue(forKey: channel) else { return }
+        finishStop(holding.channel, channel: channel)
+    }
+
     public func stop(channel: String) {
         // Every teardown invalidates in-flight preheats (see `stopEpoch`)
         // — even when the channel doesn't exist yet: a prepareAsync that
         // hasn't stored its channel is exactly the one that must not
         // re-store it after this stop.
         stopEpoch += 1
-        guard var ch = channels.removeValue(forKey: channel) else { return }
+        guard let ch = channels.removeValue(forKey: channel) else { return }
+        // A dissolve whose outgoing side is still held ends with its panel.
+        if let dissolve = dissolves.removeValue(forKey: channel) {
+            dissolve.outgoingChannel.player.pause()
+        }
+        finishStop(ch, channel: channel)
+        refreshSurfaceTicker()
+    }
+
+    private func finishStop(_ stopped: VideoChannel, channel: String) {
+        var ch = stopped
+        if case .entity(let name, _, _) = ch.presentation,
+           let entity = videoEntityRegistry[name] as? ModelEntity {
+            effectSurface.restore(channel: channel, entity: entity)
+        }
+        effectSurface.forget(channel: channel)
         ch.player.pause()
         ch.looper = nil
         if let token = ch.loopObserver {
@@ -883,6 +989,15 @@ public class VideoPlaybackManager {
     }
 
     public func stopAll() {
+        for (channel, holding) in held { finishStop(holding.channel, channel: channel) }
+        held.removeAll()
+        for dissolve in dissolves.values { dissolve.outgoingChannel.player.pause() }
+        dissolves.removeAll()
+        refreshSurfaceTicker()
+        stopAllCore()
+    }
+
+    private func stopAllCore() {
         // `SequenceEngine.stop()` calls this on every sequence transition to
         // reset sequence-scope video state. Protected channels —
         // currently just `AppModel.backdropVideoChannel` for the
@@ -1213,6 +1328,161 @@ public class VideoPlaybackManager {
     /// downloaded asset pack or a `.chapterscript` folder loaded from disk can
     /// shadow built-in assets without requiring a rebuild.
     public var mediaResolver: MediaResolver?
+
+    // MARK: - Dissolve adoption (FL-12)
+
+    /// The incoming play adopts the channel held for it: the outgoing
+    /// side's last frame is decoded once (exact time) and mixed by the
+    /// window's progress until the window closes.
+    private func adoptHeldForDissolve(action: VideoAction) {
+        guard let spec = action.videoTransition, spec.isRenderable, spec.duration > 0,
+              let firedAt = action.firedAt,
+              let holding = held.removeValue(forKey: action.channel),
+              case .entity(let name, _, _) = action.presentation,
+              name == holding.entityName else {
+            if let stale = held.removeValue(forKey: action.channel) {
+                finishStop(stale.channel, channel: action.channel)
+            }
+            return
+        }
+        let outgoing = holding.channel
+        dissolves[action.channel] = LiveDissolve(
+            outgoing: nil, outgoingEffects: outgoing.effects ?? [],
+            outgoingChannel: outgoing, startedAt: firedAt, duration: spec.duration)
+        guard let item = outgoing.player.currentItem,
+              let url = (item.asset as? AVURLAsset)?.url else { return }
+        let seconds = item.currentTime().seconds
+        Task { [weak self] in
+            let frame = await EffectPanelSurface.heldFrame(of: url, at: seconds)
+            guard let self, var live = self.dissolves[action.channel],
+                  live.outgoingChannel.player === outgoing.player else { return }
+            live.outgoing = frame
+            self.dissolves[action.channel] = live
+        }
+    }
+
+    // MARK: - The surface ticker (FL-09 … FL-13)
+
+    /// A channel needs the per-frame path while it carries an enabled
+    /// stack, a live dissolve, or a retime.
+    private func channelNeedsTick(_ key: String, _ ch: VideoChannel) -> Bool {
+        guard case .entity = ch.presentation else { return false }
+        if ch.effects?.contains(where: \.enabled) == true { return true }
+        if dissolves[key] != nil { return true }
+        if let curve = ch.retime, !curve.isIdentity, ch.firedAt != nil, ch.span != nil { return true }
+        return false
+    }
+
+    /// Start the tick while something needs it, tear it down — never
+    /// short-circuit it — when nothing does. Latest-wins inside the surface.
+    private func refreshSurfaceTicker() {
+        let needed = channels.contains { channelNeedsTick($0.key, $0.value) }
+        if needed, surfaceTicker == nil {
+            surfaceTicker = Task { [weak self] in
+                while !Task.isCancelled {
+                    self?.surfaceTick()
+                    try? await Task.sleep(for: .milliseconds(33))
+                }
+            }
+        } else if !needed, let ticker = surfaceTicker {
+            ticker.cancel()
+            surfaceTicker = nil
+            for (key, ch) in channels {
+                if case .entity(let name, _, _) = ch.presentation,
+                   let entity = videoEntityRegistry[name] as? ModelEntity {
+                    effectSurface.restore(channel: key, entity: entity)
+                }
+            }
+        }
+    }
+
+    func surfaceTick() {
+        guard let clock = sequenceClock else { return }
+        let now = clock()
+        let keyTracks = effectKeyTracksProvider?() ?? []
+        var jobs: [EffectPanelSurface.Job] = []
+        var finished: [String] = []
+        for (key, ch) in channels {
+            guard case .entity(let name, _, _) = ch.presentation,
+                  let entity = videoEntityRegistry[name] as? ModelEntity else { continue }
+            let sourceTime = applyRetime(key: key, ch, at: now)
+            let stack = ch.effects ?? []
+            var job = EffectPanelSurface.Job(
+                channel: key, entity: entity, player: ch.player,
+                effects: stack, keyTracks: keyTracks,
+                lutData: lutData(for: stack),
+                timelineTime: now, sourceTime: sourceTime)
+            if let dissolve = dissolves[key] {
+                let progress = (now - dissolve.startedAt) / max(dissolve.duration, 1e-9)
+                if progress >= 1 {
+                    finished.append(key)
+                } else {
+                    job.outgoing = dissolve.outgoing
+                    job.outgoingEffects = dissolve.outgoingEffects
+                    job.progress = min(max(progress, 0), 1)
+                }
+            }
+            let needsSurface = stack.contains(where: \.enabled) || job.progress != nil
+            if needsSurface {
+                jobs.append(job)
+            } else {
+                effectSurface.restore(channel: key, entity: entity)
+            }
+        }
+        for key in finished {
+            if let dissolve = dissolves.removeValue(forKey: key) {
+                finishStop(dissolve.outgoingChannel, channel: key + "#outgoing")
+            }
+        }
+        if !jobs.isEmpty { effectSurface.tick(jobs: jobs) }
+        if !finished.isEmpty { refreshSurfaceTicker() }
+    }
+
+    /// FL-13 CONSUMPTION, the Mac's live rule: the occurrence's rate at
+    /// this instant drives the player (> 0), and a freeze or a reverse
+    /// span PARKS the player exactly on the mapped source frame (AVPlayer
+    /// cannot run a live reverse; scrub and export are exact). Returns the
+    /// mapped source time a `.source` parameter reads.
+    @discardableResult
+    private func applyRetime(key: String, _ ch: VideoChannel, at now: TimeInterval) -> Double {
+        let current = ch.player.currentItem?.currentTime().seconds ?? 0
+        guard let curve = ch.retime, !curve.isIdentity,
+              let firedAt = ch.firedAt, let span = ch.span, span > 0 else { return current }
+        let fraction = min(max((now - firedAt) / span, 0), 1)
+        let rate = curve.sourceRate(atFraction: fraction, clipSpan: span)
+        let mapped = curve.sourcePosition(atFraction: fraction) ?? current
+        if rate > 0.001 {
+            if abs(Double(ch.player.rate) - rate) > 0.001 { ch.player.rate = Float(rate) }
+            // Drift past a quarter second re-cues to the mapped frame.
+            if current.isFinite, abs(current - mapped) > 0.25 {
+                ch.player.seek(to: CMTime(seconds: mapped, preferredTimescale: 600),
+                               toleranceBefore: .zero, toleranceAfter: .zero)
+            }
+        } else {
+            if ch.player.rate != 0 { ch.player.pause() }
+            if !current.isFinite || abs(current - mapped) > 0.02 {
+                ch.player.seek(to: CMTime(seconds: mapped, preferredTimescale: 600),
+                               toleranceBefore: .zero, toleranceAfter: .zero)
+            }
+        }
+        return mapped
+    }
+
+    /// LUT bytes for a stack's `.sourceReference` parameters, resolved
+    /// through the media resolver and cached by file.
+    private func lutData(for stack: [EffectInstance]) -> [String: Data] {
+        var out: [String: Data] = [:]
+        for file in EffectSourceReferences.files(in: stack) {
+            if let cached = lutBytes[file] {
+                out[file] = cached
+            } else if let url = mediaResolver?.url(for: file, kind: .video),
+                      let data = try? Data(contentsOf: url) {
+                lutBytes[file] = data
+                out[file] = data
+            }
+        }
+        return out
+    }
 
     private func findVideoURL(file: String) -> URL? {
         // Consult the injected resolver first.

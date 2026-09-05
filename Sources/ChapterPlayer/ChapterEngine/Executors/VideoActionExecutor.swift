@@ -19,10 +19,18 @@ public protocol VideoActionExecutorProtocol {
     func play(_ action: VideoAction)
     func prepare(_ action: VideoAction)
     func stop(channel: String)
+    /// A stop that a same-instant dissolve follows on the same channel:
+    /// the outgoing panel is HELD (paused on its last frame, still shown)
+    /// so the incoming play can mix it (FL-12). The default is the plain stop.
+    func stop(channel: String, holdingForDissolve: Bool)
     func seek(channel: String, to time: TimeInterval)
     func pauseAll()
     func resumeAll()
     func stopAll()
+}
+
+extension VideoActionExecutorProtocol {
+    public func stop(channel: String, holdingForDissolve: Bool) { stop(channel: channel) }
 }
 
 // MARK: - Implementation
@@ -46,6 +54,10 @@ public final class VideoActionExecutor: VideoActionExecutorProtocol {
 
     public func stop(channel: String) {
         videoManager.stop(channel: channel)
+    }
+
+    public func stop(channel: String, holdingForDissolve: Bool) {
+        videoManager.stop(channel: channel, holdingForDissolve: holdingForDissolve)
     }
 
     public func seek(channel: String, to time: TimeInterval) {

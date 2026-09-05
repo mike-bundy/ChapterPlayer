@@ -422,12 +422,23 @@ public struct VideoAction: Sendable {
     /// the composited buffer when the runtime gains its pixel surface —
     /// never approximated through material blending.
     public let blendMode: ChapterScript.BlendMode?
-    /// The two-source transition (FL-12), carried faithfully — rendered
-    /// when the runtime gains its per-frame surface, never approximated.
+    /// The two-source transition (FL-12): rendered by `EffectPanelSurface`
+    /// against the held predecessor when the engine stamps the play.
     public let videoTransition: VideoTransitionSpec?
-    /// The retime curve (FL-13), carried faithfully. Consumption needs
-    /// the occurrence SPAN (the curve domain is span-relative), which the
-    /// engine will plumb with the per-frame surface — never guessed here.
+    /// THE OCCURRENCE'S PLACE ON THE SEQUENCE CLOCK (FL-12 / FL-13),
+    /// stamped by the ENGINE at dispatch — never by the bridge, which
+    /// cannot know it: when this play fired, in `sequenceAnimationTime`
+    /// seconds, and how long the occurrence runs (to the channel's next
+    /// stop or play in the Step, else the Step's end). A retime fraction
+    /// and a dissolve's progress are measured against these — the Kit's
+    /// `Occurrence.start` / `end`, arrived at from the schedule the
+    /// player already fires. Absent on a play the engine did not stamp
+    /// (a preheat, a host-driven play): no retime, no dissolve.
+    public var firedAt: TimeInterval? = nil
+    public var timelineSpan: TimeInterval? = nil
+    /// The retime curve (FL-13): consumed by `VideoPlaybackManager`'s
+    /// surface tick against `firedAt` / `timelineSpan` (the curve domain
+    /// is span-relative) — the span is stamped by the engine, never guessed.
     public let retime: RetimeCurve?
     /// Pitch under retime (FL-13). nil follows speed.
     public let pitch: PitchHandling?

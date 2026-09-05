@@ -400,6 +400,15 @@ open class ChapterPlayerCore {
         sequenceEngine.gateDetector = gateDetection
         sequenceEngine.backdropDriver = backdropCues
         sequenceEngine.captionDriver = captionCues
+        // The per-frame video surface (FL-09 … FL-13) reads the AUTHORED
+        // clock — the caption driver's clock — and the Sequence's Effect
+        // Key curves; never wall time.
+        videoManager.sequenceClock = { [weak self] in
+            self?.sequenceEngine.sequenceAnimationTime ?? 0
+        }
+        videoManager.effectKeyTracksProvider = { [weak self] in
+            self?.sequenceEngine.currentSequence?.effectKeyTracks ?? []
+        }
         sequenceEngine.captionStylesProvider = { [weak self] in
             self?.loadedExperience?.document.captionStyles
         }
