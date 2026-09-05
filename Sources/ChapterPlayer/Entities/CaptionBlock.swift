@@ -4,7 +4,7 @@
 //
 //  THE MIRROR of `MaestroKit.CaptionGeometry` (FL-08): a caption block is
 //  flat shaped text (the mirrored `TitleMesh` recipe at zero depth) on an
-//  unlit legibility plate, with per-run bold / italic / colour / underline,
+//  unlit legibility plate, with per-run bold / italic / color / underline,
 //  the line limit, the outline halo and the angular-size rule — the SAME
 //  recipe the Mac Viewer and export draw, so a Chapter plays as authored.
 //  MaestroVision's `CaptionSeamTests` compare the two builds. Change one,
@@ -64,7 +64,7 @@ public enum CaptionBlock {
         spec.maxWidth = style.maxWidth ?? defaultStyle.maxWidth
         spec.fontFamily = style.fontFamily
         spec.fontWeight = style.fontWeight
-        spec.alignmentX = .centre
+        spec.alignmentX = .center
         spec.extrusionDepth = 0
         return spec
     }
@@ -92,12 +92,12 @@ public enum CaptionBlock {
             : []
         var slotByRun: [Int: UInt32] = [:]
         for (index, run) in runs.enumerated() {
-            guard let colour = run.color else { continue }
+            guard let color = run.color else { continue }
             slotByRun[index] = UInt32(materials.count)
-            materials.append(unlit(colour))
+            materials.append(unlit(color))
         }
         if !slotByRun.isEmpty {
-            mesh = try CaptionRunLayout.recoloured(mesh, spans: layout, slotByRun: slotByRun)
+            mesh = try CaptionRunLayout.recolored(mesh, spans: layout, slotByRun: slotByRun)
         }
 
         var underlines: [Underline] = []
@@ -145,11 +145,11 @@ public enum CaptionBlock {
                       textSize: size, truncatedLines: cut.removedLines, shapedText: cut.text)
     }
 
-    static func unlit(_ colour: ColorRGBA, opacity: Float? = nil) -> UnlitMaterial {
+    static func unlit(_ color: ColorRGBA, opacity: Float? = nil) -> UnlitMaterial {
         var material = UnlitMaterial()
-        material.color = .init(tint: UIColor(red: CGFloat(colour.r), green: CGFloat(colour.g),
-                                             blue: CGFloat(colour.b), alpha: CGFloat(colour.a)))
-        material.blending = .transparent(opacity: .init(floatLiteral: opacity ?? colour.a))
+        material.color = .init(tint: UIColor(red: CGFloat(color.r), green: CGFloat(color.g),
+                                             blue: CGFloat(color.b), alpha: CGFloat(color.a)))
+        material.blending = .transparent(opacity: .init(floatLiteral: opacity ?? color.a))
         return material
     }
 
@@ -164,21 +164,21 @@ public enum CaptionBlock {
             block.addChild(plate)
         }
         let bounds = built.textMesh.bounds
-        let centring = SIMD3<Float>(-bounds.center.x, -bounds.center.y, 0)
+        let centering = SIMD3<Float>(-bounds.center.x, -bounds.center.y, 0)
         if let outlineMesh = built.outlineMesh, let outlineMaterial = built.outlineMaterial {
             let halo = ModelEntity(mesh: outlineMesh, materials: [outlineMaterial])
             halo.name = "caption.outline"
-            halo.position = centring + SIMD3<Float>(0, 0, -outlineOffset)
+            halo.position = centering + SIMD3<Float>(0, 0, -outlineOffset)
             block.addChild(halo)
         }
         let words = ModelEntity(mesh: built.textMesh, materials: built.textMaterials)
         words.name = "caption.words"
-        words.position = centring
+        words.position = centering
         block.addChild(words)
         for underline in built.underlines {
             let plate = ModelEntity(mesh: underline.mesh, materials: [underline.material])
             plate.name = "caption.underline"
-            plate.position = centring + underline.position
+            plate.position = centering + underline.position
             block.addChild(plate)
         }
         return block

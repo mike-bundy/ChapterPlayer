@@ -13,7 +13,7 @@
 //    B. AN ENCODED SPATIAL MASTER already contains its own spatial scene. ASAF
 //       (APAC) and Dolby Atmos are mixes, not points. Asking where the Atmos
 //       master IS is a category error, and giving it a `SpatialAudioComponent`
-//       would spatialise an already-spatialised mix — the classic
+//       would spatialize an already-spatialized mix — the classic
 //       double-spatialization fault.
 //
 //  This file is B, and its one job is to NOT TOUCH THE AUDIO. The asset goes to
@@ -81,7 +81,7 @@ final class SystemSpatialMediaPlayer {
     private let logger = Logger(subsystem: "com.maestro.chapterplayer", category: "SpatialMedia")
     private var channels: [String: SystemSpatialMediaChannel] = [:]
 
-    /// Occurrences whose presentation the platform could not honour, reported
+    /// Occurrences whose presentation the platform could not honor, reported
     /// once each so a scrubbing author does not get the same line repeatedly.
     private var reportedPresentationLimits: Set<String> = []
 
@@ -108,13 +108,13 @@ final class SystemSpatialMediaPlayer {
         // `allowedAudioSpatializationFormats` defaults to `.monoAndStereo`, so
         // an encoded spatial master — the ONLY kind of asset that reaches this
         // pipeline — is by default the one thing the system will not
-        // spatialise. Measured on the owner's files: ASAF.mp4 is `apac` with
+        // spatialize. Measured on the owner's files: ASAF.mp4 is `apac` with
         // 18 channels and Dolby Spatial.mp4 is `ec-3` with 6; both load and
         // report `isDecodable`, so the file was never the problem.
         //
         // This is also why the two failed DIFFERENTLY on device and looked
         // like unrelated bugs: 5.1 has a defined stereo downmix, so Dolby
-        // stayed audible (unspatialised, but there); 18 discrete APAC channels
+        // stayed audible (unspatialized, but there); 18 discrete APAC channels
         // have no such fallback, so ASAF rendered nothing at all. Silence and
         // a flat mix were the same defect wearing two faces.
         item.allowedAudioSpatializationFormats = .monoStereoAndMultichannel
@@ -277,7 +277,7 @@ final class SystemSpatialMediaPlayer {
                 player.intendedSpatialAudioExperience =
                     .headTracked(.automatic, soundStageSize: .automatic)
             case .fixed:
-                // The mix travels with the listener: spatialised, but not
+                // The mix travels with the listener: spatialized, but not
                 // motion-tracked. NOT `.bypassed`, which would remove spatial
                 // processing altogether and flatten the master — a different
                 // and much worse thing than "fixed".

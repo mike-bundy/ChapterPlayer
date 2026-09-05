@@ -7,7 +7,7 @@
 //  `ChapterScript.StoryRegionRuntime` is the arithmetic — which region is
 //  active, whether its exit resolved, whether the story is playing its first
 //  pass or holding at the boundary. This is what that arithmetic touches:
-//  the fallback timer, the continuation behaviours, and the one call that
+//  the fallback timer, the continuation behaviors, and the one call that
 //  releases the story.
 //
 //  WHAT THIS DELIBERATELY DOES NOT OWN: the hold itself.
@@ -60,7 +60,7 @@ public final class StoryRegionController {
     /// during a gate wait. That clamping IS the hold.
     @ObservationIgnored public var authoredClock: (() -> TimeInterval)?
 
-    /// Applies a continuation behaviour to one target. Wired by
+    /// Applies a continuation behavior to one target. Wired by
     /// `ChapterPlayerCore` to the executors; nil in tests.
     @ObservationIgnored public var applyContinuation:
         ((StoryContinuationTarget, StoryContinuationBehavior, ContinuationPhase) -> Void)?
@@ -248,7 +248,7 @@ public final class StoryRegionController {
 
     private func applyContinuations(for region: StoryRegion, phase: ContinuationPhase) {
         for continuation in region.continuations {
-            // AN EXIT FADE IS INDEPENDENT OF THE BEHAVIOUR, so it is handled
+            // AN EXIT FADE IS INDEPENDENT OF THE BEHAVIOR, so it is handled
             // before the `.hold` early-out: content left on its default can
             // still be authored to fade as the story resumes.
             if phase == .leavingHold, let seconds = continuation.exitFade, seconds > 0 {

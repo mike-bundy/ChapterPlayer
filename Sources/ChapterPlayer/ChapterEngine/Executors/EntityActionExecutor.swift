@@ -45,7 +45,7 @@ public protocol EntityActionExecutorProtocol {
 public extension EntityActionExecutorProtocol {
     func setSequenceAnimation(tracks: [EntityAnimationTrack], clock: (@MainActor () -> TimeInterval)?) {}
     func beginMotionBehavior(_ behavior: ChapterScript.MotionBehaviorDTO) {}
-    /// Defaults to the old behaviour for conformers outside this package, which
+    /// Defaults to the old behavior for conformers outside this package, which
     /// never had Motion Actions 2.0 to keep alive in the first place.
     func clearStepMotions() { clearAllMotions() }
 }
@@ -80,7 +80,7 @@ public final class EntityActionExecutor: EntityActionExecutorProtocol {
     /// the headset did another. Both now call `MotionProgress`.
     ///
     /// nil when no authored clock was available at registration; the sampler
-    /// then falls back to the old step-relative behaviour rather than freezing.
+    /// then falls back to the old step-relative behavior rather than freezing.
     private var activeMotions: [String: (action: AnimateMotionAction, startedAt: TimeInterval?)] = [:]
 
     /// MOTION ACTIONS 2.0 — active behaviors per entity, MANY per entity
@@ -501,7 +501,7 @@ public final class EntityActionExecutor: EntityActionExecutorProtocol {
             // for an unkeyed one it is the registered rest transform.
             //
             // RESOLVED BEFORE the behaviors rather than after: an orbit is
-            // defined by its centre, so the resolver needs to know where the
+            // defined by its center, so the resolver needs to know where the
             // object sits.
             // THE KEYED BRANCH READS `entity.transform` ONLY BECAUSE
             // `applySequenceAnimationTracks` WROTE IT THIS FRAME — that pass

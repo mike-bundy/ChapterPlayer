@@ -65,7 +65,7 @@ open class ChapterPlayerCore {
     public let interactions: InteractionController
 
     /// EXPLORE regions: the two clocks, the fallback timer and the
-    /// continuation behaviours. See `StoryRegionController`.
+    /// continuation behaviors. See `StoryRegionController`.
     public let storyRegions = StoryRegionController()
 
     /// THE ONE AUTHORITY FOR MOVEMENT BETWEEN SEQUENCES.
@@ -441,7 +441,7 @@ open class ChapterPlayerCore {
         gateDetection.onGateActivated = { [weak self] gate in
             guard let self, let target = gate.targetEntity else { return }
             // A STORY-CONDITION GATE PUBLISHES NOTHING, and that is the
-            // accessible behaviour rather than a gap in it. It is not waiting
+            // accessible behavior rather than a gap in it. It is not waiting
             // for a person to do anything — it is waiting for a fact — so there
             // is no physical act to offer an equivalent FOR, and offering
             // "Continue" would let assistive technology bypass a condition the
@@ -666,10 +666,10 @@ open class ChapterPlayerCore {
         }
     }
 
-    /// APPLY ONE CONTINUATION BEHAVIOUR, using the playback the runtime already
+    /// APPLY ONE CONTINUATION BEHAVIOR, using the playback the runtime already
     /// has.
     ///
-    /// Explore is an ORCHESTRATION layer: it starts and stops behaviour that
+    /// Explore is an ORCHESTRATION layer: it starts and stops behavior that
     /// already exists, and never becomes a second media engine. That is why
     /// there is no loop implementation here — a clip authored to loop keeps
     /// looping under `.continue` through `AVPlayerLooper`, which is the
@@ -699,7 +699,7 @@ open class ChapterPlayerCore {
             // cannot be performed. The editors do not offer it
             // (`StoryContinuationCapabilities`); this logs the case that can
             // still arrive from a newer document or a hand edit, because the
-            // previous behaviour was to route it through `videoManager`, get
+            // previous behavior was to route it through `videoManager`, get
             // nil, and leave the sound playing with no trace anywhere.
             if isVideo {
                 videoManager.player(for: channel)?.pause()
@@ -815,7 +815,7 @@ open class ChapterPlayerCore {
     /// applied here because crossing a Sequence boundary is exactly where an
     /// immersive → windowed transition fires and where the previous Sequence's
     /// environment is torn down before the new one binds — which the old
-    /// inline chain-walker also did, and which is the behaviour old Chapters
+    /// inline chain-walker also did, and which is the behavior old Chapters
     /// depend on.
     @MainActor
     public func perform(_ outcome: NavigationOutcome) async {
@@ -954,7 +954,7 @@ open class ChapterPlayerCore {
     /// Cue zero, not "the sequence's backdrop" — with a track authored, the
     /// sequence does not have ONE backdrop, and `BackdropCueDriver` takes over
     /// from here to follow the rest. Kept as the entry point the play path
-    /// already calls so the pre-track behaviour is unchanged for documents
+    /// already calls so the pre-track behavior is unchanged for documents
     /// with no cues.
     public func applySequenceBackdrop(_ sequence: SequenceDefinition) {
         let cue = SequenceBackdropTimeline.activeCue(
@@ -1155,7 +1155,7 @@ open class ChapterPlayerCore {
                     mesh = MeshResource.generateSphere(radius: radius)
                 case .equirect180, .appleImmersive, .custom:
                     // PARTIAL SHELL from the authored coverage: the shell
-                    // sweeps exactly `field.horizontalDegrees`, centred on
+                    // sweeps exactly `field.horizontalDegrees`, centerd on
                     // forward, so a 180° plate stops at the hemisphere
                     // boundary and a 190°/220° plate sweeps its real field
                     // instead of being smeared across a full sphere

@@ -8,7 +8,7 @@
 //  caption that belongs to the moment they are held in, exactly as a fade
 //  or a backdrop holds.
 //
-//  Modelled on `BackdropCueDriver`, and deliberately NOT part of
+//  Modeled on `BackdropCueDriver`, and deliberately NOT part of
 //  `SequenceEngine`: a caption is not a step, a gate or an action. Polling,
 //  not scheduling, for the same five reasons (pause, gate, seek, scrub,
 //  next-sequence staleness). The lookup is a binary search over a sorted,
@@ -176,7 +176,7 @@ extension ChapterPlayerCore: CaptionPresenting {
 
     /// Words in space, through the MIRRORED caption recipe (`CaptionBlock`,
     /// the mirror of MaestroKit's `CaptionGeometry`): FL-07's shaping at
-    /// zero depth, per-run bold / italic / colour / underline, the line
+    /// zero depth, per-run bold / italic / color / underline, the line
     /// limit, the outline halo, on an unlit legibility plate — a caption
     /// nobody can read in a dark shot is a defect. Placement is in the
     /// scene root's own axes, which ARE the viewer's axes (the root is

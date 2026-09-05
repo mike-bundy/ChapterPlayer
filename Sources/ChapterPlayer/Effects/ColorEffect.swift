@@ -21,7 +21,7 @@ public enum ColorEffect {
     public static let schema = EffectSchema(
         effectId: effectId,
         displayName: "Color",
-        family: "Colour",
+        family: "Color",
         operatesOnColorValues: true,
         projectionClass: .projectionIndependent,
         parameters: [

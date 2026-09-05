@@ -30,7 +30,7 @@ public struct MaskShape: Equatable, Sendable, Hashable {
         self.closed = closed
     }
 
-    /// THE GREAT DEFAULT: a centred rectangle at 60% of the frame,
+    /// THE GREAT DEFAULT: a centerd rectangle at 60% of the frame,
     /// already doing something.
     public static let defaultRectangle = MaskShape(
         kind: .rectangle,

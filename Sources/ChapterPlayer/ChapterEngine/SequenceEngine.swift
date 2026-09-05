@@ -607,7 +607,7 @@ public final class SequenceEngine {
 
             // An action stored past its Step's end can never fire: this loop
             // exits while it is still pending, silently. Say so rather than
-            // letting authored behaviour vanish without a word.
+            // letting authored behavior vanish without a word.
             for scheduled in scheduledInFireOrder where scheduled.at > step.duration {
                 let detail = "step '\(step.id)': action scheduled at +"
                     + String(format: "%.2f", scheduled.at) + "s but the step is only "

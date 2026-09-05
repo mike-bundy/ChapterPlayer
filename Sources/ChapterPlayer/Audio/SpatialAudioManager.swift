@@ -299,7 +299,7 @@ public class SpatialAudioManager {
             try session.setActive(true)
             logger.info("Audio session: .playback active — spatial audio available")
         } catch {
-            // Not fatal: unspatialised playback still works, and saying so is
+            // Not fatal: unspatialized playback still works, and saying so is
             // better than a silent degradation nobody can account for later.
             logger.error("Audio session setup FAILED — spatial audio will be unavailable: \(error.localizedDescription)")
         }
@@ -914,7 +914,7 @@ public class SpatialAudioManager {
         // ROUTE FIRST, THEN LOOP — the order matters and it used to be wrong.
         //
         // `loopConfig` returned before any routing decision, so a cue with an
-        // intro/loop/outro was ALWAYS unspatialised: a positional looped sound
+        // intro/loop/outro was ALWAYS unspatialized: a positional looped sound
         // played from nowhere and an encoded master was flattened. Looping is a
         // property of how a source repeats, not of where it plays, so the route
         // is chosen first and each path applies its own looping.
@@ -945,7 +945,7 @@ public class SpatialAudioManager {
                 // genuinely asked for both.
                 reportFallback(
                     model: .positional,
-                    reason: "Cues with an intro/loop/outro play unspatialised. Use a plain looping cue to place this sound.",
+                    reason: "Cues with an intro/loop/outro play unspatialized. Use a plain looping cue to place this sound.",
                     channel: action.channel, file: action.file)
                 playWithLoopConfig(action: action, loopConfig: loopConfig, stepContext: stepContext)
             } else {

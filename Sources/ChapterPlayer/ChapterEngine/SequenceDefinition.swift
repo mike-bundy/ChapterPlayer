@@ -29,7 +29,7 @@ public struct SequenceDefinition: Sendable {
     /// overlap unwritable.
     ///
     /// Empty means "use `immersiveBackdrop` for the whole sequence", i.e.
-    /// exactly the behaviour of every document written before the track
+    /// exactly the behavior of every document written before the track
     /// existed. `SequenceBackdropTimeline.effectiveCues` folds the two shapes
     /// into one so there is a single resolution path.
     ///

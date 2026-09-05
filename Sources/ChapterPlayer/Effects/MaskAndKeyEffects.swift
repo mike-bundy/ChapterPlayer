@@ -65,14 +65,14 @@ public enum MaskEffect {
         let offsetY = parameters["offsetY"]?.numberValue ?? 0
         let rotation = (parameters["rotation"]?.numberValue ?? 0) * .pi / 180
         let scale = max(parameters["scale"]?.numberValue ?? 1, 0.01)
-        let centre = CGPoint(x: extent.midX, y: extent.midY)
+        let center = CGPoint(x: extent.midX, y: extent.midY)
         var placement = CGAffineTransform.identity
         placement = placement.translatedBy(
-            x: centre.x + offsetX * extent.width,
-            y: centre.y - offsetY * extent.height)
+            x: center.x + offsetX * extent.width,
+            y: center.y - offsetY * extent.height)
         placement = placement.rotated(by: -rotation)
         placement = placement.scaledBy(x: scale, y: scale)
-        placement = placement.translatedBy(x: -centre.x, y: -centre.y)
+        placement = placement.translatedBy(x: -center.x, y: -center.y)
         coverage = coverage
             .transformed(by: transform)
             .transformed(by: placement)
@@ -119,7 +119,7 @@ public enum KeyerEffects {
         operatesOnColorValues: true,
         projectionClass: .projectionAware,
         parameters: [
-            EffectParameterSchema(key: "keyColor", label: "Key Colour", kind: .color,
+            EffectParameterSchema(key: "keyColor", label: "Key Color", kind: .color,
                                   defaultValue: .color(ColorRGBA(r: 0.1, g: 0.85, b: 0.15, a: 1))),
             EffectParameterSchema(key: "tolerance", label: "Tolerance", kind: .normalized,
                                   defaultValue: .number(0.2)),
@@ -154,7 +154,7 @@ public enum KeyerEffects {
                                   defaultValue: .number(0)),
         ])
 
-    // MARK: The matte through one cube (colour distance in Cb/Cr)
+    // MARK: The matte through one cube (color distance in Cb/Cr)
 
     static func chromaMatteCube(key: ColorRGBA, tolerance: Double,
                                 softness: Double) -> Data {
@@ -175,7 +175,7 @@ public enum KeyerEffects {
                     let c = chroma(r, g, b)
                     let distance = ((c.cb - keyChroma.cb) * (c.cb - keyChroma.cb)
                         + (c.cr - keyChroma.cr) * (c.cr - keyChroma.cr)).squareRoot()
-                    // 0 at the key colour, 1 far away — smooth over softness.
+                    // 0 at the key color, 1 far away — smooth over softness.
                     let t = tolerance * 0.5
                     let s = max(softness * 0.5, 0.0001)
                     let alpha = min(max((distance - t) / s, 0), 1)

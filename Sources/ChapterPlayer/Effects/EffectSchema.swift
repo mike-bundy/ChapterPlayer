@@ -138,7 +138,7 @@ public struct EffectParameterSchema: Sendable, Equatable {
 
 // MARK: - Projection classes
 
-/// Does the result depend on WHERE the pixel is? Colour and blend are
+/// Does the result depend on WHERE the pixel is? Color and blend are
 /// projection-independent; transform and screen-space crop/mask are not,
 /// and they REFUSE on spherical media with a sentence.
 public enum EffectProjectionClass: String, Codable, Sendable, Equatable {

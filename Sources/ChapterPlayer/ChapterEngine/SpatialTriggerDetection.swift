@@ -206,11 +206,11 @@ public final class SpatialTriggerDetector {
         case baseline
         /// Allow the condition to qualify immediately. Correct for a GATE,
         /// which asks "is this true?" rather than "did this just happen?" — and
-        /// deliberately preserves the pre-existing gate behaviour.
+        /// deliberately preserves the pre-existing gate behavior.
         case immediate
     }
 
-    /// Watch for the viewer coming within `radius` metres of `target`.
+    /// Watch for the viewer coming within `radius` meters of `target`.
     ///
     /// Distance is HORIZONTAL (XZ): "walk up to it" must not depend on whether
     /// the target sits at floor height or eye height.

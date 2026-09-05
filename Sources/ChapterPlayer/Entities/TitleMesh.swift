@@ -4,7 +4,7 @@
 //
 //  THE MIRRORED TITLE CONTRACT (FL-07). ChapterPlayer cannot depend on
 //  MaestroKit, so `MaestroKit.TitleGeometry`'s recipe is DUPLICATED here —
-//  same font resolution (cap-height metres), same attributed string, same
+//  same font resolution (cap-height meters), same attributed string, same
 //  extrusion options, same material mapping — and MaestroVision's seam test
 //  compares the two builds' vertex counts, bounds and material assignment.
 //  Change one, change both; the seam test is what enforces it.
@@ -41,7 +41,7 @@ public enum TitleMesh {
         }
     }
 
-    /// Cap-height-metres font resolution — the mirror of
+    /// Cap-height-meters font resolution — the mirror of
     /// `MaestroKit.FontResolution.resolve`.
     static func resolveFont(family: String?, weight: Int?, italic: Bool?,
                             capHeightMetres: Float, sourceURL: URL? = nil) -> CTFont {
@@ -69,8 +69,8 @@ public enum TitleMesh {
                 ?? CTFontCreateWithName("Helvetica" as CFString, probeSize, nil)
         }
         let capAtProbe = CTFontGetCapHeight(base)
-        let metres = CGFloat(max(capHeightMetres, 0.0001))
-        let pointSize = capAtProbe > 0 ? metres * probeSize / capAtProbe : metres
+        let meters = CGFloat(max(capHeightMetres, 0.0001))
+        let pointSize = capAtProbe > 0 ? meters * probeSize / capAtProbe : meters
         return CTFontCreateCopyWithAttributes(base, pointSize, nil, nil)
     }
 
@@ -115,7 +115,7 @@ public enum TitleMesh {
     }
 
     /// Mirror of `MaestroKit.TitleGeometryContract.sizedFont`: the face at
-    /// the size that makes `spec.fontSize` metres of cap height.
+    /// the size that makes `spec.fontSize` meters of cap height.
     @MainActor
     static func sizedFont(for spec: TextSpec, fontURL: URL? = nil) -> CTFont {
         let baseFont = resolveFont(family: spec.fontFamily, weight: spec.fontWeight,
@@ -140,7 +140,7 @@ public enum TitleMesh {
             attributed.kern = CGFloat(tracking) * scale
         }
         let paragraph = NSMutableParagraphStyle()
-        paragraph.alignment = nsAlignment(spec.alignmentX ?? .centre)
+        paragraph.alignment = nsAlignment(spec.alignmentX ?? .center)
         if let leading = spec.leading {
             let scale = pointSize / CGFloat(max(spec.fontSize, 0.0001))
             paragraph.minimumLineHeight = CGFloat(leading) * scale
@@ -227,7 +227,7 @@ public enum TitleMesh {
 
         var extrusion = MeshResource.ShapeExtrusionOptions()
         let depth = spec.extrusionDepth ?? defaultExtrusionDepth
-        // Depth and bevel are metres; the extruder takes its own point-scale
+        // Depth and bevel are meters; the extruder takes its own point-scale
         // units, so they convert through the same measured scale as the type.
         let unit = Float(unitsPerPoint())
         extrusion.extrusionMethod = .linear(depth: max(0, depth) / max(unit, 1e-9))
@@ -278,7 +278,7 @@ public enum TitleMesh {
         switch alignment ?? .baseline {
         case .baseline: return 0
         case .top:      return -bounds.max.y
-        case .centre:   return -(bounds.min.y + bounds.max.y) / 2
+        case .center:   return -(bounds.min.y + bounds.max.y) / 2
         case .bottom:   return -bounds.min.y
         }
     }
@@ -318,7 +318,7 @@ public enum TitleMesh {
     static func nsAlignment(_ alignment: TextAlignmentX) -> NSTextAlignment {
         switch alignment {
         case .leading:   return .left
-        case .centre:    return .center
+        case .center:    return .center
         case .trailing:  return .right
         case .justified: return .justified
         case .natural:   return .natural

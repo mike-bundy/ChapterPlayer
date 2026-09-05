@@ -98,7 +98,7 @@ public final class EntityFactory {
             //
             // A placeholder stands in for media that does not exist yet. The
             // authoring tools draw a neutral proxy so the shot can be framed;
-            // the player must not, because a grey box on device is
+            // the player must not, because a gray box on device is
             // indistinguishable from a bug and could reach an audience. An
             // entity that isn't built simply never appears, and every action
             // naming it is a no-op — which is the truth about an unfinished
@@ -179,7 +179,7 @@ public final class EntityFactory {
     public static func playEmbeddedAnimations(on entity: Entity, spec: UsdzAnimationSpec) {
         var stack: [Entity] = [entity]
         // CD-25 (FL-16): a named clip plays ALONE; absent = every clip,
-        // today's behaviour. Naming a clip the file does not have plays
+        // today's behavior. Naming a clip the file does not have plays
         // NOTHING - not every clip, which would be a surprising fallback.
         // THE SHARED STATIC: both editors reuse this, so the narrowing
         // lands everywhere in lock-step.
@@ -241,7 +241,7 @@ public final class EntityFactory {
                 var component = presentation
                 component.desiredViewingMode = .spatialStereo
                 // The component draws the picture itself, so the holding plate
-                // must go — leaving both would put a grey quad behind a stereo
+                // must go — leaving both would put a gray quad behind a stereo
                 // image at the same depth.
                 model.model = nil
                 model.components.set(component)

@@ -5,7 +5,7 @@
 //  THE MIRROR of `MaestroKit.CaptionRunLayout` (FL-08). ChapterPlayer
 //  cannot depend on MaestroKit, so how a caption's runs reach the geometry
 //  is DUPLICATED here — the line limit, glyph-occurrence ↔ run matching by
-//  pen position, recolouring by material slot, the outline halo — and
+//  pen position, recoloring by material slot, the outline halo — and
 //  MaestroVision's `CaptionSeamTests` compare the two builds. Change one,
 //  change both.
 //
@@ -186,9 +186,9 @@ enum CaptionRunLayout {
         return String(suffix)
     }
 
-    // MARK: - Recolouring by slot
+    // MARK: - Recoloring by slot
 
-    static func recoloured(_ mesh: MeshResource, spans: [GlyphSpan],
+    static func recolored(_ mesh: MeshResource, spans: [GlyphSpan],
                            slotByRun: [Int: UInt32]) throws -> MeshResource {
         var slotByInstance: [String: UInt32] = [:]
         for span in spans {
@@ -238,13 +238,13 @@ enum CaptionRunLayout {
                 for p in part.positions.elements { lo = simd_min(lo, p); hi = simd_max(hi, p) }
             }
             guard lo.x <= hi.x else { models.insert(model); continue }
-            let centre = SIMD3<Float>((lo.x + hi.x) / 2, (lo.y + hi.y) / 2, 0)
+            let center = SIMD3<Float>((lo.x + hi.x) / 2, (lo.y + hi.y) / 2, 0)
             var grown = model
             var parts = MeshPartCollection()
             for var part in model.parts {
                 part.positions = MeshBuffers.Positions(part.positions.elements.map {
-                    SIMD3<Float>(centre.x + ($0.x - centre.x) * factor,
-                                 centre.y + ($0.y - centre.y) * factor,
+                    SIMD3<Float>(center.x + ($0.x - center.x) * factor,
+                                 center.y + ($0.y - center.y) * factor,
                                  $0.z)
                 })
                 parts.insert(part)

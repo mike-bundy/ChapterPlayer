@@ -75,10 +75,10 @@ public enum LUTParsing {
                 guard fields.count == 3,
                       let r = Float(fields[0]), let g = Float(fields[1]),
                       let b = Float(fields[2]) else {
-                    throw Refusal("Line \(lineNumber) is not a colour triple: \(line)")
+                    throw Refusal("Line \(lineNumber) is not a color triple: \(line)")
                 }
                 guard size != nil else {
-                    throw Refusal("Line \(lineNumber): colour data before LUT_3D_SIZE.")
+                    throw Refusal("Line \(lineNumber): color data before LUT_3D_SIZE.")
                 }
                 table.append(contentsOf: [r, g, b])
             }

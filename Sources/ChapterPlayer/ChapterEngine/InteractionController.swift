@@ -13,7 +13,7 @@
 //  1. RESPONSES GO THROUGH THE EXISTING ENGINE. `perform` hands the actions to
 //     `SequenceEngine`, which routes them to the same executors a step's
 //     actions use. There is no `playAudioFromInteraction`. An interaction
-//     decides WHEN a behaviour runs and never what it means.
+//     decides WHEN a behavior runs and never what it means.
 //
 //  2. DETECTION IS SHARED WITH GATES (`SpatialTriggerDetector`). One cone, one
 //     dwell, one proximity poll, one manipulation subscription.
@@ -91,7 +91,7 @@ public final class InteractionController {
 
     /// THE OTHER CONSUMER OF A SEMANTIC ACTIVATION.
     ///
-    /// One viewer action can mean two things at once: an object's own behaviour
+    /// One viewer action can mean two things at once: an object's own behavior
     /// (an Interaction) and permission for the story to continue (a Gate). They
     /// are different consumers with different rules, and this is how the second
     /// one hears about the activation without the first one knowing it exists.
@@ -525,13 +525,13 @@ public final class InteractionController {
     /// Subscribe to the system's accessibility activations for this scene.
     ///
     /// WHY THIS IS LOAD-BEARING. With VoiceOver on, ordinary hand input is not
-    /// delivered to the app by default — so an entity can be perfectly labelled,
+    /// delivered to the app by default — so an entity can be perfectly labeled,
     /// perfectly discoverable, and completely impossible to activate. Labels
-    /// without this are an accessibility claim the product does not honour.
+    /// without this are an accessibility claim the product does not honor.
     ///
     /// Both routes converge on `activate(_:)`, so lifetime, enablement,
     /// presence and response ordering are shared with the physical route. There
-    /// is exactly one behaviour engine.
+    /// is exactly one behavior engine.
     private func subscribeAccessibility(in scene: RealityKit.Scene) {
         accessibilitySubscriptions.forEach { $0.cancel() }
         accessibilitySubscriptions = []
@@ -541,7 +541,7 @@ public final class InteractionController {
                 Task { @MainActor in
                     guard let self else { return }
                     // Same resolution as a physical tap, including the ancestry
-                    // walk — a labelled USDZ subtree must behave identically.
+                    // walk — a labeled USDZ subtree must behave identically.
                     _ = self.handleTap(on: event.entity)
                 }
             }

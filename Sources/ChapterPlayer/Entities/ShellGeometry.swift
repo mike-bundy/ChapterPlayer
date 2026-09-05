@@ -28,7 +28,7 @@
 //  `generateSphere`, and the partial shell must agree with it.
 //
 //  What the Simulator can prove about this file: span, bounds, forward
-//  centring, UV corners (`MaestroVisionTests/ShellGeometryTests`).
+//  centering, UV corners (`MaestroVisionTests/ShellGeometryTests`).
 //  UV mirroring as PERCEIVED, stereo eye orientation and real
 //  perceptual correctness remain DEFERRED-HARDWARE-QA.
 //

@@ -113,7 +113,7 @@ public enum EffectEvaluator {
     }
 
     /// The render plan: enabled, renderable Effects in authored order,
-    /// grouped into contiguous runs by their colour-values declaration.
+    /// grouped into contiguous runs by their color-values declaration.
     /// Bypassed and unrecognised Effects appear in NO batch — excluded
     /// from the graph, not rendered at zero strength.
     public static func batches(for stack: [EffectInstance],

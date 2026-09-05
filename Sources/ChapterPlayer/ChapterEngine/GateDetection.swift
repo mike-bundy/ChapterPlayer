@@ -139,7 +139,7 @@ public final class GateDetectionController: GateDetecting {
             }
             // `.immediate`, deliberately: a GATE asks "is this true?", so a
             // viewer already standing inside the radius when the gate begins
-            // satisfies it at once. That is the behaviour gates had before
+            // satisfies it at once. That is the behavior gates had before
             // interactions existed, and this closure does not change it — an
             // Interaction's entry EDGE is a different question with a different
             // policy. Shared geometry, distinct consumer semantics.

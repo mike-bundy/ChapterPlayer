@@ -1113,7 +1113,7 @@ public class VideoPlaybackManager {
                 // the `VideoMaterial` plane is what makes panel playback
                 // reliable here, and the naive
                 // "VideoPlayerComponent on top of a placeholder" attach is a
-                // documented failure (the grey placeholder stayed and the
+                // documented failure (the gray placeholder stayed and the
                 // texture never swapped in).
                 //
                 // `.spatial` asks the system for its own stereo presentation,
@@ -1227,7 +1227,7 @@ public class VideoPlaybackManager {
     /// parameter on it: the two differ in what they ask RealityKit for (an
     /// immersive shell is `.full` + `.stereo`; a panel is a screen in the room
     /// asking for `.spatial`), and folding them together would put a mode
-    /// switch inside the one function whose retry behaviour nobody should have
+    /// switch inside the one function whose retry behavior nobody should have
     /// to re-read.
     ///
     /// FAILURE IS SURVIVABLE HERE, unlike the shell's. The `VideoMaterial`
@@ -1533,7 +1533,7 @@ public class VideoPlaybackManager {
 // MARK: - FL-04 crop mesh
 
 /// The cropped-panel mesh rule (FL-04). Mirrors Maestro Studio's
-/// `CroppedPanelMesh` — one behaviour, stated twice because this package
+/// `CroppedPanelMesh` — one behavior, stated twice because this package
 /// depends only on ChapterScript. Change one, change both.
 enum VideoPanelCropMesh {
     static func make(width: Float, height: Float,

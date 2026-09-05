@@ -336,7 +336,7 @@ public struct AudioAction: Sendable {
         self.pitch = pitch
     }
 
-    /// Where this cue should play, and whether that honours the authored
+    /// Where this cue should play, and whether that honors the authored
     /// intent. One decision, shared with the editor — see
     /// `ChapterScript.AudioRuntimeRouting`.
     public var routing: AudioRuntimeRouting.Support {

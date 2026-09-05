@@ -131,7 +131,7 @@ public final class DocumentEntityLoader {
         // member's own local pose - exactly what it writes today - and the
         // member's definition is never touched: joining stays byte-identity.
         // `addChild` reparents with preservingWorldTransform at its default
-        // false, which is precisely the non-destructive behaviour FL-15's
+        // false, which is precisely the non-destructive behavior FL-15's
         // audit bans the `true` variant for.
         for definition in document.entities where definition.kind == .rig {
             guard let rigEntity = entityExecutor.entityRegistry[definition.id] else { continue }

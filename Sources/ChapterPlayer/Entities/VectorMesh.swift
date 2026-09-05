@@ -124,7 +124,7 @@ public enum VectorMesh {
         ]
     }
 
-    // MARK: - Contours → Path (fill rule honoured per path)
+    // MARK: - Contours → Path (fill rule honored per path)
 
     static func combinedPath(_ parsed: ParseOutput,
                              physicalWidth: Float?) -> SwiftUI.Path? {
