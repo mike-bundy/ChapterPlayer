@@ -25,6 +25,22 @@ public enum TitleMesh {
         public let materials: [any Material]
     }
 
+    /// Mirror of `MaestroKit.TitleGeometry.StyleRun`: a per-range face
+    /// request in UTF-16 offsets (FL-08 caption runs).
+    public struct StyleRun: Equatable, Hashable, Sendable {
+        public var start: Int
+        public var length: Int
+        public var bold: Bool
+        public var italic: Bool
+
+        public init(start: Int, length: Int, bold: Bool = false, italic: Bool = false) {
+            self.start = start
+            self.length = length
+            self.bold = bold
+            self.italic = italic
+        }
+    }
+
     /// Cap-height-metres font resolution — the mirror of
     /// `MaestroKit.FontResolution.resolve`.
     static func resolveFont(family: String?, weight: Int?, italic: Bool?,
@@ -98,8 +114,10 @@ public enum TitleMesh {
         return measured
     }
 
+    /// Mirror of `MaestroKit.TitleGeometryContract.sizedFont`: the face at
+    /// the size that makes `spec.fontSize` metres of cap height.
     @MainActor
-    public static func build(spec: TextSpec, fontURL: URL? = nil) throws -> Result {
+    static func sizedFont(for spec: TextSpec, fontURL: URL? = nil) -> CTFont {
         let baseFont = resolveFont(family: spec.fontFamily, weight: spec.fontWeight,
                                    italic: spec.fontIsItalic,
                                    capHeightMetres: spec.fontSize,
@@ -107,9 +125,14 @@ public enum TitleMesh {
         let capRatio = CTFontGetCapHeight(baseFont) / max(CTFontGetSize(baseFont), 0.0001)
         let targetCapPoints = CGFloat(max(spec.fontSize, 0.0001)) / unitsPerPoint()
         let sized = capRatio > 0 ? targetCapPoints / capRatio : targetCapPoints
-        let font = CTFontCreateCopyWithAttributes(baseFont, sized, nil, nil)
-        let pointSize = CTFontGetSize(font)
+        return CTFontCreateCopyWithAttributes(baseFont, sized, nil, nil)
+    }
 
+    /// Mirror of `MaestroKit.TitleGeometryContract.attributed` — ONE recipe,
+    /// with a styled run as a per-range font the extruder shapes.
+    static func attributed(spec: TextSpec, font: CTFont,
+                           styleRuns: [StyleRun] = []) -> AttributedString {
+        let pointSize = CTFontGetSize(font)
         var attributed = AttributedString(spec.text)
         attributed.font = font
         if let tracking = spec.tracking {
@@ -124,15 +147,83 @@ public enum TitleMesh {
             paragraph.maximumLineHeight = CGFloat(leading) * scale
         }
         attributed.paragraphStyle = paragraph
+        if !styleRuns.isEmpty {
+            let text = String(attributed.characters)
+            let utf16 = text.utf16
+            for run in styleRuns where run.length > 0 && (run.bold || run.italic) {
+                guard let lower = utf16.index(utf16.startIndex, offsetBy: run.start,
+                                              limitedBy: utf16.endIndex),
+                      let upper = utf16.index(lower, offsetBy: run.length,
+                                              limitedBy: utf16.endIndex),
+                      lower < upper,
+                      let range = Range(lower..<upper, in: attributed)
+                else { continue }
+                attributed[range].font = traitFont(font, bold: run.bold, italic: run.italic) as UIFont
+            }
+        }
+        return attributed
+    }
+
+    /// Mirror of `MaestroKit.TitleGeometryContract.traitFont`.
+    static func traitFont(_ base: CTFont, bold: Bool, italic: Bool) -> CTFont {
+        var traits: CTFontSymbolicTraits = []
+        if bold { traits.insert(.traitBold) }
+        if italic { traits.insert(.traitItalic) }
+        guard !traits.isEmpty else { return base }
+        if let styled = CTFontCreateCopyWithSymbolicTraits(base, 0, nil, traits, traits) {
+            return styled
+        }
+        var descriptorTraits: [CFString: Any] = [:]
+        if bold { descriptorTraits[kCTFontWeightTrait] = 0.4 }
+        if italic { descriptorTraits[kCTFontSlantTrait] = 0.2 }
+        let descriptor = CTFontDescriptorCreateWithAttributes(
+            [kCTFontTraitsAttribute: descriptorTraits] as CFDictionary)
+        let attempt = CTFontCreateCopyWithAttributes(base, 0, nil, descriptor)
+        let got = CTFontGetSymbolicTraits(attempt)
+        let wantedBold = !bold || got.contains(.traitBold)
+        let wantedItalic = !italic || got.contains(.traitItalic)
+        return (wantedBold && wantedItalic) ? attempt : base
+    }
+
+    static let containerHeightPoints: CGFloat = 1_000_000
+
+    /// Mirror of `MaestroKit.TitleGeometryContract.containerFrame`.
+    @MainActor
+    static func containerFrame(for spec: TextSpec) -> CGRect? {
+        guard let width = spec.maxWidth, width > 0.0001 else { return nil }
+        // Real height: a zero-height container CLIPS everything the
+        // wrap produces, unlike the retired API's unbounded meaning.
+        return CGRect(x: 0, y: 0,
+                      width: CGFloat(width) / unitsPerPoint(),
+                      height: containerHeightPoints)
+    }
+
+    /// Mirror of `MaestroKit.TitleGeometryContract.framedLayoutShiftPoints`:
+    /// how far (points) a framed layout comes down from the container's
+    /// top to sit where a frameless line does.
+    static func framedLayoutShiftPoints(attributed: AttributedString, frame: CGRect?) -> CGFloat {
+        guard let frame else { return 0 }
+        let framesetter = CTFramesetterCreateWithAttributedString(NSAttributedString(attributed))
+        let path = CGPath(rect: frame, transform: nil)
+        let ctFrame = CTFramesetterCreateFrame(framesetter, CFRange(location: 0, length: 0), path, nil)
+        let lines = CTFrameGetLines(ctFrame) as! [CTLine]
+        guard let first = lines.first else { return 0 }
+        var origin = CGPoint.zero
+        CTFrameGetLineOrigins(ctFrame, CFRange(location: 0, length: 1), &origin)
+        var descent: CGFloat = 0
+        _ = CTLineGetTypographicBounds(first, nil, &descent, nil)
+        return origin.y - descent
+    }
+
+    @MainActor
+    public static func build(spec: TextSpec, fontURL: URL? = nil,
+                             styleRuns: [StyleRun] = []) throws -> Result {
+        let font = sizedFont(for: spec, fontURL: fontURL)
+        let attributed = attributed(spec: spec, font: font, styleRuns: styleRuns)
 
         var textOptions = MeshResource.GenerateTextOptions()
-        if let width = spec.maxWidth, width > 0.0001 {
-            // Real height: a zero-height container CLIPS everything the
-            // wrap produces, unlike the retired API's unbounded meaning.
-            textOptions.containerFrame = CGRect(
-                x: 0, y: 0,
-                width: CGFloat(width) / unitsPerPoint(), height: 1_000_000)
-        }
+        let container = containerFrame(for: spec)
+        if let container { textOptions.containerFrame = container }
 
         var extrusion = MeshResource.ShapeExtrusionOptions()
         let depth = spec.extrusionDepth ?? defaultExtrusionDepth
@@ -166,12 +257,18 @@ public enum TitleMesh {
         let laidOut = try MeshResource(extruding: attributed,
                                        textOptions: textOptions,
                                        extrusionOptions: extrusion)
+        // A WRAPPED block comes down from the container's top to where a
+        // frameless line sits — the editors' wrapped-layout rule.
+        let frameShift = -Float(framedLayoutShiftPoints(attributed: attributed,
+                                                        frame: container) * unitsPerPoint())
+        let settled = BoundingBox(min: laidOut.bounds.min + SIMD3<Float>(0, frameShift, 0),
+                                  max: laidOut.bounds.max + SIMD3<Float>(0, frameShift, 0))
         // VERTICAL ANCHOR (FL-07 `alignmentY`) — the mirror of
         // `TitleGeometryContract.anchorOffsetY` / `translated`, baked into
         // the geometry exactly as the editors bake it. Absent ⇒ baseline,
         // the extruder's own layout, so older titles do not move.
-        let offsetY = anchorOffsetY(alignment: spec.alignmentY, bounds: laidOut.bounds)
-        let mesh = try translated(laidOut, by: SIMD3<Float>(0, offsetY, 0))
+        let offsetY = anchorOffsetY(alignment: spec.alignmentY, bounds: settled)
+        let mesh = try translated(laidOut, by: SIMD3<Float>(0, frameShift + offsetY, 0))
         return Result(mesh: mesh,
                       materials: materials(for: spec, slotCount: slotCount))
     }
@@ -186,11 +283,23 @@ public enum TitleMesh {
         }
     }
 
-    /// Mirror of `MaestroKit.TitleGeometryContract.translated`.
+    /// Mirror of `MaestroKit.TitleGeometryContract.translated`: instances
+    /// (pen positions) move when the mesh has them, vertices otherwise.
     @MainActor
     static func translated(_ mesh: MeshResource, by offset: SIMD3<Float>) throws -> MeshResource {
         guard simd_length(offset) > 1e-7 else { return mesh }
         var contents = mesh.contents
+        if contents.instances.count > 0 {
+            var instances = MeshInstanceCollection()
+            for instance in contents.instances {
+                var transform = instance.transform
+                transform.columns.3 += SIMD4<Float>(offset, 0)
+                instances.insert(MeshResource.Instance(id: instance.id, model: instance.model,
+                                                       at: transform))
+            }
+            contents.instances = instances
+            return try MeshResource.generate(from: contents)
+        }
         var models = MeshModelCollection()
         for model in contents.models {
             var moved = model

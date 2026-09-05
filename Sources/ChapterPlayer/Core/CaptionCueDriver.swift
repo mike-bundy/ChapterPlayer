@@ -174,17 +174,22 @@ import UIKit
 
 extension ChapterPlayerCore: CaptionPresenting {
 
-    /// Words in space, through the MIRRORED shaping contract (`TitleMesh`,
-    /// FL-07) at zero depth on an unlit legibility plate — a caption nobody
-    /// can read in a dark shot is a defect. Placement is in the scene
-    /// root's own axes, which ARE the viewer's axes (the root is rebased to
-    /// the head at Sequence start) — the same viewer-space convention the
-    /// Mac editor draws, so a Chapter plays as it was authored:
+    /// Words in space, through the MIRRORED caption recipe (`CaptionBlock`,
+    /// the mirror of MaestroKit's `CaptionGeometry`): FL-07's shaping at
+    /// zero depth, per-run bold / italic / colour / underline, the line
+    /// limit, the outline halo, on an unlit legibility plate — a caption
+    /// nobody can read in a dark shot is a defect. Placement is in the
+    /// scene root's own axes, which ARE the viewer's axes (the root is
+    /// rebased to the head at Sequence start) — the same viewer-space
+    /// convention the Mac editor draws, so a Chapter plays as it was
+    /// authored:
     ///
     /// · viewerFacing / composited — ahead of the viewer at the authored
     ///   distance, a little below the line of sight. Continuous
     ///   head-following would contradict the player's no-live-head-yaw
-    ///   rule; the rebased root IS the deliberate approximation.
+    ///   rule; the rebased root IS the deliberate approximation. There is
+    ///   no output frame on a headset, so a composited cue is placed as a
+    ///   viewer-facing one.
     /// · screenAttached — a child of the named Screen when it resolves,
     ///   just below it; the viewer-space placement otherwise.
     public func presentCaptions(_ captions: [RuntimeCaption]) {
@@ -196,57 +201,23 @@ extension ChapterPlayerCore: CaptionPresenting {
         root.name = "captions.root"
         var stackY: Float = 0
         for caption in captions {
-            guard !caption.cue.text.isEmpty else { continue }
-            var spec = TextSpec(text: caption.cue.text)
-            spec.fontSize = caption.style.fontSize ?? 0.045
-            spec.color = caption.style.color ?? ColorRGBA(r: 1, g: 1, b: 1, a: 1)
-            spec.maxWidth = caption.style.maxWidth ?? 1.6
-            spec.fontFamily = caption.style.fontFamily
-            spec.fontWeight = caption.style.fontWeight
-            spec.alignmentX = .centre
-            spec.extrusionDepth = 0
-            guard let built = try? TitleMesh.build(spec: spec) else { continue }
-
-            let block = Entity()
-            let bounds = built.mesh.bounds
-
-            var textMaterial = UnlitMaterial()
-            textMaterial.color = .init(tint: UIColor(
-                red: CGFloat(spec.color.r), green: CGFloat(spec.color.g),
-                blue: CGFloat(spec.color.b), alpha: CGFloat(spec.color.a)))
-            textMaterial.blending = .transparent(opacity: .init(floatLiteral: spec.color.a))
-            let words = ModelEntity(mesh: built.mesh, materials: [textMaterial])
-            words.position = SIMD3<Float>(-bounds.center.x, -bounds.center.y, 0)
-            block.addChild(words)
-
-            let back = caption.style.backgroundColor
-                ?? ColorRGBA(r: 0, g: 0, b: 0, a: 0.55)
-            if back.a > 0.01 {
-                let plateMesh = MeshResource.generatePlane(
-                    width: bounds.extents.x + 0.04,
-                    height: bounds.extents.y + 0.04,
-                    cornerRadius: 0.012)
-                var plateMaterial = UnlitMaterial()
-                plateMaterial.color = .init(tint: UIColor(
-                    red: CGFloat(back.r), green: CGFloat(back.g),
-                    blue: CGFloat(back.b), alpha: 1))
-                plateMaterial.blending = .transparent(opacity: .init(floatLiteral: back.a))
-                let plate = ModelEntity(mesh: plateMesh, materials: [plateMaterial])
-                plate.position.z = -0.004
-                block.addChild(plate)
-            }
-
-            let distance = caption.style.distance ?? 1.8
+            guard !caption.cue.text.isEmpty,
+                  let built = try? CaptionBlock.build(text: caption.cue.text,
+                                                      style: caption.style,
+                                                      runs: caption.cue.runs)
+            else { continue }
+            let block = CaptionBlock.makeBlock(built)
             if caption.style.mode == .screenAttached,
                let screenId = caption.style.screenEntityId,
                let screen = entityExecutor.entityRegistry[screenId] {
                 block.position = SIMD3<Float>(0, -0.45, 0.05) + SIMD3<Float>(0, stackY, 0)
                 screen.addChild(block)
             } else {
-                block.position = SIMD3<Float>(0, -0.22 * distance + stackY, -distance)
+                block.position = CaptionBlock.viewerFacingPosition(style: caption.style)
+                    + SIMD3<Float>(0, stackY, 0)
                 root.addChild(block)
             }
-            stackY += bounds.extents.y + 0.06
+            stackY += CaptionBlock.stackAdvance(built)
         }
         sceneRoot.addChild(root)
         captionRootEntity = root
