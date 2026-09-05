@@ -174,7 +174,11 @@ final class EffectPanelSurface {
             if commandBuffer == nil { commandBuffer = commandQueue.makeCommandBuffer() }
             guard let commandBuffer else { continue }
             let target = surface.texture.replace(using: commandBuffer)
-            ciContext.render(result.image, to: target,
+            // Row order: Core Image is bottom-up, the sampled texture
+            // top-down — the same one flip the Mac compositor makes.
+            let upright = result.image.transformed(by: CGAffineTransform(scaleX: 1, y: -1)
+                .translatedBy(x: 0, y: -CGFloat(height)))
+            ciContext.render(upright, to: target,
                              commandBuffer: commandBuffer,
                              bounds: CGRect(x: 0, y: 0, width: width, height: height),
                              colorSpace: CGColorSpaceCreateDeviceRGB())

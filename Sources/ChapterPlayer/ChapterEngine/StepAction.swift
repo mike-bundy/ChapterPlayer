@@ -442,6 +442,9 @@ public struct VideoAction: Sendable {
     public let retime: RetimeCurve?
     /// Pitch under retime (FL-13). nil follows speed.
     public let pitch: PitchHandling?
+    /// The file's own embedded subtitle track, selected on the item when
+    /// true (`VideoActionDTO.embeddedSubtitles`). Absent ⇒ off.
+    public let embeddedSubtitles: Bool?
 
     public init(
         file: String,
@@ -457,7 +460,8 @@ public struct VideoAction: Sendable {
         blendMode: ChapterScript.BlendMode? = nil,
         videoTransition: VideoTransitionSpec? = nil,
         retime: RetimeCurve? = nil,
-        pitch: PitchHandling? = nil
+        pitch: PitchHandling? = nil,
+        embeddedSubtitles: Bool? = nil
     ) {
         self.file = file
         self.channel = channel
@@ -473,6 +477,7 @@ public struct VideoAction: Sendable {
         self.videoTransition = videoTransition
         self.retime = retime
         self.pitch = pitch
+        self.embeddedSubtitles = embeddedSubtitles
     }
 }
 

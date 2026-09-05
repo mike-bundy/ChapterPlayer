@@ -224,6 +224,19 @@ public class VideoPlaybackManager {
         refreshSurfaceTicker()
     }
 
+    /// THE FILE'S OWN SUBTITLES: the author's `embeddedSubtitles` selects
+    /// the media's legible track on the item; AVFoundation draws it. Off
+    /// leaves the file's default, which for an unflagged file is none.
+    private func selectEmbeddedSubtitles(_ on: Bool, on item: AVPlayerItem) {
+        guard on else { return }
+        Task { @MainActor in
+            guard let group = try? await item.asset.loadMediaSelectionGroup(for: .legible) else { return }
+            let options = AVMediaSelectionGroup.mediaSelectionOptions(
+                from: group.options, withoutMediaCharacteristics: [.containsOnlyForcedSubtitles])
+            item.select(options.first ?? group.options.first, in: group)
+        }
+    }
+
     private func playCore(action: VideoAction) {
         logger.info("[video] play file='\(action.file)' channel='\(action.channel)' presentation=\(String(describing: action.presentation)) layout=\(String(describing: action.layout)) volume=\(action.volume) loop=\(action.loop)")
         // Fast path: channel already created by prepareAsync. If the
@@ -356,6 +369,7 @@ public class VideoPlaybackManager {
             }
         }
         let playerItem = AVPlayerItem(asset: asset)
+        selectEmbeddedSubtitles(action.embeddedSubtitles ?? false, on: playerItem)
 
         // Immersive presentations skip `AVPlayerLooper` even when
         // `loop=true`. The looper builds a queue-player that enqueues
@@ -712,6 +726,7 @@ public class VideoPlaybackManager {
         guard stopEpoch == epoch else { return }
 
         let playerItem = AVPlayerItem(asset: asset)
+        selectEmbeddedSubtitles(action.embeddedSubtitles ?? false, on: playerItem)
         let player = AVPlayer(playerItem: playerItem)
         player.volume = 0  // muted during warmup; restored by play()
         player.automaticallyWaitsToMinimizeStalling = false

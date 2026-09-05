@@ -254,7 +254,8 @@ extension VideoAction {
             blendMode: dto.blendMode,
             videoTransition: dto.videoTransition,
             retime: dto.retime,
-            pitch: dto.pitch
+            pitch: dto.pitch,
+            embeddedSubtitles: dto.embeddedSubtitles
         )
     }
 }
