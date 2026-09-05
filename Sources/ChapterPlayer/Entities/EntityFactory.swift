@@ -349,7 +349,11 @@ public final class EntityFactory {
         // title plays exactly as it was authored. Absent depth now resolves
         // to the EDITOR's 0.02 (the 0.005 here was never authored; the
         // change is a correction toward what the author saw).
-        guard let built = try? TitleMesh.build(spec: text) else {
+        // A font as an ordinary Source (K11): resolved through the same
+        // resolver every other Source uses; absent or missing ⇒ the
+        // cascade, exactly as the editors substitute.
+        let fontURL = text.fontSourceId.flatMap { mediaResolver?.url(for: $0, kind: .font) }
+        guard let built = try? TitleMesh.build(spec: text, fontURL: fontURL) else {
             // Geometry failure never blanks a title's Object silently — an
             // empty entity keeps the id and the animations meaningful.
             return Entity()

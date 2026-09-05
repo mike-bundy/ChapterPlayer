@@ -15,6 +15,8 @@ public enum MediaKind: Sendable, Equatable {
     case video
     case usdz
     case image
+    /// A font file a Title references by `fontSourceId` (FL-07 K11).
+    case font
 }
 
 public protocol MediaResolver: Sendable {

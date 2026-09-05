@@ -64,13 +64,19 @@ public enum VectorMesh {
         extrusion.extrusionMethod = .linear(depth: max(0, depth))
         extrusion.boundaryResolution = .uniformSegmentsPerSpan(segmentCount: 20)
 
-        if let radius = spec.bevelRadius, radius > 0 {
+        // The mirrored profile rule: an unknown id draws NO bevel.
+        let profile = BevelProfiles.resolve(profileId: spec.bevelProfileId,
+                                            segments: spec.bevelSegments)
+        if let radius = spec.bevelRadius, radius > 0, profile != .unresolved {
             let ceiling = max(0.0005, depth > 0 ? depth / 2 : 0.002)
             extrusion.chamferRadius = min(radius, ceiling)
             switch capFill {
             case .front: extrusion.chamferMode = .front
             case .back:  extrusion.chamferMode = .back
             case .both, .none: extrusion.chamferMode = .both
+            }
+            if case .segments(let n) = profile {
+                extrusion.chamferResolution = .uniformSegmentsPerSpan(segmentCount: n)
             }
         }
 

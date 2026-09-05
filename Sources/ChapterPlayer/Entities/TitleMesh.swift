@@ -28,10 +28,15 @@ public enum TitleMesh {
     /// Cap-height-metres font resolution — the mirror of
     /// `MaestroKit.FontResolution.resolve`.
     static func resolveFont(family: String?, weight: Int?, italic: Bool?,
-                            capHeightMetres: Float) -> CTFont {
+                            capHeightMetres: Float, sourceURL: URL? = nil) -> CTFont {
         let probeSize: CGFloat = 100
         let base: CTFont
-        if let family, !family.isEmpty {
+        if let sourceURL, let fromFile = fontFromFile(sourceURL, size: probeSize) {
+            // A font Source (K11): the file IS the font — the mirror of
+            // `MaestroKit.FontResolution.fontFromFile`. Unreadable ⇒ the
+            // cascade below, exactly as the editors substitute.
+            base = fromFile
+        } else if let family, !family.isEmpty {
             var traits: [CFString: Any] = [kCTFontWeightTrait: ctWeight(weight)]
             if italic == true {
                 traits[kCTFontSymbolicTrait] = CTFontSymbolicTraits.traitItalic.rawValue
@@ -94,10 +99,11 @@ public enum TitleMesh {
     }
 
     @MainActor
-    public static func build(spec: TextSpec) throws -> Result {
+    public static func build(spec: TextSpec, fontURL: URL? = nil) throws -> Result {
         let baseFont = resolveFont(family: spec.fontFamily, weight: spec.fontWeight,
                                    italic: spec.fontIsItalic,
-                                   capHeightMetres: spec.fontSize)
+                                   capHeightMetres: spec.fontSize,
+                                   sourceURL: fontURL)
         let capRatio = CTFontGetCapHeight(baseFont) / max(CTFontGetSize(baseFont), 0.0001)
         let targetCapPoints = CGFloat(max(spec.fontSize, 0.0001)) / unitsPerPoint()
         let sized = capRatio > 0 ? targetCapPoints / capRatio : targetCapPoints
@@ -135,13 +141,19 @@ public enum TitleMesh {
         let unit = Float(unitsPerPoint())
         extrusion.extrusionMethod = .linear(depth: max(0, depth) / max(unit, 1e-9))
         extrusion.boundaryResolution = .uniformSegmentsPerSpan(segmentCount: 20)
-        if let radius = spec.bevelRadius, radius > 0 {
+        // The mirrored profile rule: an unknown id draws NO bevel.
+        let profile = BevelProfiles.resolve(profileId: spec.bevelProfileId,
+                                            segments: spec.bevelSegments)
+        if let radius = spec.bevelRadius, radius > 0, profile != .unresolved {
             let ceiling = max(0.0005, depth > 0 ? depth / 2 : 0.002)
             extrusion.chamferRadius = min(radius, ceiling) / max(unit, 1e-9)
             switch spec.capFill ?? .both {
             case .front: extrusion.chamferMode = .front
             case .back:  extrusion.chamferMode = .back
             case .both, .none: extrusion.chamferMode = .both
+            }
+            if case .segments(let n) = profile {
+                extrusion.chamferResolution = .uniformSegmentsPerSpan(segmentCount: n)
             }
         }
         var slotCount = 1
@@ -151,11 +163,47 @@ public enum TitleMesh {
             slotCount = 5
         }
 
-        let mesh = try MeshResource(extruding: attributed,
-                                    textOptions: textOptions,
-                                    extrusionOptions: extrusion)
+        let laidOut = try MeshResource(extruding: attributed,
+                                       textOptions: textOptions,
+                                       extrusionOptions: extrusion)
+        // VERTICAL ANCHOR (FL-07 `alignmentY`) — the mirror of
+        // `TitleGeometryContract.anchorOffsetY` / `translated`, baked into
+        // the geometry exactly as the editors bake it. Absent ⇒ baseline,
+        // the extruder's own layout, so older titles do not move.
+        let offsetY = anchorOffsetY(alignment: spec.alignmentY, bounds: laidOut.bounds)
+        let mesh = try translated(laidOut, by: SIMD3<Float>(0, offsetY, 0))
         return Result(mesh: mesh,
                       materials: materials(for: spec, slotCount: slotCount))
+    }
+
+    /// Mirror of `MaestroKit.TitleGeometryContract.anchorOffsetY`.
+    static func anchorOffsetY(alignment: TextAlignmentY?, bounds: BoundingBox) -> Float {
+        switch alignment ?? .baseline {
+        case .baseline: return 0
+        case .top:      return -bounds.max.y
+        case .centre:   return -(bounds.min.y + bounds.max.y) / 2
+        case .bottom:   return -bounds.min.y
+        }
+    }
+
+    /// Mirror of `MaestroKit.TitleGeometryContract.translated`.
+    @MainActor
+    static func translated(_ mesh: MeshResource, by offset: SIMD3<Float>) throws -> MeshResource {
+        guard simd_length(offset) > 1e-7 else { return mesh }
+        var contents = mesh.contents
+        var models = MeshModelCollection()
+        for model in contents.models {
+            var moved = model
+            var parts = MeshPartCollection()
+            for var part in model.parts {
+                part.positions = MeshBuffers.Positions(part.positions.elements.map { $0 + offset })
+                parts.insert(part)
+            }
+            moved.parts = parts
+            models.insert(moved)
+        }
+        contents.models = models
+        return try MeshResource.generate(from: contents)
     }
 
     static func nsAlignment(_ alignment: TextAlignmentX) -> NSTextAlignment {
@@ -201,5 +249,16 @@ public enum TitleMesh {
             platform(slots.frontBevel ?? base),
             platform(slots.backBevel ?? base),
         ]
+    }
+}
+
+extension TitleMesh {
+    /// Mirror of `MaestroKit.FontResolution.fontFromFile`.
+    static func fontFromFile(_ url: URL, size: CGFloat) -> CTFont? {
+        guard FileManager.default.fileExists(atPath: url.path),
+              let descriptors = CTFontManagerCreateFontDescriptorsFromURL(url as CFURL) as? [CTFontDescriptor],
+              let first = descriptors.first
+        else { return nil }
+        return CTFontCreateWithFontDescriptor(first, size, nil)
     }
 }
