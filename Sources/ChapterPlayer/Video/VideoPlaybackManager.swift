@@ -1535,7 +1535,11 @@ public class VideoPlaybackManager {
 /// The cropped-panel mesh rule (FL-04). Mirrors Maestro Studio's
 /// `CroppedPanelMesh` — one behavior, stated twice because this package
 /// depends only on ChapterScript. Change one, change both.
+@MainActor
 enum VideoPanelCropMesh {
+    // Isolated to match its only caller (`VideoPlaybackManager`, itself
+    // `@MainActor`) and RealityKit's own main-actor-isolated
+    // `MeshResource.generatePlane` / `.generate(from:)` in this SDK.
     static func make(width: Float, height: Float,
                      cornerRadius: Float,
                      crop: VideoCropRect?) -> MeshResource {

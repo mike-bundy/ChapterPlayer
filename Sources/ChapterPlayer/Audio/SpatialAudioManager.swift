@@ -1138,7 +1138,7 @@ public class SpatialAudioManager {
         channel: String,
         sourceRange: MediaSourceRange = .full
     ) {
-        let completion: (AVAudioPlayerNodeCompletionCallbackType) -> Void = { [weak self] _ in
+        let completion: @Sendable (AVAudioPlayerNodeCompletionCallbackType) -> Void = { [weak self] _ in
             Task { @MainActor [weak self] in
                 guard let self else { return }
                 guard let ch = self.ambientChannels[channel], ch.playerNode === node else { return }

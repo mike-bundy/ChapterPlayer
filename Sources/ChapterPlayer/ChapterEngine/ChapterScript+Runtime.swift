@@ -43,7 +43,7 @@ extension Visibility {
 }
 
 private extension StepTimingFunction {
-    public init(_ dto: ChapterScript.StepTimingFunction) {
+    init(_ dto: ChapterScript.StepTimingFunction) {
         switch dto {
         case .linear:     self = .linear
         case .easeIn:     self = .easeIn
@@ -54,7 +54,7 @@ private extension StepTimingFunction {
 }
 
 private extension AudioScope {
-    public init(_ dto: ChapterScript.AudioScope) {
+    init(_ dto: ChapterScript.AudioScope) {
         switch dto {
         case .sequence: self = .sequence
         case .ambient: self = .ambient
@@ -63,7 +63,7 @@ private extension AudioScope {
 }
 
 private extension SelectionMode {
-    public init(_ dto: ChapterScript.SelectionMode) {
+    init(_ dto: ChapterScript.SelectionMode) {
         switch dto {
         case .random:     self = .random
         case .sequential: self = .sequential
@@ -73,7 +73,7 @@ private extension SelectionMode {
 }
 
 private extension GateType {
-    public init(_ dto: ChapterScript.GateType) {
+    init(_ dto: ChapterScript.GateType) {
         switch dto {
         case .tap:          self = .tap
         case .orchestrator: self = .orchestrator
@@ -87,7 +87,7 @@ private extension GateType {
 }
 
 private extension VideoPresentation {
-    public init(_ dto: ChapterScript.VideoPresentation) {
+    init(_ dto: ChapterScript.VideoPresentation) {
         switch dto {
         case .attachment(let id):
             self = .attachment(id: id)
@@ -100,7 +100,7 @@ private extension VideoPresentation {
 }
 
 private extension ImmersiveField {
-    public init(_ dto: ChapterScript.ImmersiveField) {
+    init(_ dto: ChapterScript.ImmersiveField) {
         switch dto {
         case .equirect360: self = .equirect360
         case .equirect180: self = .equirect180
@@ -111,7 +111,7 @@ private extension ImmersiveField {
 }
 
 private extension VideoLayout {
-    public init(_ dto: ChapterScript.VideoLayout) {
+    init(_ dto: ChapterScript.VideoLayout) {
         switch dto {
         case .mono:           self = .mono
         case .sideBySide:     self = .sideBySide
@@ -122,7 +122,7 @@ private extension VideoLayout {
 }
 
 private extension AudioEffect {
-    public init(_ dto: ChapterScript.AudioEffectDTO) {
+    init(_ dto: ChapterScript.AudioEffectDTO) {
         switch dto {
         case .reverb(let mix):
             self = .reverb(wetDryMix: mix)
@@ -163,7 +163,7 @@ private func quatFromEulerDegrees(_ degrees: SIMD3<Float>) -> simd_quatf {
 }
 
 private extension FadeAction {
-    public init(_ dto: FadeActionDTO) {
+    init(_ dto: FadeActionDTO) {
         self.init(
             entity: dto.entity,
             opacity: dto.opacity,
@@ -190,7 +190,7 @@ private extension RevealAction {
 // MARK: - AudioAction / VideoAction / AudioZone
 
 private extension SpatialAudioConfig {
-    public init(_ dto: SpatialAudioConfigDTO) {
+    init(_ dto: SpatialAudioConfigDTO) {
         self.init(
             position: dto.position.map(SIMD3.init),
             attachToEntity: dto.attachToEntity
@@ -199,7 +199,7 @@ private extension SpatialAudioConfig {
 }
 
 private extension LoopConfig {
-    public init(_ dto: LoopConfigDTO) {
+    init(_ dto: LoopConfigDTO) {
         self.init(
             intro: dto.intro,
             loop: dto.loop,
@@ -210,7 +210,7 @@ private extension LoopConfig {
 }
 
 private extension AudioAction {
-    public init(_ dto: AudioActionDTO) {
+    init(_ dto: AudioActionDTO) {
         self.init(
             file: dto.file,
             channel: dto.channel,
@@ -261,7 +261,7 @@ extension VideoAction {
 }
 
 private extension AudioZone {
-    public init(_ dto: AudioZoneDTO) {
+    init(_ dto: AudioZoneDTO) {
         self.init(
             id: dto.id,
             center: SIMD3(dto.center),
@@ -277,7 +277,7 @@ private extension AudioZone {
 // MARK: - Effect configs
 
 private extension PulseRingConfig {
-    public init(_ dto: PulseRingConfigDTO) {
+    init(_ dto: PulseRingConfigDTO) {
         self.init(
             radius: dto.radius,
             height: dto.height,
@@ -294,7 +294,7 @@ private extension PulseRingConfig {
 }
 
 private extension SparkBurstConfig {
-    public init(_ dto: SparkBurstConfigDTO) {
+    init(_ dto: SparkBurstConfigDTO) {
         self.init(
             position: SIMD3(dto.position),
             burstRadius: dto.burstRadius,
@@ -415,7 +415,7 @@ extension StepAction {
 // MARK: - StepGate / VisibilityState / CompletionAction
 
 private extension StepGate {
-    public init(_ dto: StepGateDTO) {
+    init(_ dto: StepGateDTO) {
         self.init(
             type: GateType(dto.type),
             timeout: dto.timeout,
@@ -438,7 +438,7 @@ public extension VisibilityState {
 }
 
 private extension VisibilityState {
-    public init(_ dto: VisibilityStateDTO) {
+    init(_ dto: VisibilityStateDTO) {
         self.init(
             orb: dto.entities["orb"] ?? false,
             cube: dto.entities["cube"] ?? false,
@@ -470,7 +470,7 @@ public extension CompletionAction {
 }
 
 private extension CompletionAction {
-    public init(_ dto: CompletionActionDTO) {
+    init(_ dto: CompletionActionDTO) {
         switch dto {
         case .holdOnLastStep:                         self = .holdOnLastStep
         case .transitionTo(let phase, let visibility): self = .transitionTo(phase: phase, visibility: VisibilityState(visibility))
@@ -487,19 +487,35 @@ private extension CompletionAction {
 // MARK: - ScheduledAction / StepDefinition / SequenceDefinition
 
 private extension ScheduledAction {
-    public init(_ dto: ScheduledActionDTO) throws {
+    init(_ dto: ScheduledActionDTO) throws {
         self.init(at: dto.at, action: try StepAction(dto: dto.action))
     }
 }
 
 extension StepDefinition {
     public init(dto: StepDefinitionDTO) throws {
+        // THE CANONICAL POSITIONAL ACCESSOR: `authoredActions` is the one
+        // ordered list (format v4); `.actions` / `.scheduledActions` are the
+        // deprecated at<=0 / at>0 split kept only for pre-v4 call sites. This
+        // walk builds the player's own two-array runtime shape in one pass,
+        // preserving the deprecated getters' order (stable filter) without
+        // reading them.
+        var opening: [StepAction] = []
+        var scheduled: [ScheduledAction] = []
+        for authored in dto.authoredActions {
+            let action = try StepAction(dto: authored.action)
+            if authored.at <= 0 {
+                opening.append(action)
+            } else {
+                scheduled.append(ScheduledAction(at: authored.at, action: action))
+            }
+        }
         self.init(
             id: dto.id,
             name: dto.name,
             duration: dto.duration,
-            actions: try dto.actions.map { try StepAction(dto: $0) },
-            scheduledActions: try dto.scheduledActions.map { try ScheduledAction($0) },
+            actions: opening,
+            scheduledActions: scheduled,
             gate: dto.gate.map { StepGate($0) }
         )
     }

@@ -1084,7 +1084,9 @@ open class ChapterPlayerCore {
             // USDZ backdrops work in BOTH immersive and mixed modes —
             // a 3D set piece floating in space is fine over
             // passthrough.
-            guard let sceneRoot = immersiveSceneRoot else {
+            // Existence check only: the live root is re-read on completion
+            // (see below), never captured here.
+            guard immersiveSceneRoot != nil else {
                 logger.warning("Backdrop USDZ '\(assetId)' skipped — immersive scene root not mounted.")
                 return
             }
