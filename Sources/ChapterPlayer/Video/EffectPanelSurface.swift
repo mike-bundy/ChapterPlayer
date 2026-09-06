@@ -34,7 +34,10 @@ final class EffectPanelSurface {
 
     struct Job {
         let channel: String
-        let entity: ModelEntity
+        /// ANY Entity carrying a `ModelComponent` — a flat panel, or the
+        /// immersive shell when a backdrop's stack put a mesh on it. The
+        /// surface only ever needs a material slot to write into.
+        let entity: Entity
         let player: AVPlayer
         let effects: [EffectInstance]
         let keyTracks: [EffectKeyTrack]
@@ -46,6 +49,19 @@ final class EffectPanelSurface {
         var outgoing: CIImage? = nil
         var outgoingEffects: [EffectInstance] = []
         var progress: Double? = nil
+    }
+
+    /// FL-11: an occurrence some Mask in this tick takes its coverage from.
+    ///
+    /// The surface is the only thing holding a decoder tap per channel, so
+    /// the host names the occurrence and where it is playing and the frame
+    /// is pulled HERE — the same shape the Mac Viewer uses, where the
+    /// caller gathers `matteFrames` because it is the only thing that knows
+    /// what is playing where.
+    struct MatteSource {
+        let occurrenceId: String
+        let channel: String
+        let player: AVPlayer
     }
 
     private let device: MTLDevice?
@@ -117,9 +133,36 @@ final class EffectPanelSurface {
     /// One tick: pull, evaluate, mix, render. Returns how many panels were
     /// composited this tick.
     @discardableResult
-    func tick(jobs: [Job]) -> Int {
+    func tick(jobs: [Job], matteSources: [MatteSource] = []) -> Int {
         guard let ciContext, let commandQueue else { return 0 }
         guard !inFlight else { return 0 }
+
+        // MATTES FIRST, so a mask reads THIS tick's frame of the clip it
+        // points at rather than the previous one — and so a matte source
+        // that composites nothing of its own still gets its tap pulled.
+        var mattes: [String: CIImage] = [:]
+        for source in matteSources {
+            if let buffer = pullFrame(channel: source.channel, player: source.player,
+                                      isPlaying: source.player.rate > 0.001) {
+                let image = CIImage(cvPixelBuffer: buffer)
+                lastFrames[source.channel] = image
+                mattes[source.occurrenceId] = image
+            } else if let held = lastFrames[source.channel] {
+                mattes[source.occurrenceId] = held
+            }
+        }
+        // Nil, not an empty closure: "no matte was offered" and "the matte
+        // is not resolvable" are one answer to the stage — it bypasses and
+        // leaves the picture alone — but only a nil resolver keeps the
+        // environment identical to a document that names no matte at all.
+        // Hoisted rather than written inline: a `@Sendable` closure typed
+        // through a ternary infers against `Dictionary.Index` and fails to
+        // convert. The same shape the Mac compositor uses.
+        var matteResolver: (@Sendable (String) -> CIImage?)?
+        if !mattes.isEmpty {
+            let resolved = mattes
+            matteResolver = { name in resolved[name] }
+        }
 
         var commandBuffer: MTLCommandBuffer?
         var rendered = 0
@@ -141,7 +184,8 @@ final class EffectPanelSurface {
             let environment = EffectRenderEnvironment(
                 tier: .full, timelineTime: job.timelineTime, sourceTime: job.sourceTime,
                 sourceData: { [lut = job.lutData] file in lut[file] },
-                showMatte: false)
+                showMatte: false,
+                matteImage: matteResolver)
             var result = EffectEvaluator.evaluate(
                 stack: job.effects, input: input,
                 keyTracks: job.keyTracks, environment: environment)
@@ -208,12 +252,12 @@ final class EffectPanelSurface {
         return image.transformed(by: transform)
     }
 
-    private func ensureSurface(for channel: String, entity: ModelEntity,
+    private func ensureSurface(for channel: String, entity: Entity,
                                width: Int, height: Int) -> Surface? {
         if var existing = surfaces[channel] {
             if existing.entityIdentity != ObjectIdentifier(entity) {
                 existing.entityIdentity = ObjectIdentifier(entity)
-                existing.originals = entity.model?.materials ?? []
+                existing.originals = Self.materials(of: entity)
                 bind(existing, to: entity)
                 surfaces[channel] = existing
             }
@@ -232,25 +276,39 @@ final class EffectPanelSurface {
         let surface = Surface(texture: texture, resource: resource,
                               width: width, height: height,
                               entityIdentity: ObjectIdentifier(entity),
-                              originals: entity.model?.materials ?? [])
+                              originals: Self.materials(of: entity))
         bind(surface, to: entity)
         surfaces[channel] = surface
         return surface
     }
 
-    private func bind(_ surface: Surface, to entity: ModelEntity) {
+    private func bind(_ surface: Surface, to entity: Entity) {
         var material = UnlitMaterial()
         material.color = .init(texture: .init(surface.resource))
-        entity.model?.materials = [material]
+        Self.setMaterials([material], on: entity)
+    }
+
+    /// The entity's model materials, through the COMPONENT rather than
+    /// `ModelEntity.model` — the immersive shell is a plain `Entity` with a
+    /// `ModelComponent` set on it, and the convenience accessor does not
+    /// exist there.
+    private static func materials(of entity: Entity) -> [any RealityKit.Material] {
+        entity.components[ModelComponent.self]?.materials ?? []
+    }
+
+    private static func setMaterials(_ materials: [any RealityKit.Material], on entity: Entity) {
+        guard var model = entity.components[ModelComponent.self] else { return }
+        model.materials = materials
+        entity.components.set(model)
     }
 
     /// A panel whose stack emptied and whose window closed goes back to its
     /// `VideoMaterial`.
-    func restore(channel: String, entity: ModelEntity?) {
+    func restore(channel: String, entity: Entity?) {
         guard let surface = surfaces.removeValue(forKey: channel) else { return }
         lastFrames.removeValue(forKey: channel)
         if let entity, ObjectIdentifier(entity) == surface.entityIdentity {
-            entity.model?.materials = surface.originals
+            Self.setMaterials(surface.originals, on: entity)
         }
     }
 

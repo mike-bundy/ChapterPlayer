@@ -8,6 +8,7 @@
 //  MaestroVision's EffectSeamTests render the same stack through both and
 //  compare the pixels. Change one, change both.
 //
+
 import Foundation
 import CoreImage
 import ChapterScript
@@ -27,15 +28,27 @@ public struct EffectRenderEnvironment: Sendable {
     /// THE MATTE VIEW (FL-11): render coverage alone — how a key is
     /// actually judged. Authoring chrome; never set by export or runtime.
     public let showMatte: Bool
+    /// ANOTHER OCCURRENCE'S PICTURE AT THIS INSTANT (FL-11's
+    /// `matteFromClip`), resolved by the host from an occurrence id.
+    ///
+    /// A CHANNEL, not a lookup this layer performs: the evaluator has no
+    /// decoders and no idea what is playing where, and giving it one would
+    /// make it the second thing in the app that walks a Sequence. Nil, or
+    /// a nil answer, means the referencing stage BYPASSES and reports —
+    /// the same rule a missing LUT follows, and the reference is never
+    /// dropped.
+    public let matteImage: (@Sendable (String) -> CIImage?)?
 
     public init(tier: PlayerResolutionTier, timelineTime: Double, sourceTime: Double,
                 sourceData: (@Sendable (String) -> Data?)? = nil,
-                showMatte: Bool = false) {
+                showMatte: Bool = false,
+                matteImage: (@Sendable (String) -> CIImage?)? = nil) {
         self.tier = tier
         self.timelineTime = timelineTime
         self.sourceTime = sourceTime
         self.sourceData = sourceData
         self.showMatte = showMatte
+        self.matteImage = matteImage
     }
 }
 

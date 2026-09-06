@@ -8,6 +8,7 @@
 //  MaestroVision's EffectSeamTests render the same stack through both and
 //  compare the pixels. Change one, change both.
 //
+
 import Foundation
 import CoreImage
 import ChapterScript
@@ -42,9 +43,109 @@ public enum MaskEffect {
                                   defaultValue: .number(0), range: -180...180),
             EffectParameterSchema(key: "scale", label: "Scale", kind: .scalar,
                                   defaultValue: .number(1), range: 0.1...4),
+            // FL-11's declared second input kind. ABSENT means the shape,
+            // which is every mask authored before this field — so a mask
+            // with no matte clip behaves exactly as it always did.
+            EffectParameterSchema(key: "matteClip", label: "Matte from Clip",
+                                  kind: .occurrenceReference,
+                                  defaultValue: .string("")),
+            EffectParameterSchema(key: "matteChannel", label: "Matte Channel",
+                                  kind: .choice, defaultValue: .string("alpha"),
+                                  choices: [("alpha", "Alpha"), ("luma", "Luminance")]),
         ])
 
+    /// THE MATTE FROM ANOTHER CLIP (FL-11), when one is named.
+    ///
+    /// Returns the coverage image, or nil when there is no matte clip —
+    /// in which case the shape is the input, exactly as before. A NAMED
+    /// clip the host cannot resolve returns nil TOO, so the stage bypasses
+    /// and the picture is untouched: a mask that silently became opaque
+    /// black because a clip was trimmed away would look like lost footage.
+    static func matteCoverage(parameters: [String: EffectValue],
+                              environment: EffectRenderEnvironment,
+                              extent: CGRect) -> CIImage? {
+        guard let id = parameters["matteClip"]?.stringValue, !id.isEmpty,
+              let source = environment.matteImage?(id) else { return nil }
+        let fitted = source.cropped(to: source.extent)
+        // The matte clip's own raster need not match this one's, so it is
+        // FITTED rather than assumed — an unfitted matte would slide as
+        // soon as the two clips differed in size.
+        let sourceExtent = fitted.extent
+        guard sourceExtent.width > 0, sourceExtent.height > 0,
+              extent.width > 0, extent.height > 0 else { return nil }
+        let scaled = fitted
+            .transformed(by: CGAffineTransform(scaleX: extent.width / sourceExtent.width,
+                                               y: extent.height / sourceExtent.height))
+            .transformed(by: CGAffineTransform(translationX: extent.minX - sourceExtent.minX,
+                                               y: extent.minY - sourceExtent.minY))
+            .cropped(to: extent)
+
+        let channel = parameters["matteChannel"]?.stringValue ?? "alpha"
+        if channel == "luma" {
+            // LUMINANCE as coverage: bright is opaque. Rec. 709 weights,
+            // the same ones every other luminance reading here uses.
+            return scaled.applyingFilter("CIColorMatrix", parameters: [
+                "inputRVector": CIVector(x: 0.2126, y: 0.2126, z: 0.2126, w: 0),
+                "inputGVector": CIVector(x: 0.7152, y: 0.7152, z: 0.7152, w: 0),
+                "inputBVector": CIVector(x: 0.0722, y: 0.0722, z: 0.0722, w: 0),
+                "inputAVector": CIVector(x: 0, y: 0, z: 0, w: 0),
+                "inputBiasVector": CIVector(x: 0, y: 0, z: 0, w: 1),
+            ])
+        }
+        // ALPHA as coverage: the matte clip's own transparency, moved into
+        // the color channels so the blend below reads it the same way it
+        // reads a rasterized shape.
+        return scaled.applyingFilter("CIColorMatrix", parameters: [
+            "inputRVector": CIVector(x: 0, y: 0, z: 0, w: 1),
+            "inputGVector": CIVector(x: 0, y: 0, z: 0, w: 1),
+            "inputBVector": CIVector(x: 0, y: 0, z: 0, w: 1),
+            "inputAVector": CIVector(x: 0, y: 0, z: 0, w: 0),
+            "inputBiasVector": CIVector(x: 0, y: 0, z: 0, w: 1),
+        ])
+    }
+
+    /// Invert and opacity, shared by both input kinds — they are
+    /// properties of the MASK, not of where its coverage came from.
+    static func applyInvertAndOpacity(_ coverage: CIImage,
+                                      parameters: [String: EffectValue]) -> CIImage {
+        var result = coverage
+        if parameters["invert"]?.boolValue == true {
+            result = result.applyingFilter("CIColorMatrix", parameters: [
+                "inputRVector": CIVector(x: -1, y: 0, z: 0, w: 0),
+                "inputGVector": CIVector(x: 0, y: -1, z: 0, w: 0),
+                "inputBVector": CIVector(x: 0, y: 0, z: -1, w: 0),
+                "inputBiasVector": CIVector(x: 1, y: 1, z: 1, w: 0),
+            ])
+        }
+        let opacity = min(max(parameters["opacity"]?.numberValue ?? 1, 0), 1)
+        if opacity < 0.9999 {
+            result = result.applyingFilter("CIColorMatrix", parameters: [
+                "inputRVector": CIVector(x: opacity, y: 0, z: 0, w: 0),
+                "inputGVector": CIVector(x: 0, y: opacity, z: 0, w: 0),
+                "inputBVector": CIVector(x: 0, y: 0, z: opacity, w: 0),
+            ])
+        }
+        return result
+    }
+
     public static let renderer: EffectRenderer = { image, parameters, environment in
+        // A NAMED MATTE CLIP REPLACES THE SHAPE as the mask's input — the
+        // two are alternatives, which is what "a selectable input kind"
+        // means. Everything downstream (invert, opacity, the matte view,
+        // the blend) is shared, because those are properties of the MASK
+        // rather than of where its coverage came from.
+        if let id = parameters["matteClip"]?.stringValue, !id.isEmpty {
+            guard var coverage = matteCoverage(parameters: parameters,
+                                               environment: environment,
+                                               extent: image.extent)
+            else { return image }
+            coverage = applyInvertAndOpacity(coverage, parameters: parameters)
+            if environment.showMatte { return coverage }
+            return image.applyingFilter("CIBlendWithMask", parameters: [
+                "inputBackgroundImage": CIImage.empty(),
+                "inputMaskImage": coverage,
+            ])
+        }
         guard let shape = MaskShape(effectValue: parameters["shape"]),
               shape.isDrawable else { return image }
         let feather = parameters["feather"]?.numberValue ?? 0
@@ -79,22 +180,7 @@ public enum MaskEffect {
             .composited(over: CIImage(color: .black).cropped(to: extent))
             .cropped(to: extent)
 
-        if parameters["invert"]?.boolValue == true {
-            coverage = coverage.applyingFilter("CIColorMatrix", parameters: [
-                "inputRVector": CIVector(x: -1, y: 0, z: 0, w: 0),
-                "inputGVector": CIVector(x: 0, y: -1, z: 0, w: 0),
-                "inputBVector": CIVector(x: 0, y: 0, z: -1, w: 0),
-                "inputBiasVector": CIVector(x: 1, y: 1, z: 1, w: 0),
-            ])
-        }
-        let opacity = min(max(parameters["opacity"]?.numberValue ?? 1, 0), 1)
-        if opacity < 0.9999 {
-            coverage = coverage.applyingFilter("CIColorMatrix", parameters: [
-                "inputRVector": CIVector(x: opacity, y: 0, z: 0, w: 0),
-                "inputGVector": CIVector(x: 0, y: opacity, z: 0, w: 0),
-                "inputBVector": CIVector(x: 0, y: 0, z: opacity, w: 0),
-            ])
-        }
+        coverage = applyInvertAndOpacity(coverage, parameters: parameters)
 
         if environment.showMatte { return coverage }
         // The picture through its matte: alpha *= coverage.

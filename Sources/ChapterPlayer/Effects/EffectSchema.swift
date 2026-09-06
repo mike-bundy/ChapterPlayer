@@ -8,6 +8,7 @@
 //  MaestroVision's EffectSeamTests render the same stack through both and
 //  compare the pixels. Change one, change both.
 //
+
 import Foundation
 import ChapterScript
 
@@ -33,6 +34,15 @@ public enum EffectParameterKind: String, Codable, Sendable, Equatable {
     /// structured value. Whole-shape transform rides scalar parameters;
     /// the shape itself is constant-interpolated.
     case shape
+    /// ANOTHER OCCURRENCE ON THIS SEQUENCE (FL-11's `matteFromClip`) — a
+    /// clip whose picture is read as a matte.
+    ///
+    /// Deliberately NOT `sourceReference`: that names a FILE and the Final
+    /// Bundle keeps files it names, while this names an authored
+    /// occurrence and the bundle must not treat it as a filename. Two
+    /// different questions, so two kinds — and the exhaustive walks now
+    /// force every reference walk to answer both.
+    case occurrenceReference
 
     /// Discrete kinds are TYPE-ENFORCED to constant interpolation:
     /// nothing can attempt to blend between two enum cases.
@@ -40,7 +50,8 @@ public enum EffectParameterKind: String, Codable, Sendable, Equatable {
         switch self {
         case .scalar, .normalized, .angle, .color, .point:
             return true
-        case .boolean, .choice, .sourceReference, .curve, .shape:
+        case .boolean, .choice, .sourceReference, .curve, .shape,
+             .occurrenceReference:
             return false
         }
     }
@@ -129,7 +140,12 @@ public struct EffectParameterSchema: Sendable, Equatable {
                 // value untouched (the same weaker-claim discipline).
                 return (defaultValue, true)
             }
-        case .color, .point, .boolean, .sourceReference, .curve, .shape:
+        case .color, .point, .boolean, .sourceReference, .curve, .shape,
+             .occurrenceReference:
+            // An occurrence id has no range to clamp to. Whether the
+            // occurrence still EXISTS is a different question, answered at
+            // render time as a reported bypass rather than by rewriting
+            // what the author stored.
             break
         }
         return (value, false)

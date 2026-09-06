@@ -65,6 +65,14 @@ public class VideoPlaybackManager {
         /// where this play sits on the Sequence clock and how long it runs.
         var firedAt: TimeInterval? = nil
         var span: TimeInterval? = nil
+        /// FL-11: which authored occurrence this channel is playing, so a
+        /// Mask elsewhere in the Sequence can take its coverage from it.
+        var occurrenceId: String? = nil
+        /// FL-09: this IMMERSIVE channel is mounted as a MESH the Effect
+        /// surface writes into, rather than as a `VideoPlayerComponent`.
+        /// Only ever true for a MONO backdrop that authored an enabled
+        /// stack — see `attachToPresentation`.
+        var usesSurface: Bool = false
         var retime: RetimeCurve? = nil
         var pitch: PitchHandling? = nil
         var transition: VideoTransitionSpec? = nil
@@ -190,6 +198,13 @@ public class VideoPlaybackManager {
         let key = Self.immersiveShellKey(for: channelKey)
         guard let shell = videoEntityRegistry.removeValue(forKey: key) else { return }
         shell.components.remove(VideoPlayerComponent.self)
+        // FL-09: a GRADED shell was mounted as a mesh instead. Drop it and
+        // put the scale back, or the next backdrop inherits a sphere it
+        // never asked for — the same reason `tearDownImageSkybox` exists.
+        if channels[channelKey]?.usesSurface == true {
+            shell.components.remove(ModelComponent.self)
+            shell.scale = .one
+        }
         if shell === videoEntityRegistry["skybox"] {
             shell.isEnabled = false
             if shell.components.has(OpacityComponent.self) {
@@ -218,6 +233,7 @@ public class VideoPlaybackManager {
         guard var ch = channels[action.channel] else { return }
         ch.firedAt = action.firedAt
         ch.span = action.timelineSpan
+        ch.occurrenceId = action.occurrenceId
         ch.retime = action.retime
         ch.pitch = action.pitch
         ch.transition = action.videoTransition
@@ -339,7 +355,8 @@ public class VideoPlaybackManager {
                 presentation: action.presentation,
                 channelKey: action.channel,
                 channel: &ch,
-                crop: action.crop
+                crop: action.crop,
+                layout: action.layout
             )
             channels[action.channel] = ch
             let sourceIn = max(0, action.sourceIn ?? 0)
@@ -432,7 +449,7 @@ public class VideoPlaybackManager {
                 loop: action.loop,
                 effects: action.effects
             )
-            attachToPresentation(player: queuePlayer, presentation: action.presentation, channelKey: action.channel, channel: &channel, crop: action.crop)
+            attachToPresentation(player: queuePlayer, presentation: action.presentation, channelKey: action.channel, channel: &channel, crop: action.crop, layout: action.layout)
             channels[action.channel] = channel
             // The looper already restricts playback to the source window,
             // so no cue seek is needed — just gate the start on readiness.
@@ -465,7 +482,7 @@ public class VideoPlaybackManager {
                     player: player, item: playerItem, sourceIn: action.sourceIn
                 )
             }
-            attachToPresentation(player: player, presentation: action.presentation, channelKey: action.channel, channel: &channel)
+            attachToPresentation(player: player, presentation: action.presentation, channelKey: action.channel, channel: &channel, layout: action.layout)
             channels[action.channel] = channel
             startGatedPlayback(player: player, action: action, awaitSourceIn: true)
         }
@@ -606,7 +623,7 @@ public class VideoPlaybackManager {
             return bound
         }
         logger.warning("[video] gated reveal: channel '\(action.channel)' bound entity was \(ch.entity == nil ? "nil" : "stale") — re-attaching to live registry entity '\(name)'")
-        attachToPresentation(player: ch.player, presentation: action.presentation, channelKey: action.channel, channel: &ch)
+        attachToPresentation(player: ch.player, presentation: action.presentation, channelKey: action.channel, channel: &ch, layout: action.layout)
         channels[action.channel] = ch
         return ch.entity
     }
@@ -759,7 +776,7 @@ public class VideoPlaybackManager {
 
         // Bind VideoMaterial onto the target entity NOW so RealityKit
         // uploads the texture binding before sequence time.
-        attachToPresentation(player: player, presentation: action.presentation, channelKey: action.channel, channel: &channel)
+        attachToPresentation(player: player, presentation: action.presentation, channelKey: action.channel, channel: &channel, layout: action.layout)
         channels[action.channel] = channel
 
         // Keep the entity ENABLED during preheat — disabling it removes
@@ -941,8 +958,7 @@ public class VideoPlaybackManager {
 
     private func finishStop(_ stopped: VideoChannel, channel: String) {
         var ch = stopped
-        if case .entity(let name, _, _) = ch.presentation,
-           let entity = videoEntityRegistry[name] as? ModelEntity {
+        if let entity = surfaceEntity(key: channel, ch) {
             effectSurface.restore(channel: channel, entity: entity)
         }
         effectSurface.forget(channel: channel)
@@ -1080,7 +1096,7 @@ public class VideoPlaybackManager {
 
     // MARK: - Presentation Attachment
 
-    private func attachToPresentation(player: AVPlayer, presentation: VideoPresentation, channelKey: String, channel: inout VideoChannel, crop: VideoCropRect? = nil) {
+    private func attachToPresentation(player: AVPlayer, presentation: VideoPresentation, channelKey: String, channel: inout VideoChannel, crop: VideoCropRect? = nil, layout: VideoLayout = .mono) {
         switch presentation {
         case .attachment:
             // SwiftUI attachment handles video display — just need the player reference
@@ -1178,6 +1194,49 @@ public class VideoPlaybackManager {
             if let entity = immersiveShell(for: channelKey) {
                 logger.info("[video.immersive] channel '\(channelKey)' binding to shell '\(entity.name)' (parent=\(entity.parent?.name ?? "nil"))")
                 entity.isEnabled = true
+                // FL-09: A GRADED IMMERSIVE BACKDROP.
+                //
+                // `VideoPlayerComponent` owns its pixels end to end — there
+                // is no per-frame hook in it, which is why an authored
+                // Effect stack on a backdrop reached the runtime and stopped
+                // there. A MESH does have one: the same `EffectPanelSurface`
+                // that grades a flat panel writes into an `UnlitMaterial`,
+                // and `ShellGeometry` already builds the shell the image
+                // backdrop path mounts.
+                //
+                // MONO ONLY, and that is not a temporary shortcut: one
+                // texture has one eye in it. A stereo plate keeps the
+                // component (both eyes correct, stack unrendered) and says
+                // so, rather than being silently flattened — losing a
+                // viewer's depth to apply a grade is not a trade this can
+                // make on their behalf.
+                switch ImmersiveGrading.decision(layout: layout, effects: channel.effects) {
+                case .noStack:
+                    break
+                case .unrendered(let reason):
+                    logger.warning("[video.immersive] channel '\(channelKey)': \(reason)")
+                case .graded:
+                    if case .immersive(let radius, let field) = presentation,
+                       let mesh = Self.shellMesh(field: field, radius: radius) {
+                        var placeholder = UnlitMaterial()
+                        placeholder.color = .init(tint: .black)
+                        entity.components.set(ModelComponent(mesh: mesh, materials: [placeholder]))
+                        // The shell rule, same inversion every immersive
+                        // surface here applies: seen from inside.
+                        entity.scale = SIMD3<Float>(-1, 1, 1)
+                        if entity.components.has(OpacityComponent.self) {
+                            entity.components[OpacityComponent.self]?.opacity = 1
+                        }
+                        channel.entity = entity
+                        channel.usesSurface = true
+                        logger.info("[video.immersive] channel '\(channelKey)' is GRADED: mesh + Effect surface, no VideoPlayerComponent")
+                        return
+                    }
+                    // The shell could not be generated. Fall through to the
+                    // component: a graded backdrop that failed to build its
+                    // mesh must still SHOW, ungraded, rather than go black.
+                    logger.warning("[video.immersive] channel '\(channelKey)' asked to be graded but its shell could not be generated — playing ungraded through VideoPlayerComponent")
+                }
                 // A previous preheat may have left the skybox at opacity 0
                 // (prepareAsync dials the bound entity down after attach).
                 // The immersive gate never touches OpacityComponent, so
@@ -1203,6 +1262,29 @@ public class VideoPlaybackManager {
             } else {
                 logger.error("[video.immersive] 'skybox' entity NOT registered — ImmersiveView.createSkyboxShell never ran or its registration call was lost. videoEntityRegistry keys: \(self.videoEntityRegistry.keys.sorted())")
             }
+        }
+    }
+
+    /// The shell a GRADED immersive backdrop is drawn on (FL-09).
+    ///
+    /// The SAME geometry the image-backdrop path mounts: `generateSphere`
+    /// for 360° (RealityKit's own UV convention renders it right way up,
+    /// and swapping the generator risks a silent handedness regression),
+    /// `ShellGeometry`'s partial shell for every authored field. Nil when
+    /// the shell could not be generated, which sends the caller back to the
+    /// component path rather than to a blank sphere.
+    private static func shellMesh(field: ImmersiveField, radius: Float) -> MeshResource? {
+        switch field {
+        case .equirect360:
+            return MeshResource.generateSphere(radius: radius)
+        case .equirect180, .appleImmersive, .custom:
+            let shell = ShellGeometry.shell(field: field, radius: radius)
+            var descriptor = MeshDescriptor(name: "graded_backdrop_\(Int(field.horizontalDegrees))")
+            descriptor.positions = MeshBuffer(shell.positions)
+            descriptor.normals = MeshBuffer(shell.normals)
+            descriptor.textureCoordinates = MeshBuffer(shell.uvs)
+            descriptor.primitives = .triangles(shell.indices)
+            return try? MeshResource.generate(from: [descriptor])
         }
     }
 
@@ -1419,11 +1501,27 @@ public class VideoPlaybackManager {
             ticker.cancel()
             surfaceTicker = nil
             for (key, ch) in channels {
-                if case .entity(let name, _, _) = ch.presentation,
-                   let entity = videoEntityRegistry[name] as? ModelEntity {
+                if let entity = surfaceEntity(key: key, ch) {
                     effectSurface.restore(channel: key, entity: entity)
                 }
             }
+        }
+    }
+
+    /// The entity this channel's Effect surface writes into, or nil when
+    /// the channel has no material slot to take one — an attachment, or an
+    /// immersive source still rendering through `VideoPlayerComponent`.
+    private func surfaceEntity(key: String, _ ch: VideoChannel) -> Entity? {
+        switch ch.presentation {
+        case .entity(let name, _, _):
+            return videoEntityRegistry[name]
+        case .immersive:
+            // FL-09: only a shell that was MOUNTED as a mesh. A stereo
+            // backdrop's component owns its own pixels and writing a
+            // material under it would do nothing visible.
+            return ch.usesSurface ? ch.entity : nil
+        case .attachment:
+            return nil
         }
     }
 
@@ -1434,8 +1532,7 @@ public class VideoPlaybackManager {
         var jobs: [EffectPanelSurface.Job] = []
         var finished: [String] = []
         for (key, ch) in channels {
-            guard case .entity(let name, _, _) = ch.presentation,
-                  let entity = videoEntityRegistry[name] as? ModelEntity else { continue }
+            guard let entity = surfaceEntity(key: key, ch) else { continue }
             let sourceTime = applyRetime(key: key, ch, at: now)
             applyClipFade(key: key, ch, entity: entity, at: now)
             let stack = ch.effects ?? []
@@ -1466,7 +1563,18 @@ public class VideoPlaybackManager {
                 finishStop(dissolve.outgoingChannel, channel: key + "#outgoing")
             }
         }
-        if !jobs.isEmpty { effectSurface.tick(jobs: jobs) }
+        // FL-11: every occurrence some stack in this tick names as a
+        // matte, resolved from the channels — the only thing that knows
+        // what is playing where.
+        let referenced = Set(jobs.flatMap { EffectSourceReferences.occurrences(in: $0.effects) })
+        var matteSources: [EffectPanelSurface.MatteSource] = []
+        if !referenced.isEmpty {
+            for (key, ch) in channels {
+                guard let id = ch.occurrenceId, referenced.contains(id) else { continue }
+                matteSources.append(.init(occurrenceId: id, channel: key, player: ch.player))
+            }
+        }
+        if !jobs.isEmpty { effectSurface.tick(jobs: jobs, matteSources: matteSources) }
         if !finished.isEmpty { refreshSurfaceTicker() }
     }
 
@@ -1478,7 +1586,7 @@ public class VideoPlaybackManager {
     /// to the value it already holds is a per-frame write for nothing, and
     /// `PERFORMANCE.md` is explicit about those on a render path.
     private func applyClipFade(key: String, _ ch: VideoChannel,
-                               entity: ModelEntity, at now: TimeInterval) {
+                               entity: Entity, at now: TimeInterval) {
         guard (ch.fadeIn ?? 0) > 0 || (ch.fadeOut ?? 0) > 0,
               let firedAt = ch.firedAt, let span = ch.span, span > 0 else { return }
         let value = Float(MediaFadeCurve.multiplier(

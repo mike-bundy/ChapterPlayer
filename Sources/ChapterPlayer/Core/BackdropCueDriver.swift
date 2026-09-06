@@ -47,7 +47,11 @@ public protocol BackdropCuePresenting: AnyObject {
     func presentBackdrop(
         _ spec: SequenceBackdrop?,
         sourceRange: MediaSourceRange,
-        presentation: SequencePresentation
+        presentation: SequencePresentation,
+        /// FL-09: the cue's own Effect stack. Carried to the presenter
+        /// because the DECISION about whether a backdrop can be graded is
+        /// about how it is mounted, and only the presenter mounts it.
+        effects: [EffectInstance]?
     )
 
     /// Set the mounted backdrop's opacity, 0…1. Called at tick rate during a
@@ -145,7 +149,8 @@ public final class BackdropCueDriver {
         lastPushedOpacity = 1
         if tearDown {
             activeCueId = nil
-            presenter?.presentBackdrop(nil, sourceRange: .full, presentation: presentation)
+            presenter?.presentBackdrop(nil, sourceRange: .full,
+                                       presentation: presentation, effects: nil)
         }
     }
 
@@ -209,7 +214,8 @@ public final class BackdropCueDriver {
             presenter?.presentBackdrop(
                 showing?.spec.flatMap { SequenceBackdrop($0) },
                 sourceRange: showing?.sourceRange ?? .full,
-                presentation: presentation
+                presentation: presentation,
+                effects: showing?.effects
             )
         }
 

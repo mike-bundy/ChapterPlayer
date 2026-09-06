@@ -444,6 +444,14 @@ public struct VideoAction: Sendable {
     /// (a preheat, a host-driven play): no retime, no dissolve.
     public var firedAt: TimeInterval? = nil
     public var timelineSpan: TimeInterval? = nil
+    /// THE AUTHORED OCCURRENCE'S ID (FL-11), carried from the document by
+    /// the bridge so another occurrence's Mask can NAME this one as its
+    /// matte. It is an authored identity, not a channel and not a file:
+    /// two occurrences of one master on one channel are different mattes,
+    /// and a file name could not tell them apart. Absent on a play the
+    /// bridge did not build from an authored action (a preheat, a
+    /// host-driven play), in which case nothing can reference it.
+    public var occurrenceId: String? = nil
     /// The retime curve (FL-13): consumed by `VideoPlaybackManager`'s
     /// surface tick against `firedAt` / `timelineSpan` (the curve domain
     /// is span-relative) — the span is stamped by the engine, never guessed.

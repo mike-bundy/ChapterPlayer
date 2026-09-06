@@ -949,6 +949,24 @@ open class ChapterPlayerCore {
         set { _lastVideoBackdropSignatureStore = newValue }
     }
 
+    /// What makes two video backdrops THE SAME MOUNT, for the replay fast
+    /// path below. The source window has been part of it since two cuts of
+    /// one file turned out to be two backdrops; the EFFECT STACK is part of
+    /// it for the same reason and a sharper one — a graded backdrop is
+    /// mounted as a mesh and an ungraded one as a component, so replaying
+    /// one as the other would seek a player whose pixels go nowhere.
+    private static func videoBackdropSignature(
+        file: String, layout: VideoLayout, field: ImmersiveField, radius: Float,
+        loop: Bool, audioEnabled: Bool, sourceRange: MediaSourceRange,
+        effects: [EffectInstance]?
+    ) -> String {
+        let stack = (effects ?? [])
+            .map { "\($0.id):\($0.effectId):\($0.enabled)" }
+            .joined(separator: ",")
+        return "\(file)|\(layout)|\(field)|\(radius)|\(loop)|\(audioEnabled)"
+            + "|\(sourceRange.resolvedIn)|\(String(describing: sourceRange.sourceOut))|\(stack)"
+    }
+
     /// Apply the backdrop showing at the START of `sequence`.
     ///
     /// Cue zero, not "the sequence's backdrop" — with a track authored, the
@@ -965,16 +983,19 @@ open class ChapterPlayerCore {
         presentBackdrop(cue?.spec.flatMap { SequenceBackdrop($0) },
                         sourceRange: cue?.sourceRange ?? .full,
                         presentation: sequence.presentation,
+                        effects: cue?.effects,
                         sequenceId: sequence.id)
     }
 
     public func presentBackdrop(
         _ spec: SequenceBackdrop?,
         sourceRange: MediaSourceRange,
-        presentation: SequencePresentation
+        presentation: SequencePresentation,
+        effects: [EffectInstance]?
     ) {
         presentBackdrop(spec, sourceRange: sourceRange,
-                        presentation: presentation, sequenceId: activeSequenceId ?? "")
+                        presentation: presentation, effects: effects,
+                        sequenceId: activeSequenceId ?? "")
     }
 
     /// Fade whatever backdrop is mounted. Both slots are written because either
@@ -996,6 +1017,7 @@ open class ChapterPlayerCore {
         _ backdropSpec: SequenceBackdrop?,
         sourceRange: MediaSourceRange,
         presentation sequencePresentation: SequencePresentation,
+        effects: [EffectInstance]?,
         sequenceId: String
     ) {
         logger.info("[backdrop] present sequence=\(sequenceId) presentation=\(String(describing: sequencePresentation)) backdrop=\(String(describing: backdropSpec))")
@@ -1015,7 +1037,10 @@ open class ChapterPlayerCore {
             // 0-6 and cut 20-26 are two different backdrops, and treating
             // them as identical would replay the first window for the second
             // cue.
-            let signature = "\(file)|\(layout)|\(field)|\(radius)|\(loop)|\(audioEnabled)|\(sourceRange.resolvedIn)|\(String(describing: sourceRange.sourceOut))"
+            let signature = Self.videoBackdropSignature(
+                file: file, layout: layout, field: field, radius: radius,
+                loop: loop, audioEnabled: audioEnabled,
+                sourceRange: sourceRange, effects: effects)
             if signature == Self.lastVideoBackdropSignature,
                let player = videoManager.player(for: Self.backdropVideoChannel),
                let item = player.currentItem, item.status != .failed,
@@ -1058,7 +1083,10 @@ open class ChapterPlayerCore {
                 return
             }
             logger.info("[backdrop] dispatching video backdrop file='\(file)' layout=\(String(describing: layout)) field=\(String(describing: field)) radius=\(radius) loop=\(loop) audio=\(audioEnabled)")
-            Self.lastVideoBackdropSignature = "\(file)|\(layout)|\(field)|\(radius)|\(loop)|\(audioEnabled)|\(sourceRange.resolvedIn)|\(String(describing: sourceRange.sourceOut))"
+            Self.lastVideoBackdropSignature = Self.videoBackdropSignature(
+                file: file, layout: layout, field: field, radius: radius,
+                loop: loop, audioEnabled: audioEnabled,
+                sourceRange: sourceRange, effects: effects)
             videoManager.play(action: VideoAction(
                 file: file,
                 channel: Self.backdropVideoChannel,
@@ -1067,7 +1095,12 @@ open class ChapterPlayerCore {
                 presentation: .immersive(radius: radius, field: field),
                 layout: layout,
                 sourceIn: sourceRange.sourceIn,
-                sourceOut: sourceRange.sourceOut
+                sourceOut: sourceRange.sourceOut,
+                // FL-09: the cue's stack rides the play, exactly as an
+                // occurrence's does. `VideoPlaybackManager` decides whether
+                // this backdrop can be mounted as a graded mesh or has to
+                // keep its component and say the stack is unrendered.
+                effects: effects
             ))
 
         case .image(let file, let field, let radius):

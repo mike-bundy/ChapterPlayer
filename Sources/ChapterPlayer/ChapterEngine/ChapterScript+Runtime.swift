@@ -506,7 +506,14 @@ extension StepDefinition {
         var opening: [StepAction] = []
         var scheduled: [ScheduledAction] = []
         for authored in dto.authoredActions {
-            let action = try StepAction(dto: authored.action)
+            var action = try StepAction(dto: authored.action)
+            // FL-11: the authored id is the only name a Mask's matte
+            // reference can mean, so it is carried here — the one place
+            // that still has it.
+            if case .playVideo(var video) = action {
+                video.occurrenceId = authored.id
+                action = .playVideo(video)
+            }
             if authored.at <= 0 {
                 opening.append(action)
             } else {
