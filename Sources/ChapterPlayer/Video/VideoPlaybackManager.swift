@@ -69,6 +69,14 @@ public class VideoPlaybackManager {
         var pitch: PitchHandling? = nil
         var transition: VideoTransitionSpec? = nil
         var crop: VideoCropRect? = nil
+        /// THE CROSS-MEDIA FADE (FL-18 N12), picture half. Measured against
+        /// the SAME stamped `firedAt` / `span` a retime and a dissolve use,
+        /// through `MediaFadeCurve` — the one shape both editors draw.
+        var fadeIn: Double? = nil
+        var fadeOut: Double? = nil
+        /// The opacity this channel last wrote, so an unchanged frame does
+        /// not touch the component thirty times a second.
+        var appliedFade: Float = 1
     }
 
     // MARK: - State
@@ -214,6 +222,8 @@ public class VideoPlaybackManager {
         ch.pitch = action.pitch
         ch.transition = action.videoTransition
         ch.crop = action.crop
+        ch.fadeIn = action.fadeIn
+        ch.fadeOut = action.fadeOut
         channels[action.channel] = ch
         if let pitch = action.pitch, let item = ch.player.currentItem {
             // FL-13: pitch is AUDIBLE LIVE — the algorithm rides the item,
@@ -1385,6 +1395,12 @@ public class VideoPlaybackManager {
         if ch.effects?.contains(where: \.enabled) == true { return true }
         if dissolves[key] != nil { return true }
         if let curve = ch.retime, !curve.isIdentity, ch.firedAt != nil, ch.span != nil { return true }
+        // FL-18 N12: a faded clip needs the tick for its ramp, and needs it
+        // for exactly as long as any other per-frame fact — a fade that
+        // only updated when an Effect happened to be on would be a fade
+        // that worked by accident.
+        if (ch.fadeIn ?? 0) > 0 || (ch.fadeOut ?? 0) > 0,
+           ch.firedAt != nil, ch.span != nil { return true }
         return false
     }
 
@@ -1421,6 +1437,7 @@ public class VideoPlaybackManager {
             guard case .entity(let name, _, _) = ch.presentation,
                   let entity = videoEntityRegistry[name] as? ModelEntity else { continue }
             let sourceTime = applyRetime(key: key, ch, at: now)
+            applyClipFade(key: key, ch, entity: entity, at: now)
             let stack = ch.effects ?? []
             var job = EffectPanelSurface.Job(
                 channel: key, entity: entity, player: ch.player,
@@ -1451,6 +1468,29 @@ public class VideoPlaybackManager {
         }
         if !jobs.isEmpty { effectSurface.tick(jobs: jobs) }
         if !finished.isEmpty { refreshSurfaceTicker() }
+    }
+
+    /// FL-18 N12 CONSUMPTION: the clip's own fade, onto the panel's
+    /// opacity, from the SAME `MediaFadeCurve` the editors draw — so what
+    /// an author watched ramp in the Viewer is what the headset shows.
+    ///
+    /// Written only when it CHANGES. A component set thirty times a second
+    /// to the value it already holds is a per-frame write for nothing, and
+    /// `PERFORMANCE.md` is explicit about those on a render path.
+    private func applyClipFade(key: String, _ ch: VideoChannel,
+                               entity: ModelEntity, at now: TimeInterval) {
+        guard (ch.fadeIn ?? 0) > 0 || (ch.fadeOut ?? 0) > 0,
+              let firedAt = ch.firedAt, let span = ch.span, span > 0 else { return }
+        let value = Float(MediaFadeCurve.multiplier(
+            at: now, start: firedAt, end: firedAt + span,
+            fadeIn: ch.fadeIn, fadeOut: ch.fadeOut))
+        guard abs(value - ch.appliedFade) > 0.002 else { return }
+        channels[key]?.appliedFade = value
+        if value < 0.999 {
+            entity.components.set(OpacityComponent(opacity: value))
+        } else {
+            entity.components.set(OpacityComponent(opacity: 1))
+        }
     }
 
     /// FL-13 CONSUMPTION, the Mac's live rule: the occurrence's rate at

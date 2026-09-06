@@ -269,6 +269,12 @@ public struct AudioAction: Sendable {
     public let volume: Float
     public let loop: Bool
     public let fadeIn: TimeInterval?
+    /// THE CROSS-MEDIA FADE (FL-18 N12), sound half: the mirror of
+    /// `fadeIn`. Composed by `AudioGainComposition`, which is the one gain
+    /// rule both the editor and this runtime already read - so a fade-out
+    /// is not a second kind of ramp, it is the ramp the runtime has always
+    /// applied, ending at the occurrence's own end.
+    public let fadeOut: TimeInterval?
     public let spatial: SpatialAudioConfig?
     public let category: String?
     public let crossfade: TimeInterval?
@@ -309,6 +315,7 @@ public struct AudioAction: Sendable {
         volume: Float = 1.0,
         loop: Bool = false,
         fadeIn: TimeInterval? = nil,
+        fadeOut: TimeInterval? = nil,
         spatial: SpatialAudioConfig? = nil,
         category: String? = nil,
         crossfade: TimeInterval? = nil,
@@ -325,6 +332,7 @@ public struct AudioAction: Sendable {
         self.volume = volume
         self.loop = loop
         self.fadeIn = fadeIn
+        self.fadeOut = fadeOut
         self.spatial = spatial
         self.category = category
         self.crossfade = crossfade
@@ -445,6 +453,14 @@ public struct VideoAction: Sendable {
     /// The file's own embedded subtitle track, selected on the item when
     /// true (`VideoActionDTO.embeddedSubtitles`). Absent ⇒ off.
     public let embeddedSubtitles: Bool?
+    /// THE CROSS-MEDIA FADE (FL-18 N12): the clip's own ramp up from
+    /// transparent and down to it, in seconds. The shape is
+    /// `MediaFadeCurve`'s, shared with both editors, and it is measured
+    /// against `firedAt` / `timelineSpan` — the same stamped span a retime
+    /// and a dissolve use. Absent ⇒ no fade, which is every document
+    /// written before this field.
+    public let fadeIn: Double?
+    public let fadeOut: Double?
 
     public init(
         file: String,
@@ -461,7 +477,9 @@ public struct VideoAction: Sendable {
         videoTransition: VideoTransitionSpec? = nil,
         retime: RetimeCurve? = nil,
         pitch: PitchHandling? = nil,
-        embeddedSubtitles: Bool? = nil
+        embeddedSubtitles: Bool? = nil,
+        fadeIn: Double? = nil,
+        fadeOut: Double? = nil
     ) {
         self.file = file
         self.channel = channel
@@ -478,6 +496,8 @@ public struct VideoAction: Sendable {
         self.retime = retime
         self.pitch = pitch
         self.embeddedSubtitles = embeddedSubtitles
+        self.fadeIn = fadeIn
+        self.fadeOut = fadeOut
     }
 }
 

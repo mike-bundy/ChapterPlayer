@@ -218,6 +218,7 @@ private extension AudioAction {
             volume: dto.volume,
             loop: dto.loop,
             fadeIn: dto.fadeIn,
+            fadeOut: dto.fadeOut,
             spatial: dto.spatial.map { SpatialAudioConfig($0) },
             category: dto.category,
             crossfade: dto.crossfade,
@@ -255,7 +256,9 @@ extension VideoAction {
             videoTransition: dto.videoTransition,
             retime: dto.retime,
             pitch: dto.pitch,
-            embeddedSubtitles: dto.embeddedSubtitles
+            embeddedSubtitles: dto.embeddedSubtitles,
+            fadeIn: dto.fadeIn,
+            fadeOut: dto.fadeOut
         )
     }
 }

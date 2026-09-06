@@ -350,9 +350,25 @@ public final class SequenceEngine {
                 switch action {
                 case .playAudio(let a):
                     channels.insert(a.channel)
-                    if let fadeIn = a.fadeIn, fadeIn > 0 {
+                    // FL-18 N12: the clip's two ramps, FITTED together by
+                    // the shared rule so an author who dragged both handles
+                    // past the middle hears them meet rather than one of
+                    // them silently winning. Same arithmetic as the editor's
+                    // — `MediaFadeCurve.fitted` is the one place it lives.
+                    let clipEnd = stepStart + Self.audioOccurrenceEnd(
+                        channel: a.channel, firedAt: time - stepStart, in: step)
+                    let ramps = MediaFadeCurve.fitted(fadeIn: a.fadeIn,
+                                                      fadeOut: a.fadeOut,
+                                                      span: clipEnd - time)
+                    if ramps.in > 0 {
                         result[a.channel, default: []].append(
-                            AudioFade(startTime: time, duration: fadeIn, to: a.volume, from: 0)
+                            AudioFade(startTime: time, duration: ramps.in, to: a.volume, from: 0)
+                        )
+                    }
+                    if ramps.out > 0 {
+                        result[a.channel, default: []].append(
+                            AudioFade(startTime: clipEnd - ramps.out, duration: ramps.out,
+                                      to: 0, from: a.volume)
                         )
                     }
                 case .fadeAudio(let channel, let to, let duration):
@@ -370,6 +386,28 @@ public final class SequenceEngine {
             result[channel]?.sort { $0.startTime < $1.startTime }
         }
         return result
+    }
+
+    /// Where an AUDIO occurrence ends inside its Step (FL-18 N12).
+    ///
+    /// The same rule `occurrenceSpan` applies to picture, said once for
+    /// sound: the channel's next stop or play LATER in the Step, else the
+    /// Step's end. A fade-out that ends at the wrong instant is audible,
+    /// so this is stated rather than approximated by the clip's media
+    /// length — which is a different fact and often longer.
+    static func audioOccurrenceEnd(channel: String, firedAt offset: TimeInterval,
+                                   in step: StepDefinition) -> TimeInterval {
+        var end = step.duration
+        let timed: [(TimeInterval, StepAction)] =
+            step.actions.map { (0, $0) } + step.scheduledActions.map { ($0.at, $0.action) }
+        for (at, action) in timed where at > offset + 1e-6 && at < end {
+            switch action {
+            case .stopAudio(let c) where c == channel: end = at
+            case .playAudio(let a) where a.channel == channel: end = at
+            default: break
+            }
+        }
+        return max(offset, end)
     }
 
     /// The authored sequence clock: absolute seconds along the sequence's
