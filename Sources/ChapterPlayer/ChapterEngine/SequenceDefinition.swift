@@ -41,6 +41,10 @@ public struct SequenceDefinition: Sendable {
     /// FL-09: Key curves over Effect parameters, by Effect instance id —
     /// the player evaluates a keyed parameter exactly as the editors do.
     public let effectKeyTracks: [EffectKeyTrack]
+    /// FL-14: Key curves over an Object's material slots, by (entityId,
+    /// slot) — the player samples a keyed material exactly as the editors
+    /// do, through the mirrored rule in `MaterialKeyDriver`.
+    public let materialKeyTracks: [MaterialKeyTrack]
     public let steps: [StepDefinition]
     /// Sequence-level keyframe animation tracks (format types used directly —
     /// the curves are pure data sampled by `SequenceAnimationEvaluator`).
@@ -80,6 +84,7 @@ public struct SequenceDefinition: Sendable {
         backdropTrack: [BackdropCue] = [],
         captionTracks: [CaptionTrack] = [],
         effectKeyTracks: [EffectKeyTrack] = [],
+        materialKeyTracks: [MaterialKeyTrack] = [],
         steps: [StepDefinition],
         animationTracks: [EntityAnimationTrack] = [],
         audioTracks: [AudioAutomationTrack] = [],
@@ -99,6 +104,7 @@ public struct SequenceDefinition: Sendable {
         self.backdropTrack = backdropTrack
         self.captionTracks = captionTracks
         self.effectKeyTracks = effectKeyTracks
+        self.materialKeyTracks = materialKeyTracks
         self.steps = steps
         self.animationTracks = animationTracks
         self.audioTracks = audioTracks

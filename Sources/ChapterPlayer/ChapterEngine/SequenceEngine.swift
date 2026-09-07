@@ -163,6 +163,17 @@ public final class SequenceEngine {
     /// The caption follower (FL-08) — same relationship as the backdrop
     /// driver: hangs off the engine, is not part of it.
     public weak var captionDriver: CaptionCueDriver?
+    /// KEYED MATERIALS (FL-14). Weak and optional exactly as the caption and
+    /// backdrop drivers are: a host that never paints animated materials
+    /// pays for none of it.
+    public weak var materialKeyDriver: MaterialKeyDriver?
+    /// The Sequence's material key tracks. A provider rather than a field
+    /// because the tracks live on the DTO the host holds, and the engine
+    /// works in its own runtime shapes.
+    public var materialKeyTracksProvider: (() -> [MaterialKeyTrack]?)?
+    /// The Chapter's entity definitions, for the stored overrides a keyed
+    /// channel rests on.
+    public var entityDefinitionsProvider: (() -> [EntityDefinition])?
     /// The Chapter's caption style library, resolved by the host — the
     /// engine knows Sequences, not the whole document.
     public var captionStylesProvider: (() -> [CaptionStyle]?)?
@@ -327,6 +338,15 @@ public final class SequenceEngine {
         captionDriver?.begin(
             tracks: sequence.captionTracks,
             styles: captionStylesProvider?(),
+            clock: { [weak self] in self?.sequenceAnimationTime ?? 0 }
+        )
+        // Keyed materials ride the SAME authored clock, for the same reason
+        // (FL-14): a viewer held at a gate sees the paint that belongs to
+        // the moment they are held in, not a color that ran ahead on wall
+        // time while the story waited for them.
+        materialKeyDriver?.begin(
+            tracks: materialKeyTracksProvider?(),
+            entities: entityDefinitionsProvider?() ?? [],
             clock: { [weak self] in self?.sequenceAnimationTime ?? 0 }
         )
     }

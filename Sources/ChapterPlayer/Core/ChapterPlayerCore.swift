@@ -92,6 +92,13 @@ open class ChapterPlayerCore {
     /// driver, not rendered state, exactly like the backdrop's.
     @ObservationIgnored
     public private(set) lazy var captionCues = CaptionCueDriver(presenter: self)
+    /// KEYED MATERIALS (FL-14). Same shape as the caption driver: polls the
+    /// authored clock and presents ordinary overrides, which the existing
+    /// realization already knows how to wear. Observation-ignored for the
+    /// same reason — a driver is not rendered state, and tracking it would
+    /// invalidate every view on each repaint.
+    @ObservationIgnored
+    public private(set) lazy var materialKeys = MaterialKeyDriver(presenter: self)
     /// The mounted caption blocks; replaced whole when the showing set changes.
     @ObservationIgnored
     var captionRootEntity: Entity?
@@ -400,6 +407,16 @@ open class ChapterPlayerCore {
         sequenceEngine.gateDetector = gateDetection
         sequenceEngine.backdropDriver = backdropCues
         sequenceEngine.captionDriver = captionCues
+        // KEYED MATERIALS (FL-14) on the same authored clock, wired the same
+        // way: the driver polls, the engine hands it the Sequence's tracks
+        // and the Chapter's stored overrides to rest on.
+        sequenceEngine.materialKeyDriver = materialKeys
+        sequenceEngine.materialKeyTracksProvider = { [weak self] in
+            self?.sequenceEngine.currentSequence?.materialKeyTracks
+        }
+        sequenceEngine.entityDefinitionsProvider = { [weak self] in
+            self?.loadedExperience?.document.entities ?? []
+        }
         // The per-frame video surface (FL-09 … FL-13) reads the AUTHORED
         // clock — the caption driver's clock — and the Sequence's Effect
         // Key curves; never wall time.

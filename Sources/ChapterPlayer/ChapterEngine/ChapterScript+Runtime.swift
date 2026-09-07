@@ -542,6 +542,7 @@ extension SequenceDefinition {
             backdropTrack: dto.backdropTrack,
             captionTracks: dto.captionTracks ?? [],
             effectKeyTracks: dto.effectKeyTracks ?? [],
+            materialKeyTracks: dto.materialKeyTracks ?? [],
             steps: try dto.steps.map { try StepDefinition(dto: $0) },
             animationTracks: dto.animationTracks,
             audioTracks: dto.audioTracks,
