@@ -128,6 +128,25 @@ public enum VectorMesh {
 
     static func combinedPath(_ parsed: ParseOutput,
                              physicalWidth: Float?) -> SwiftUI.Path? {
+        let merged = normalizedPath(parsed)
+        let bounds = parsed.viewBox ?? merged.boundingBoxOfPath
+        guard bounds.width > 0, bounds.height > 0 else { return nil }
+        let width = CGFloat(physicalWidth ?? defaultPhysicalWidth)
+        let scale = width / bounds.width
+        var transform = CGAffineTransform(scaleX: scale, y: -scale)
+            .translatedBy(x: -bounds.minX, y: -bounds.maxY)
+        guard let placed = merged.mutableCopy(using: &transform) else { return nil }
+        return SwiftUI.Path(placed)
+    }
+
+    /// Runtime half of FL-22's fill-rule seam. The point is expressed in the
+    /// SVG coordinate system after SVG transforms and before physical sizing,
+    /// so this asks the exact normalized contours handed to RealityKit.
+    public static func contains(_ point: CGPoint, inSVGData data: Data) -> Bool {
+        normalizedPath(parse(data: data)).contains(point, using: .winding)
+    }
+
+    private static func normalizedPath(_ parsed: ParseOutput) -> CGMutablePath {
         let merged = CGMutablePath()
         for parsedPath in parsed.paths {
             let cg = CGMutablePath()
@@ -144,14 +163,7 @@ public enum VectorMesh {
             merged.addPath(cg.normalized(using: parsedPath.fillRule == .evenodd
                                          ? .evenOdd : .winding))
         }
-        let bounds = parsed.viewBox ?? merged.boundingBoxOfPath
-        guard bounds.width > 0, bounds.height > 0 else { return nil }
-        let width = CGFloat(physicalWidth ?? defaultPhysicalWidth)
-        let scale = width / bounds.width
-        var transform = CGAffineTransform(scaleX: scale, y: -scale)
-            .translatedBy(x: -bounds.minX, y: -bounds.maxY)
-        guard let placed = merged.mutableCopy(using: &transform) else { return nil }
-        return SwiftUI.Path(placed)
+        return merged
     }
 
     // MARK: - The parser (mirror of MaestroKit.SVGParser, skips uncounted —
