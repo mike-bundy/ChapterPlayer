@@ -99,6 +99,9 @@ open class ChapterPlayerCore {
     /// invalidate every view on each repaint.
     @ObservationIgnored
     public private(set) lazy var materialKeys = MaterialKeyDriver(presenter: self)
+    /// KEYED STORED USD PARTS (FL-16), sampled on authored Sequence time.
+    @ObservationIgnored
+    public private(set) lazy var subElementKeys = SubElementKeyDriver(presenter: self)
     /// The mounted caption blocks; replaced whole when the showing set changes.
     @ObservationIgnored
     var captionRootEntity: Entity?
@@ -411,8 +414,13 @@ open class ChapterPlayerCore {
         // way: the driver polls, the engine hands it the Sequence's tracks
         // and the Chapter's stored overrides to rest on.
         sequenceEngine.materialKeyDriver = materialKeys
+        sequenceEngine.subElementKeyDriver = subElementKeys
+        sequenceEngine.subElementActionExecutor = self
         sequenceEngine.materialKeyTracksProvider = { [weak self] in
             self?.sequenceEngine.currentSequence?.materialKeyTracks
+        }
+        sequenceEngine.subElementKeyTracksProvider = { [weak self] in
+            self?.sequenceEngine.currentSequence?.subElementKeyTracks
         }
         sequenceEngine.entityDefinitionsProvider = { [weak self] in
             self?.loadedExperience?.document.entities ?? []
@@ -438,6 +446,9 @@ open class ChapterPlayerCore {
         sequenceEngine.interactionController = interactions
         interactions.entityProvider = { [weak self] name in
             self?.entityExecutor.entityRegistry[name]
+        }
+        interactions.subElementProvider = { [weak self] target in
+            self?.documentEntities?.subElement(target)
         }
         interactions.perform = { [weak self] actions in
             self?.sequenceEngine.performActions(actions)

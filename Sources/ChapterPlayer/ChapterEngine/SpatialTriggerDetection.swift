@@ -133,6 +133,7 @@ public final class SpatialTriggerDetector {
     ///   can fire again — holding still does not re-fire every dwell interval.
     public func watchViewerFacing(
         target: String,
+        entityResolver: (@MainActor () -> Entity?)? = nil,
         dwell: TimeInterval? = nil,
         repeats: Bool = false,
         progress: (@MainActor (Double) -> Void)? = nil,
@@ -146,7 +147,7 @@ public final class SpatialTriggerDetector {
             while !Task.isCancelled {
                 try? await Task.sleep(for: .seconds(tick))
                 guard let self, !Task.isCancelled else { return }
-                guard let entity = self.entityProvider?(target),
+                guard let entity = entityResolver?() ?? self.entityProvider?(target),
                       entity.scene != nil, entity.isEnabledInHierarchy,
                       let head = self.headTransformProvider?()
                 else { continue }
@@ -225,6 +226,7 @@ public final class SpatialTriggerDetector {
     /// every poll as tracking jitter crossed it.
     public func watchProximity(
         target: String,
+        entityResolver: (@MainActor () -> Entity?)? = nil,
         radius: Float? = nil,
         repeats: Bool = false,
         arming: ArmingPolicy = .immediate,
@@ -240,7 +242,7 @@ public final class SpatialTriggerDetector {
             while !Task.isCancelled {
                 try? await Task.sleep(for: .milliseconds(150))
                 guard let self, !Task.isCancelled else { return }
-                guard let entity = self.entityProvider?(target),
+                guard let entity = entityResolver?() ?? self.entityProvider?(target),
                       entity.scene != nil,
                       let head = self.headTransformProvider?()
                 else { continue }
@@ -286,6 +288,7 @@ public final class SpatialTriggerDetector {
     /// one.
     public func watchGrab(
         target: String,
+        entityResolver: (@MainActor () -> Entity?)? = nil,
         repeats: Bool = false,
         onTriggered: @escaping @MainActor () -> Void
     ) -> Watch {
@@ -293,7 +296,8 @@ public final class SpatialTriggerDetector {
         let task = Task { @MainActor [weak self] in
             while !Task.isCancelled {
                 guard let self else { return }
-                if let entity = self.entityProvider?(target), let scene = entity.scene {
+                if let entity = entityResolver?() ?? self.entityProvider?(target),
+                   let scene = entity.scene {
                     self.subscribeGrab(target: entity, scene: scene, repeats: repeats,
                                        watch: watch, onTriggered: onTriggered)
                     return

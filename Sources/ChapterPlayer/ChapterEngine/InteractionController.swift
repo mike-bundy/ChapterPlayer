@@ -76,6 +76,9 @@ public final class InteractionController {
 
     /// Resolves an authored entity name to the live entity.
     @ObservationIgnored public var entityProvider: ((String) -> Entity?)?
+    /// Resolves an already-stored typed USD part target. It never discovers or
+    /// mints paths; an unresolved/ambiguous path stays unresolved.
+    @ObservationIgnored public var subElementProvider: ((SubElementTarget) -> Entity?)?
 
     /// The document currently loaded. Supplied as a closure so `reinstall()`
     /// can re-arm from inside the engine's play path — which is the ONE place
@@ -118,6 +121,7 @@ public final class InteractionController {
 
     private struct Registration {
         let entityId: String
+        let target: SubElementTarget?
         var watch: SpatialTriggerDetector.Watch?
     }
 
@@ -138,6 +142,8 @@ public final class InteractionController {
     private var decorated: [String: DecorationRecord] = [:]
 
     private struct DecorationRecord {
+        var ownerId: String
+        var target: SubElementTarget?
         var addedInputTarget: Bool
         var addedCollision: Bool
         var addedHoverEffect: Bool
@@ -172,9 +178,9 @@ public final class InteractionController {
     public func install(document: ChapterDocument) {
         teardown()
         for entity in document.entities where entity.isInteractive {
-            decorate(entity)
             ledger.register(entity.resolvedInteractions)
             for spec in entity.resolvedInteractions {
+                decorate(entity, target: spec.target)
                 register(spec, on: entity.id)
             }
         }
@@ -226,8 +232,10 @@ public final class InteractionController {
         ledger.reset()
         facingProgress.removeAll()
         armedCount = 0
-        for (name, record) in decorated {
-            guard let entity = entityProvider?(name) else { continue }
+        for (_, record) in decorated {
+            guard let entity = record.target.flatMap({ subElementProvider?($0) })
+                    ?? entityProvider?(record.ownerId)
+            else { continue }
             undecorate(entity, record: record)
         }
         decorated.removeAll()
@@ -236,7 +244,8 @@ public final class InteractionController {
     // MARK: - Registration
 
     private func register(_ spec: InteractionSpec, on entityId: String) {
-        registrations[spec.id] = Registration(entityId: entityId, watch: nil)
+        registrations[spec.id] = Registration(entityId: entityId,
+                                               target: spec.target, watch: nil)
         order.append(spec.id)
         startWatch(for: spec.id)
     }
@@ -254,13 +263,17 @@ public final class InteractionController {
 
         let repeats = spec.lifetime == .everyTime
         let entityId = registration.entityId
+        let resolver: @MainActor () -> Entity? = { [weak self] in
+            self?.resolvedEntity(for: interactionId)
+        }
 
         switch spec.trigger {
         case .tap:
             break
         case .viewerFacing(let dwell):
             registration.watch = detector.watchViewerFacing(
-                target: entityId, dwell: dwell, repeats: repeats,
+                target: entityId, entityResolver: resolver,
+                dwell: dwell, repeats: repeats,
                 progress: { [weak self] progress in
                     guard let self, self.facingProgress[entityId] != progress else { return }
                     self.facingProgress[entityId] = progress
@@ -274,12 +287,13 @@ public final class InteractionController {
                 // Sequence starting, an object being revealed, an interaction
                 // being enabled — is not an approach, and firing there would
                 // start narration at somebody who has not moved.
-                target: entityId, radius: radius, repeats: repeats, arming: .baseline,
+                target: entityId, entityResolver: resolver,
+                radius: radius, repeats: repeats, arming: .baseline,
                 onTriggered: { [weak self] in self?.activate(interactionId) }
             )
         case .grab:
             registration.watch = detector.watchGrab(
-                target: entityId, repeats: repeats,
+                target: entityId, entityResolver: resolver, repeats: repeats,
                 onTriggered: { [weak self] in self?.activate(interactionId) }
             )
         }
@@ -302,7 +316,7 @@ public final class InteractionController {
     @discardableResult
     public func activate(_ interactionId: String) -> Bool {
         guard let registration = registrations[interactionId] else { return false }
-        guard isPresent(registration.entityId) else {
+        guard isPresent(registration) else {
             logger.debug("Interaction '\(interactionId)' ignored: '\(registration.entityId)' is not present")
             return false
         }
@@ -321,9 +335,20 @@ public final class InteractionController {
     /// Opacity is NOT consulted. A fade to zero is a rendering state, and this
     /// build's presence model is `isEnabledInHierarchy`; equating "invisible"
     /// with "gone" would silently change what a fade means.
-    private func isPresent(_ entityId: String) -> Bool {
-        guard let entity = entityProvider?(entityId) else { return false }
+    private func isPresent(_ registration: Registration) -> Bool {
+        guard let entity = resolvedEntity(registration) else { return false }
         return entity.scene != nil && entity.isEnabledInHierarchy
+    }
+
+    private func resolvedEntity(for interactionId: String) -> Entity? {
+        registrations[interactionId].flatMap(resolvedEntity)
+    }
+
+    private func resolvedEntity(_ registration: Registration) -> Entity? {
+        if let target = registration.target {
+            return subElementProvider?(target)
+        }
+        return entityProvider?(registration.entityId)
     }
 
     @discardableResult
@@ -379,29 +404,30 @@ public final class InteractionController {
     /// the mesh, not on the authored root.
     @discardableResult
     public func handleTap(on entity: Entity) -> Bool {
+        var ancestry: [Entity] = []
         var node: Entity? = entity
-        while let current = node {
-            let name = current.name
-            if !name.isEmpty {
-                let matches = order.compactMap { id -> String? in
-                    guard registrations[id]?.entityId == name,
-                          let spec = ledger.spec(id),
-                          case .tap = spec.trigger else { return nil }
-                    return id
-                }
-                if !matches.isEmpty {
-                    // ALL tap interactions on the object run, in authored
-                    // order. Picking one would make a second one silently dead
-                    // — and it is why an accessibility Activate does the same
-                    // thing rather than choosing one arbitrarily.
-                    let ran = activateTaps(on: name)
-                    // The SAME activation, offered to the other consumer. Each
-                    // is called exactly once, so neither can double-fire.
-                    _ = offerToGate?(name, .tap, ran, false)
-                    return ran
-                }
+        while let current = node { ancestry.append(current); node = current.parent }
+
+        let candidates: [(id: String, depth: Int, owner: String)] = order.compactMap { id in
+            guard let registration = registrations[id],
+                  let spec = ledger.spec(id), case .tap = spec.trigger,
+                  let target = resolvedEntity(registration),
+                  let depth = ancestry.firstIndex(where: { $0 === target })
+            else { return nil }
+            return (id, depth, registration.entityId)
+        }
+        if let nearest = candidates.map(\.depth).min() {
+            var ran = false
+            var owner: String?
+            for candidate in candidates where candidate.depth == nearest {
+                owner = owner ?? candidate.owner
+                if activate(candidate.id) { ran = true }
             }
-            node = current.parent
+            // A gate still targets an authored Object, not a prim path. The
+            // interaction half resolves the exact part; the gate hears the
+            // containing Object exactly once.
+            _ = offerToGate?(owner, .tap, ran, false)
+            return ran
         }
         // Nothing interactive under the pointer. The gate still hears it —
         // this is the legacy "tap anywhere targetable" path.
@@ -561,8 +587,11 @@ public final class InteractionController {
     /// It does not pretend the person approached or grabbed anything. It is an
     /// accessible EQUIVALENT — the same authored response, reached another way.
     func handleCustomAction(named name: String, on entity: Entity) {
+        var ancestry: [Entity] = []
         var node: Entity? = entity
-        while let current = node {
+        while let current = node { ancestry.append(current); node = current.parent }
+
+        for current in ancestry {
             let entityId = current.name
             if !entityId.isEmpty {
                 // A GATE'S accessible equivalent. Published while the gate is
@@ -573,19 +602,23 @@ public final class InteractionController {
                     _ = offerToGate?(entityId, gateAction.trigger, false, true)
                     return
                 }
-                for id in order where registrations[id]?.entityId == entityId {
-                    guard let spec = ledger.spec(id),
-                          Self.customActionName(for: spec) == name else { continue }
-                    logger.info("Accessibility action ‘\(name)’ → interaction '\(id)'")
-                    activate(id)
-                    // The interaction's accessible equivalent is also a
-                    // semantic activation, so a gate watching for the same
-                    // thing on the same object hears it.
-                    _ = offerToGate?(entityId, spec.trigger, true, true)
-                    return
-                }
             }
-            node = current.parent
+        }
+
+        let candidates: [(id: String, depth: Int, owner: String)] = order.compactMap { id in
+            guard let registration = registrations[id], let spec = ledger.spec(id),
+                  Self.customActionName(for: spec) == name,
+                  let target = resolvedEntity(registration),
+                  let depth = ancestry.firstIndex(where: { $0 === target })
+            else { return nil }
+            return (id, depth, registration.entityId)
+        }
+        if let candidate = candidates.min(by: { $0.depth < $1.depth }),
+           let spec = ledger.spec(candidate.id) {
+            logger.info("Accessibility action ‘\(name)’ → interaction '\(candidate.id)'")
+            let ran = activate(candidate.id)
+            _ = offerToGate?(candidate.owner, spec.trigger, ran, true)
+            return
         }
         logger.warning("Accessibility action ‘\(name)’ matched no interaction or gate")
     }
@@ -648,13 +681,23 @@ public final class InteractionController {
     /// object gets an `AccessibilityComponent` regardless of its feedback style
     /// — INCLUDING `.none`, which suppresses a visual affordance and must never
     /// suppress the semantic one.
-    private func decorate(_ definition: EntityDefinition) {
-        guard let entity = entityProvider?(definition.id) else {
+    private func decorate(_ definition: EntityDefinition,
+                          target: SubElementTarget?) {
+        let key = target.map { $0.objectId + "\u{1f}" + $0.primPath }
+            ?? definition.id
+        guard decorated[key] == nil else { return }
+        guard let entity = target.flatMap({ subElementProvider?($0) })
+                ?? entityProvider?(definition.id)
+        else {
             // Not mounted yet. The watches retry, and the affordances are
             // installed on the next `install` after materialization.
             return
         }
-        var record = DecorationRecord(addedInputTarget: false, addedCollision: false,
+        let targetInteractions = definition.resolvedInteractions.filter {
+            $0.target == target
+        }
+        var record = DecorationRecord(ownerId: definition.id, target: target,
+                                      addedInputTarget: false, addedCollision: false,
                                       addedHoverEffect: false, addedAccessibility: false,
                                       feedback: definition.resolvedInteractionFeedback)
 
@@ -685,7 +728,7 @@ public final class InteractionController {
 
         // Semantic affordance.
         if entity.components[AccessibilityComponent.self] == nil,
-           let primary = definition.resolvedInteractions.first(where: \.initiallyEnabled) {
+           let primary = targetInteractions.first(where: \.initiallyEnabled) {
             var accessibility = AccessibilityComponent()
             accessibility.isAccessibilityElement = true
             accessibility.label = LocalizedStringResource(
@@ -696,14 +739,14 @@ public final class InteractionController {
             // the tap interactions — which is why the custom actions below name
             // the SPATIAL ones a VoiceOver user cannot perform directly.
             accessibility.systemActions = [.activate]
-            accessibility.customActions = definition.resolvedInteractions
+            accessibility.customActions = targetInteractions
                 .filter { $0.initiallyEnabled && $0.trigger.requiresSpatialInput }
                 .map { LocalizedStringResource(stringLiteral: Self.customActionName(for: $0)) }
             entity.components.set(accessibility)
             record.addedAccessibility = true
         }
 
-        decorated[definition.id] = record
+        decorated[key] = record
     }
 
     /// Remove ONLY what `decorate` added. An author who marked an object
@@ -799,8 +842,10 @@ public final class InteractionController {
     /// settings. Only the effect is touched; watches, lifetimes and spent-once
     /// records are untouched, because none of them is a display concern.
     public func reapplyFeedback() {
-        for (name, var record) in decorated {
-            guard let entity = entityProvider?(name) else { continue }
+        for (key, var record) in decorated {
+            guard let entity = record.target.flatMap({ subElementProvider?($0) })
+                    ?? entityProvider?(record.ownerId)
+            else { continue }
             let feedback = record.feedback
             if record.addedHoverEffect { entity.components.remove(HoverEffectComponent.self) }
             if let effect = hoverEffect(for: feedback) {
@@ -809,7 +854,7 @@ public final class InteractionController {
             } else {
                 record.addedHoverEffect = false
             }
-            decorated[name] = record
+            decorated[key] = record
         }
     }
 

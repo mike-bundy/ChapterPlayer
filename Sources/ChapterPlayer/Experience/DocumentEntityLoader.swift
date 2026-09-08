@@ -232,6 +232,13 @@ public final class DocumentEntityLoader {
         anchor?.children.first { $0.name == id }
     }
 
+    /// Resolve one already-authored typed part target. This never discovers or
+    /// mints a path; unresolved and ambiguous paths simply remain unresolved.
+    public func subElement(_ target: SubElementTarget) -> Entity? {
+        guard let object = entity(named: target.objectId) else { return nil }
+        return SubElementResolutionRuntime.resolve(target.primPath, under: object)?.entity
+    }
+
     /// Tear down the previous batch of document-spawned entities. Called
     /// before re-materializing on a new document, and on phase transition
     /// out of the immersive space. Re-enables the optional ambient

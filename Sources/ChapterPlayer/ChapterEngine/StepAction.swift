@@ -28,6 +28,7 @@ public enum StepAction: Sendable {
     /// and `MotionBehaviorResolver` is the only thing that turns it into
     /// numbers, on device exactly as in the editor.
     case motionBehavior(ChapterScript.MotionBehaviorDTO)
+    case setSubElement(SubElementActionDTO)
 
     // Attachments (SwiftUI in 3D)
     case showAttachment(id: String)

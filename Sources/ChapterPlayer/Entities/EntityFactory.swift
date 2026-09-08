@@ -145,18 +145,19 @@ public final class EntityFactory {
             // resources still resolve.
             if let bundled = Bundle.main.url(forResource: (assetId as NSString).deletingPathExtension, withExtension: "usdz") {
                 loadUSDZ(from: bundled, into: container, animation: def.usdzAnimation,
-                     overrides: def.materialOverrides)
+                     overrides: def.materialOverrides, subElements: def.subElements)
             }
             return container
         }
         loadUSDZ(from: url, into: container, animation: def.usdzAnimation,
-                 overrides: def.materialOverrides)
+                 overrides: def.materialOverrides, subElements: def.subElements)
         return container
     }
 
     private func loadUSDZ(from url: URL, into container: Entity,
                           animation: UsdzAnimationSpec? = nil,
-                          overrides: [MaterialOverrideSpec]? = nil) {
+                          overrides: [MaterialOverrideSpec]? = nil,
+                          subElements: [SubElementOverride]? = nil) {
         Task { @MainActor in
             guard let loaded = try? await Entity(contentsOf: url) else { return }
             container.addChild(loaded)
@@ -166,6 +167,13 @@ public final class EntityFactory {
                 MaterialRealizationRuntime.apply(overrides, under: loaded) { [weak self] file in
                     self?.mediaResolver?.url(for: file, kind: .image)
                 }
+            }
+            if let subElements, !subElements.isEmpty {
+                _ = SubElementResolutionRuntime.apply(
+                    subElements, under: loaded,
+                    textureURL: { [weak self] file in
+                        self?.mediaResolver?.url(for: file, kind: .image)
+                    })
             }
             if let animation, animation.enabled {
                 Self.playEmbeddedAnimations(on: loaded, spec: animation)

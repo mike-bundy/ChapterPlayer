@@ -167,10 +167,14 @@ public final class SequenceEngine {
     /// backdrop drivers are: a host that never paints animated materials
     /// pays for none of it.
     public weak var materialKeyDriver: MaterialKeyDriver?
+    /// Keyed stored USD parts, on the same authored Sequence clock.
+    public weak var subElementKeyDriver: SubElementKeyDriver?
+    public weak var subElementActionExecutor: (any SubElementActionExecuting)?
     /// The Sequence's material key tracks. A provider rather than a field
     /// because the tracks live on the DTO the host holds, and the engine
     /// works in its own runtime shapes.
     public var materialKeyTracksProvider: (() -> [MaterialKeyTrack]?)?
+    public var subElementKeyTracksProvider: (() -> [SubElementKeyTrack]?)?
     /// The Chapter's entity definitions, for the stored overrides a keyed
     /// channel rests on.
     public var entityDefinitionsProvider: (() -> [EntityDefinition])?
@@ -349,6 +353,11 @@ public final class SequenceEngine {
             entities: entityDefinitionsProvider?() ?? [],
             clock: { [weak self] in self?.sequenceAnimationTime ?? 0 }
         )
+        subElementKeyDriver?.begin(
+            tracks: subElementKeyTracksProvider?(),
+            entities: entityDefinitionsProvider?() ?? [],
+            clock: { [weak self] in self?.sequenceAnimationTime ?? 0 }
+        )
     }
 
     /// Every channel's authored fades, gathered once when a sequence starts.
@@ -459,6 +468,8 @@ public final class SequenceEngine {
         // A full reset is the case that genuinely wants it gone.
         backdropDriver?.stop(tearDown: fullReset)
         captionDriver?.stop(tearDown: fullReset)
+        materialKeyDriver?.stop(tearDown: fullReset)
+        subElementKeyDriver?.stop(tearDown: fullReset)
         isPaused = false
         isPlaying = false
         stepPausedDuration = 0
@@ -1021,6 +1032,8 @@ public final class SequenceEngine {
             entityExecutor?.beginMotion(motion)
         case .motionBehavior(let behavior):
             entityExecutor?.beginMotionBehavior(behavior)
+        case .setSubElement(let command):
+            subElementActionExecutor?.executeSubElementAction(command)
         case .persistEntity(let name):
             entityExecutor?.persistEntity(named: name)
         case .unpersistEntity(let name):

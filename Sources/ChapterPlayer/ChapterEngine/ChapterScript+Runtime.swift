@@ -330,6 +330,7 @@ extension StepAction {
         case .persistEntity(let name):    self = .persistEntity(name: name)
         case .unpersistEntity(let name):  self = .unpersistEntity(name: name)
         case .revealEntity(let r):        self = .revealEntity(RevealAction(r))
+        case .setSubElement(let command): self = .setSubElement(command)
 
         // Attachments
         case .showAttachment(let id):                            self = .showAttachment(id: id)
@@ -543,6 +544,7 @@ extension SequenceDefinition {
             captionTracks: dto.captionTracks ?? [],
             effectKeyTracks: dto.effectKeyTracks ?? [],
             materialKeyTracks: dto.materialKeyTracks ?? [],
+            subElementKeyTracks: dto.subElementKeyTracks ?? [],
             steps: try dto.steps.map { try StepDefinition(dto: $0) },
             animationTracks: dto.animationTracks,
             audioTracks: dto.audioTracks,

@@ -45,6 +45,8 @@ public struct SequenceDefinition: Sendable {
     /// slot) — the player samples a keyed material exactly as the editors
     /// do, through the mirrored rule in `MaterialKeyDriver`.
     public let materialKeyTracks: [MaterialKeyTrack]
+    /// FL-16: keyed transforms for stored `(objectId, primPath)` targets.
+    public let subElementKeyTracks: [SubElementKeyTrack]
     public let steps: [StepDefinition]
     /// Sequence-level keyframe animation tracks (format types used directly —
     /// the curves are pure data sampled by `SequenceAnimationEvaluator`).
@@ -85,6 +87,7 @@ public struct SequenceDefinition: Sendable {
         captionTracks: [CaptionTrack] = [],
         effectKeyTracks: [EffectKeyTrack] = [],
         materialKeyTracks: [MaterialKeyTrack] = [],
+        subElementKeyTracks: [SubElementKeyTrack] = [],
         steps: [StepDefinition],
         animationTracks: [EntityAnimationTrack] = [],
         audioTracks: [AudioAutomationTrack] = [],
@@ -105,6 +108,7 @@ public struct SequenceDefinition: Sendable {
         self.captionTracks = captionTracks
         self.effectKeyTracks = effectKeyTracks
         self.materialKeyTracks = materialKeyTracks
+        self.subElementKeyTracks = subElementKeyTracks
         self.steps = steps
         self.animationTracks = animationTracks
         self.audioTracks = audioTracks
