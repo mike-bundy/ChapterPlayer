@@ -52,6 +52,10 @@ public final class MaskRasterizer: @unchecked Sendable {
             space: CGColorSpaceCreateDeviceGray(),
             bitmapInfo: CGImageAlphaInfo.none.rawValue) else { return nil }
         context.setFillColor(gray: 1, alpha: 1)
+        // Authored points and Viewer handles use a top-left origin. Convert
+        // once at rasterization to Core Image's bottom-left pixel space.
+        context.translateBy(x: 0, y: CGFloat(edge))
+        context.scaleBy(x: 1, y: -1)
         context.addPath(shape.path(in: size))
         context.fillPath()
         guard let cgImage = context.makeImage() else { return nil }
