@@ -69,10 +69,12 @@ final class EffectPanelSurface {
     /// THE SAME CONTRACT AS THE EDITORS AND EXPORT (A-6): unmanaged working
     /// space — the stack operates on the source's display-referred bits.
     private let ciContext: CIContext?
+    private let surfaceColor: VideoSurfaceColor?
 
     private struct Surface {
         let texture: LowLevelTexture
         let resource: TextureResource
+        let encoded: MTLTexture
         var width: Int
         var height: Int
         var entityIdentity: ObjectIdentifier
@@ -82,6 +84,7 @@ final class EffectPanelSurface {
     private var surfaces: [String: Surface] = [:]
     private var outputs: [String: AVPlayerItemVideoOutput] = [:]
     private var lastFrames: [String: CIImage] = [:]
+    private var lastFrameColorSpaces: [String: CGColorSpace] = [:]
     private var inFlight = false
     /// TEST SEAM / the zero-work assertion: composited frames.
     private(set) var compositions = 0
@@ -90,6 +93,7 @@ final class EffectPanelSurface {
         let device = MTLCreateSystemDefaultDevice()
         self.device = device
         self.commandQueue = device?.makeCommandQueue()
+        self.surfaceColor = device.map { VideoSurfaceColor(device: $0) }
         self.ciContext = device.map {
             CIContext(mtlDevice: $0, options: [.cacheIntermediates: false,
                                                .workingColorSpace: NSNull()])
@@ -146,6 +150,7 @@ final class EffectPanelSurface {
                                       isPlaying: source.player.rate > 0.001) {
                 let image = CIImage(cvPixelBuffer: buffer)
                 lastFrames[source.channel] = image
+                lastFrameColorSpaces[source.channel] = VideoSurfaceColor.sourceSpace(for: buffer)
                 mattes[source.occurrenceId] = image
             } else if let held = lastFrames[source.channel] {
                 mattes[source.occurrenceId] = held
@@ -172,6 +177,7 @@ final class EffectPanelSurface {
             if let buffer = pullFrame(channel: job.channel, player: job.player, isPlaying: isPlaying) {
                 input = CIImage(cvPixelBuffer: buffer)
                 lastFrames[job.channel] = input
+                lastFrameColorSpaces[job.channel] = VideoSurfaceColor.sourceSpace(for: buffer)
             } else if let held = lastFrames[job.channel] {
                 // Parked (a freeze, a reverse span, a pause): the last frame
                 // stays composited so a keyed parameter or a dissolve keeps
@@ -200,10 +206,9 @@ final class EffectPanelSurface {
                 // The held frame is scaled onto the incoming extent so a
                 // predecessor of another size still mixes edge to edge.
                 let scaled = Self.fitted(outgoing, to: extent)
-                let mixed = result.image.applyingFilter("CIMix", parameters: [
-                    "inputBackgroundImage": scaled.cropped(to: extent),
-                    "inputAmount": progress,
-                ])
+                let mixed = DissolveBlend.mix(
+                    incoming: result.image, outgoing: scaled,
+                    progress: progress, extent: extent)
                 result = EffectEvaluator.Result(
                     image: mixed, renderedCount: result.renderedCount + 1,
                     unrecognised: result.unrecognised)
@@ -217,7 +222,7 @@ final class EffectPanelSurface {
             else { continue }
             if commandBuffer == nil { commandBuffer = commandQueue.makeCommandBuffer() }
             guard let commandBuffer else { continue }
-            let target = surface.texture.replace(using: commandBuffer)
+            let target = surface.encoded
             // Row order: Core Image is bottom-up, the sampled texture
             // top-down — the same one flip the Mac compositor makes.
             let upright = result.image.transformed(by: CGAffineTransform(scaleX: 1, y: -1)
@@ -226,6 +231,11 @@ final class EffectPanelSurface {
                              commandBuffer: commandBuffer,
                              bounds: CGRect(x: 0, y: 0, width: width, height: height),
                              colorSpace: CGColorSpaceCreateDeviceRGB())
+            surfaceColor?.render(encoded: target,
+                                 sourceSpace: lastFrameColorSpaces[job.channel]
+                                    ?? CGColorSpace(name: CGColorSpace.sRGB)!,
+                                 to: surface.texture.replace(using: commandBuffer),
+                                 in: commandBuffer)
             compositions += 1
             rendered += 1
         }
@@ -267,13 +277,17 @@ final class EffectPanelSurface {
             restore(channel: channel, entity: entity)
         }
         var descriptor = LowLevelTexture.Descriptor()
-        descriptor.pixelFormat = .bgra8Unorm
+        descriptor.pixelFormat = .rgba16Float
         descriptor.width = width
         descriptor.height = height
-        descriptor.textureUsage = [.shaderRead, .shaderWrite]
+        descriptor.textureUsage = [.shaderRead, .shaderWrite, .renderTarget]
+        let encodedDescriptor = MTLTextureDescriptor.texture2DDescriptor(
+            pixelFormat: .bgra8Unorm, width: width, height: height, mipmapped: false)
+        encodedDescriptor.usage = [.shaderRead, .shaderWrite, .renderTarget]
         guard let texture = try? LowLevelTexture(descriptor: descriptor),
-              let resource = try? TextureResource(from: texture) else { return nil }
-        let surface = Surface(texture: texture, resource: resource,
+              let resource = try? TextureResource(from: texture),
+              let encoded = device?.makeTexture(descriptor: encodedDescriptor) else { return nil }
+        let surface = Surface(texture: texture, resource: resource, encoded: encoded,
                               width: width, height: height,
                               entityIdentity: ObjectIdentifier(entity),
                               originals: Self.materials(of: entity))
@@ -283,7 +297,8 @@ final class EffectPanelSurface {
     }
 
     private func bind(_ surface: Surface, to entity: Entity) {
-        var material = UnlitMaterial()
+        var material = UnlitMaterial(applyPostProcessToneMap: false)
+        material.blending = .transparent(opacity: 1.0)
         material.color = .init(texture: .init(surface.resource))
         Self.setMaterials([material], on: entity)
     }
@@ -307,6 +322,7 @@ final class EffectPanelSurface {
     func restore(channel: String, entity: Entity?) {
         guard let surface = surfaces.removeValue(forKey: channel) else { return }
         lastFrames.removeValue(forKey: channel)
+        lastFrameColorSpaces.removeValue(forKey: channel)
         if let entity, ObjectIdentifier(entity) == surface.entityIdentity {
             Self.setMaterials(surface.originals, on: entity)
         }
@@ -317,6 +333,7 @@ final class EffectPanelSurface {
         surfaces.removeValue(forKey: channel)
         outputs.removeValue(forKey: channel)
         lastFrames.removeValue(forKey: channel)
+        lastFrameColorSpaces.removeValue(forKey: channel)
     }
 
     // MARK: - The held outgoing frame
