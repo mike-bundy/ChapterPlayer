@@ -20,6 +20,25 @@ public enum TitleMesh {
 
     public static let defaultExtrusionDepth: Float = 0.02
 
+    /// Mirror of `MaestroKit.TitleGeometryContract.bevelCapHeightFraction`
+    /// / `bevelCeiling`, and the seam test holds the two together.
+    ///
+    /// A chamfer is carved out of the LETTERS, not out of the slab:
+    /// RealityKit walks a straight skeleton inward from each glyph outline,
+    /// and a radius that reaches the middle of a stem collapses the
+    /// wavefront and ABORTS THE PROCESS from C++ — uncatchable here as it
+    /// is in the editor. The old ceiling was `depth / 2`, which knows
+    /// nothing about how thick the letters are; this one is the smaller of
+    /// that slab limit and a measured fraction of the cap height (the
+    /// thinnest face measured, Didot, aborts at 0.94%).
+    public static let bevelCapHeightFraction: Float = 0.006
+
+    public static func bevelCeiling(depth: Float, fontSize: Float) -> Float {
+        let slab = depth > 0 ? depth / 2 : 0.002
+        let glyphs = bevelCapHeightFraction * max(fontSize, 0.0001)
+        return min(slab, glyphs)
+    }
+
     public struct Result {
         public let mesh: MeshResource
         public let materials: [any Material]
@@ -236,8 +255,9 @@ public enum TitleMesh {
         let profile = BevelProfiles.resolve(profileId: spec.bevelProfileId,
                                             segments: spec.bevelSegments)
         if let radius = spec.bevelRadius, radius > 0, profile != .unresolved {
-            let ceiling = max(0.0005, depth > 0 ? depth / 2 : 0.002)
-            extrusion.chamferRadius = min(radius, ceiling) / max(unit, 1e-9)
+            extrusion.chamferRadius = min(radius, bevelCeiling(depth: depth,
+                                                              fontSize: spec.fontSize))
+                / max(unit, 1e-9)
             switch spec.capFill ?? .both {
             case .front: extrusion.chamferMode = .front
             case .back:  extrusion.chamferMode = .back
