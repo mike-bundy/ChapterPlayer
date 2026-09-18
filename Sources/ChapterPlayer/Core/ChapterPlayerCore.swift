@@ -360,6 +360,18 @@ open class ChapterPlayerCore {
     /// teardown to run.
     public var currentImageSkyboxActive: Bool = false
 
+    /// The PLACEMENT of whatever backdrop is mounted — the cue's
+    /// `transform`, resolved. Applied to the skybox shell and to a USDZ
+    /// backdrop alike by `applyBackdropPlacement`, and re-applied after every
+    /// mount because the mounts themselves rewrite the shell's scale.
+    private var currentBackdropTransform: BackdropTransform = .identity
+
+    /// The skybox shell's own transform before any cue placed it, captured
+    /// on first placement. The host may have positioned the shell in its
+    /// scene; a cue's placement composes ON TOP of that and a reset returns
+    /// to it, rather than to an origin the host never authored.
+    private var skyboxRestTransform: Transform?
+
     /// Channel name reserved for the sequence-level immersive backdrop
     /// video. Independent from any per-step `playVideo` channel so
     /// authors can mix the two without clobbering each other (last
@@ -1012,6 +1024,7 @@ open class ChapterPlayerCore {
                         sourceRange: cue?.sourceRange ?? .full,
                         presentation: sequence.presentation,
                         effects: cue?.effects,
+                        transform: cue?.resolvedTransform ?? .identity,
                         sequenceId: sequence.id)
     }
 
@@ -1019,11 +1032,43 @@ open class ChapterPlayerCore {
         _ spec: SequenceBackdrop?,
         sourceRange: MediaSourceRange,
         presentation: SequencePresentation,
-        effects: [EffectInstance]?
+        effects: [EffectInstance]?,
+        transform: BackdropTransform
     ) {
         presentBackdrop(spec, sourceRange: sourceRange,
                         presentation: presentation, effects: effects,
+                        transform: transform,
                         sequenceId: activeSequenceId ?? "")
+    }
+
+    /// Move the world. Position and rotation compose on the shell's rest
+    /// transform; scale is written absolutely because the mounts already
+    /// write it absolutely (the image path's interior mirror, the graded
+    /// video path's mirrored mesh), and the mirror is preserved by sign.
+    ///
+    /// A graded video shell re-mirrors itself when its surface mounts,
+    /// which can land after this call — that shell keeps the cue's position
+    /// and rotation and returns to unit scale. Scale on an immersive plate
+    /// is close to meaningless at its radius; the one that matters, USDZ,
+    /// is written directly.
+    private func applyBackdropPlacement() {
+        let placement = currentBackdropTransform
+        if let skybox = videoManager.videoEntityRegistry["skybox"] {
+            let rest = skyboxRestTransform ?? {
+                let rest = skybox.transform
+                skyboxRestTransform = rest
+                return rest
+            }()
+            skybox.position = rest.translation + placement.positionVector
+            skybox.orientation = rest.rotation * placement.orientation
+            let mirror: SIMD3<Float> = skybox.scale.x < 0 ? [-1, 1, 1] : .one
+            skybox.scale = placement.scaleVector * mirror
+        }
+        if let usdz = currentBackdropUSDZ {
+            usdz.position = placement.positionVector
+            usdz.orientation = placement.orientation
+            usdz.scale = placement.scaleVector
+        }
     }
 
     /// Fade whatever backdrop is mounted. Both slots are written because either
@@ -1046,8 +1091,13 @@ open class ChapterPlayerCore {
         sourceRange: MediaSourceRange,
         presentation sequencePresentation: SequencePresentation,
         effects: [EffectInstance]?,
+        transform: BackdropTransform,
         sequenceId: String
     ) {
+        // The placement is NOT part of the replay signature below: the same
+        // plate turned differently is the same mount, moved — so a cue that
+        // only re-places the world takes the fast path and is simply moved.
+        currentBackdropTransform = transform
         logger.info("[backdrop] present sequence=\(sequenceId) presentation=\(String(describing: sequencePresentation)) backdrop=\(String(describing: backdropSpec))")
         // REPLAY FAST PATH — the single most important rule this pipeline
         // has learned on device: re-attaching a VideoPlayerComponent after
@@ -1080,6 +1130,7 @@ open class ChapterPlayerCore {
                 player.seek(to: CMTime(seconds: sourceRange.resolvedIn, preferredTimescale: 600),
                             toleranceBefore: .zero, toleranceAfter: .zero)
                 player.play()
+                applyBackdropPlacement()
                 logger.info("[backdrop] REPLAY fast path: identical backdrop, live binding verified — seek+play, component untouched")
                 return
             }
@@ -1096,6 +1147,10 @@ open class ChapterPlayerCore {
 
         // Backdrops only make sense for immersive / mixed sequences.
         Self.lastVideoBackdropSignature = nil
+        // Nothing mounted yet, or nothing at all: the shell returns to its
+        // rest before anything new is placed on it.
+        currentBackdropTransform = backdropSpec == nil ? .identity : transform
+        applyBackdropPlacement()
         guard sequencePresentation != .windowed, let backdrop = backdropSpec else {
             logger.info("[backdrop] nothing to apply (presentation=\(String(describing: sequencePresentation)), spec=\(backdropSpec == nil ? "nil" : "set"))")
             return
@@ -1130,6 +1185,7 @@ open class ChapterPlayerCore {
                 // keep its component and say the stack is unrendered.
                 effects: effects
             ))
+            applyBackdropPlacement()
 
         case .image(let file, let field, let radius):
             // Static equirectangular image skybox. Same occlusion
@@ -1185,6 +1241,7 @@ open class ChapterPlayerCore {
                     self.currentBackdropUSDZ?.removeFromParent()
                     liveRoot.addChild(entity)
                     self.currentBackdropUSDZ = entity
+                    self.applyBackdropPlacement()
                 } catch {
                     logger.warning("Failed to load backdrop USDZ '\(assetId)': \(String(describing: error))")
                 }
@@ -1253,6 +1310,8 @@ open class ChapterPlayerCore {
                 skybox.scale = SIMD3<Float>(-1, 1, 1)
                 skybox.isEnabled = true
                 self.currentImageSkyboxActive = true
+                // The cue's placement, on top of the mirror just written.
+                self.applyBackdropPlacement()
             } catch {
                 logger.warning("Failed to load backdrop image '\(file)': \(String(describing: error))")
             }

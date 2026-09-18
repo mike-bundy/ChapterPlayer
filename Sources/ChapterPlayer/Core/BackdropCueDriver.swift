@@ -51,7 +51,11 @@ public protocol BackdropCuePresenting: AnyObject {
         /// FL-09: the cue's own Effect stack. Carried to the presenter
         /// because the DECISION about whether a backdrop can be graded is
         /// about how it is mounted, and only the presenter mounts it.
-        effects: [EffectInstance]?
+        effects: [EffectInstance]?,
+        /// The cue's placement, resolved — identity when the author never
+        /// moved the world. Rides every present so the presenter never has
+        /// to remember a previous cue's placement.
+        transform: BackdropTransform
     )
 
     /// Set the mounted backdrop's opacity, 0…1. Called at tick rate during a
@@ -150,7 +154,8 @@ public final class BackdropCueDriver {
         if tearDown {
             activeCueId = nil
             presenter?.presentBackdrop(nil, sourceRange: .full,
-                                       presentation: presentation, effects: nil)
+                                       presentation: presentation, effects: nil,
+                                       transform: .identity)
         }
     }
 
@@ -215,7 +220,8 @@ public final class BackdropCueDriver {
                 showing?.spec.flatMap { SequenceBackdrop($0) },
                 sourceRange: showing?.sourceRange ?? .full,
                 presentation: presentation,
-                effects: showing?.effects
+                effects: showing?.effects,
+                transform: showing?.resolvedTransform ?? .identity
             )
         }
 
