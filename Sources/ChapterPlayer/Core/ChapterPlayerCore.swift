@@ -501,8 +501,12 @@ open class ChapterPlayerCore {
         interactions.perform = { [weak self] actions in
             self?.sequenceEngine.performActions(actions)
         }
+        // The LIVE document where a host has one. An editor's Interactions
+        // are authored after load; arming from the load-time snapshot armed
+        // the Chapter as opened, so an Interaction made this session never
+        // answered a tap until the Chapter was reopened.
         interactions.documentProvider = { [weak self] in
-            self?.loadedExperience?.document
+            self?.currentDocumentForStyling()
         }
 
         // THE GATE, AS THE SECOND CONSUMER OF ONE SEMANTIC ACTIVATION.

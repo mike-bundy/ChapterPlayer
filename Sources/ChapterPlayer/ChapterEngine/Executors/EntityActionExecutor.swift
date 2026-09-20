@@ -717,6 +717,15 @@ public final class EntityActionExecutor: EntityActionExecutorProtocol {
         }
     }
 
+    /// One placement, edited while its Sequence is current. An editor host
+    /// moves the entity itself; this keeps the BASELINE in step, so a reset
+    /// that does not pass through a fresh Sequence entry returns the object to
+    /// where it was just put rather than to the placement it had at entry.
+    /// `nil` clears the placement (the Chapter rest applies again).
+    public func setRestPlacement(_ placement: TransformData?, for name: String) {
+        sequenceRestOverrides[name] = placement
+    }
+
     /// THE AUTHORED REST — this Sequence's local placement when it has one,
     /// else the registration-time transform (the Chapter-global rest).
     ///
