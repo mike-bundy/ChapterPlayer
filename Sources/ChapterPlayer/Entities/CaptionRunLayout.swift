@@ -85,8 +85,7 @@ enum CaptionRunLayout {
 
     static func glyphSpans(spec: TextSpec, runs: [CaptionStyleRun],
                            styleRuns: [TitleMesh.StyleRun],
-                           mesh: MeshResource) -> [GlyphSpan] {
-        let contents = mesh.contents
+                           contents: MeshResource.Contents) -> [GlyphSpan] {
         var localX: [String: (Float, Float)] = [:]
         for model in contents.models {
             var lo: Float = .greatestFiniteMagnitude, hi: Float = -.greatestFiniteMagnitude
@@ -188,15 +187,15 @@ enum CaptionRunLayout {
 
     // MARK: - Recoloring by slot
 
-    static func recolored(_ mesh: MeshResource, spans: [GlyphSpan],
-                           slotByRun: [Int: UInt32]) throws -> MeshResource {
+    static func recolored(_ source: MeshResource.Contents, spans: [GlyphSpan],
+                           slotByRun: [Int: UInt32]) -> MeshResource.Contents {
         var slotByInstance: [String: UInt32] = [:]
         for span in spans {
             guard let run = span.runIndex, let slot = slotByRun[run] else { continue }
             for id in span.instanceIDs { slotByInstance[id] = slot }
         }
-        guard !slotByInstance.isEmpty else { return mesh }
-        var contents = mesh.contents
+        guard !slotByInstance.isEmpty else { return source }
+        var contents = source
         var models = contents.models
         var instances = MeshInstanceCollection()
         for instance in contents.instances {
@@ -222,14 +221,14 @@ enum CaptionRunLayout {
         }
         contents.models = models
         contents.instances = instances
-        return try MeshResource.generate(from: contents)
+        return contents
     }
 
     // MARK: - The outline halo
 
-    static func outlined(_ mesh: MeshResource, growBy factor: Float) throws -> MeshResource {
-        guard factor > 1.0001 else { return mesh }
-        var contents = mesh.contents
+    static func outlined(_ source: MeshResource.Contents, growBy factor: Float) -> MeshResource.Contents {
+        guard factor > 1.0001 else { return source }
+        var contents = source
         var models = MeshModelCollection()
         for model in contents.models {
             var lo = SIMD3<Float>(repeating: .greatestFiniteMagnitude)
@@ -253,6 +252,6 @@ enum CaptionRunLayout {
             models.insert(grown)
         }
         contents.models = models
-        return try MeshResource.generate(from: contents)
+        return contents
     }
 }

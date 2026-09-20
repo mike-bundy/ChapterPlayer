@@ -113,7 +113,15 @@ public struct LiveMediaResolver: MediaResolver {
     public func url(for assetId: String, kind: MediaKind) -> URL? {
         // Try exact id match first.
         if let cached = cachedURLByID[assetId] { return cached }
-        if let streaming = streamingURLByID[assetId] { return streaming }
+        // A STREAMING URL IS ONLY AN ANSWER FOR A PLAYER. `Entity(contentsOf:)`,
+        // `TextureResource(contentsOf:)` and the font loader need a FILE; an
+        // `http://` URL handed to them throws, the failure is swallowed at the
+        // call site, and the object stays a gray plate with a resolver that
+        // claims it answered. For those kinds "not here" is the honest answer:
+        // it is what lets the loader record the object as unresolved and
+        // retry it when the file lands.
+        let canStream = kind == .video || kind == .audio
+        if canStream, let streaming = streamingURLByID[assetId] { return streaming }
 
         // Fuzzy: callers often pass the file field minus extension. Fall back
         // to matching on basename without extension.
@@ -121,7 +129,8 @@ public struct LiveMediaResolver: MediaResolver {
         if let match = cachedURLByID.first(where: { ($0.key as NSString).deletingPathExtension == stem }) {
             return match.value
         }
-        if let match = streamingURLByID.first(where: { ($0.key as NSString).deletingPathExtension == stem }) {
+        if canStream,
+           let match = streamingURLByID.first(where: { ($0.key as NSString).deletingPathExtension == stem }) {
             return match.value
         }
         return nil
@@ -230,23 +239,43 @@ public struct LiveMediaResolver: MediaResolver {
         into cacheRoot: URL,
         progress: LivePrefetchProgress?
     ) async -> DownloadResult {
-        do {
-            let cached = try await downloadIfNeeded(entry: entry, from: url, into: cacheRoot, progress: progress)
-            return .success(id: entry.id, url: cached)
-        } catch {
-            mediaLogger.warning("prefetch failed for \(entry.id): \(error.localizedDescription); will stream as fallback")
-            // SHA-prefixed cache-buster so AVPlayer treats post-edit
-            // files as fresh assets.
-            var components = URLComponents(url: url, resolvingAgainstBaseURL: false)
-            if let sha = entry.sha256 {
-                components?.queryItems = [URLQueryItem(name: "v", value: String(sha.prefix(12)))]
+        // THREE ATTEMPTS, WITH A PAUSE. There was exactly one, so a single
+        // blip on a 300 MB model was permanent for the session. A 404 is
+        // retried too: on the Mac a project that has just opened publishes
+        // its asset map a beat after its document, and an external Source
+        // resolves a beat after that.
+        var lastError: Error = LiveDownloadError.unknown
+        for attempt in 1...maxAttempts {
+            do {
+                let cached = try await downloadIfNeeded(entry: entry, from: url, into: cacheRoot, progress: progress)
+                if attempt > 1 { mediaLogger.info("prefetch recovered \(entry.id, privacy: .public) on attempt \(attempt)") }
+                return .success(id: entry.id, url: cached)
+            } catch {
+                lastError = error
+                mediaLogger.warning("prefetch attempt \(attempt)/\(maxAttempts) failed for \(entry.id, privacy: .public): \(String(describing: error), privacy: .public)")
+                if Task.isCancelled { break }
+                if attempt < maxAttempts {
+                    try? await Task.sleep(nanoseconds: UInt64(retryPause * Double(attempt) * 1_000_000_000))
+                }
             }
-            await MainActor.run {
-                progress?.lastError = "Could not fetch \(entry.id): \(error.localizedDescription)"
-            }
-            return .failure(id: entry.id, streamingURL: components?.url, error: error)
         }
+        let error = lastError
+        // SHA-prefixed cache-buster so AVPlayer treats post-edit
+        // files as fresh assets.
+        var components = URLComponents(url: url, resolvingAgainstBaseURL: false)
+        if let sha = entry.sha256 {
+            components?.queryItems = [URLQueryItem(name: "v", value: String(sha.prefix(12)))]
+        }
+        await MainActor.run {
+            progress?.lastError = "Could not fetch \(entry.id): \(error.localizedDescription)"
+        }
+        return .failure(id: entry.id, streamingURL: components?.url, error: error)
     }
+
+    public static let maxAttempts = 3
+    /// Seconds before the second attempt; the third waits twice as long.
+    /// A variable so a test does not have to sit through it.
+    nonisolated(unsafe) public static var retryPause: Double = 1.5
 
     private enum DownloadResult {
         case success(id: String, url: URL)
@@ -285,7 +314,7 @@ public struct LiveMediaResolver: MediaResolver {
         // the progress bar reflects the cache hit.
         if let attrs = try? FileManager.default.attributesOfItem(atPath: dest.path),
            let size = (attrs[FileAttributeKey.size] as? NSNumber)?.int64Value,
-           size == (entry.byteSize ?? size) {
+           size > 0, size == (entry.byteSize ?? size) {
             if let bytes = entry.byteSize {
                 await MainActor.run { progress?.addBytes(bytes) }
             }
@@ -300,8 +329,29 @@ public struct LiveMediaResolver: MediaResolver {
             progress: progress
         )
 
-        try? FileManager.default.removeItem(at: dest)
-        try FileManager.default.moveItem(at: tempURL, to: dest)
+        // VERIFY BEFORE IT BECOMES THE ASSET. Whatever landed used to be
+        // moved into the cache unconditionally, so a truncated body was the
+        // asset from then on, and so was a 404's 24-byte "Not Found: …"
+        // (the downloader now refuses those by status, see below).
+        let landed = (try? FileManager.default.attributesOfItem(atPath: tempURL.path)[.size] as? NSNumber)?.int64Value ?? -1
+        if let expected = entry.byteSize, expected > 0, landed != expected {
+            try? FileManager.default.removeItem(at: tempURL)
+            throw LiveDownloadError.sizeMismatch(expected: expected, landed: landed)
+        }
+        guard landed > 0 else {
+            try? FileManager.default.removeItem(at: tempURL)
+            throw LiveDownloadError.sizeMismatch(expected: entry.byteSize ?? -1, landed: landed)
+        }
+        mediaLogger.info("prefetched \(entry.id, privacy: .public) \(landed) bytes")
+
+        // REPLACE, never remove-then-move: a scene already adopted may be
+        // loading from `dest` while a later resync refreshes it, and a gap
+        // where the file does not exist is a load that fails for good.
+        if FileManager.default.fileExists(atPath: dest.path) {
+            _ = try FileManager.default.replaceItemAt(dest, withItemAt: tempURL)
+        } else {
+            try FileManager.default.moveItem(at: tempURL, to: dest)
+        }
         return dest
     }
 
@@ -336,7 +386,7 @@ private final class LivePrefetchDownloader: NSObject, URLSessionDownloadDelegate
         let downloader = LivePrefetchDownloader(progress: progress)
         return try await withCheckedThrowingContinuation { continuation in
             downloader.continuation = continuation
-            let config = URLSessionConfiguration.default
+            let config = LiveMediaResolver.makeSessionConfiguration()
             config.requestCachePolicy = .reloadIgnoringLocalAndRemoteCacheData
             // Plenty of headroom for our 1GB+ AIVU files on a slow LAN.
             config.timeoutIntervalForRequest = 300
@@ -381,6 +431,18 @@ private final class LivePrefetchDownloader: NSObject, URLSessionDownloadDelegate
         // `location` is a system-managed temp file that gets cleaned up
         // when this delegate method returns — move it into our own temp
         // directory before resuming the continuation.
+        // A DOWNLOAD TASK TREATS 404 AND 500 AS SUCCESS and hands over the
+        // error page as the file. Nothing read the status, so the Mac's
+        // "Not Found: shot001.usdz" was cached AS shot001.usdz, reported as
+        // a success, and logged nowhere: the object stayed a gray plate for
+        // good while the progress bar read 100%.
+        if let http = downloadTask.response as? HTTPURLResponse,
+           !(200...299).contains(http.statusCode) {
+            continuation?.resume(throwing: LiveDownloadError.httpStatus(http.statusCode))
+            continuation = nil
+            session.finishTasksAndInvalidate()
+            return
+        }
         let kept = FileManager.default.temporaryDirectory
             .appendingPathComponent(UUID().uuidString)
         do {
@@ -406,4 +468,25 @@ private final class LivePrefetchDownloader: NSObject, URLSessionDownloadDelegate
         continuation = nil
         session.finishTasksAndInvalidate()
     }
+}
+
+/// Why a prefetch did not produce a usable file.
+public enum LiveDownloadError: Error, Equatable, CustomStringConvertible {
+    case httpStatus(Int)
+    case sizeMismatch(expected: Int64, landed: Int64)
+    case unknown
+
+    public var description: String {
+        switch self {
+        case .httpStatus(let code): return "the Mac answered HTTP \(code)"
+        case .sizeMismatch(let expected, let landed): return "\(landed) bytes arrived, \(expected) expected"
+        case .unknown: return "unknown"
+        }
+    }
+}
+
+extension LiveMediaResolver {
+    /// The session configuration every prefetch download uses. Replaceable
+    /// so a test can answer the requests with a `URLProtocol` stub.
+    nonisolated(unsafe) public static var makeSessionConfiguration: () -> URLSessionConfiguration = { .default }
 }

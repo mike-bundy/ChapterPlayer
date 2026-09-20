@@ -42,6 +42,17 @@ public enum TitleMesh {
     public struct Result {
         public let mesh: MeshResource
         public let materials: [any Material]
+        /// The mesh as INSTANCED DATA, one instance per glyph occurrence,
+        /// with the anchor already applied. `mesh` is flat (see `realize`),
+        /// so anything that needs to find a glyph reads this.
+        public let contents: MeshResource.Contents
+
+        public init(mesh: MeshResource, materials: [any Material],
+                    contents: MeshResource.Contents? = nil) {
+            self.mesh = mesh
+            self.materials = materials
+            self.contents = contents ?? mesh.contents
+        }
     }
 
     /// Mirror of `MaestroKit.TitleGeometry.StyleRun`: a per-range face
@@ -288,9 +299,12 @@ public enum TitleMesh {
         // the geometry exactly as the editors bake it. Absent ⇒ baseline,
         // the extruder's own layout, so older titles do not move.
         let offsetY = anchorOffsetY(alignment: spec.alignmentY, bounds: settled)
-        let mesh = try translated(laidOut, by: SIMD3<Float>(0, frameShift + offsetY, 0))
+        let shift = SIMD3<Float>(0, frameShift + offsetY, 0)
+        let contents = translatedContents(laidOut.contents, by: shift)
+        let mesh = simd_length(shift) > 1e-7 ? try realize(contents) : laidOut
         return Result(mesh: mesh,
-                      materials: materials(for: spec, slotCount: slotCount))
+                      materials: materials(for: spec, slotCount: slotCount),
+                      contents: contents)
     }
 
     /// Mirror of `MaestroKit.TitleGeometryContract.anchorOffsetY`.
@@ -308,7 +322,21 @@ public enum TitleMesh {
     @MainActor
     static func translated(_ mesh: MeshResource, by offset: SIMD3<Float>) throws -> MeshResource {
         guard simd_length(offset) > 1e-7 else { return mesh }
-        var contents = mesh.contents
+        return try realize(translatedContents(mesh.contents, by: offset))
+    }
+
+    // MARK: - Contents are data; a mesh is made ONCE, from descriptors
+
+    /// `contents` moved by `offset`. PURE DATA: nothing here reaches the
+    /// render server. The extruder emits one model per distinct glyph outline
+    /// and one INSTANCE per occurrence whose transform is the pen position;
+    /// moving the instances keeps every glyph's local geometry intact (the
+    /// run layout measures pen positions), and contents with no instances
+    /// move their vertices.
+    static func translatedContents(_ contents: MeshResource.Contents,
+                                          by offset: SIMD3<Float>) -> MeshResource.Contents {
+        guard simd_length(offset) > 1e-7 else { return contents }
+        var contents = contents
         if contents.instances.count > 0 {
             var instances = MeshInstanceCollection()
             for instance in contents.instances {
@@ -318,7 +346,7 @@ public enum TitleMesh {
                                                        at: transform))
             }
             contents.instances = instances
-            return try MeshResource.generate(from: contents)
+            return contents
         }
         var models = MeshModelCollection()
         for model in contents.models {
@@ -332,7 +360,60 @@ public enum TitleMesh {
             models.insert(moved)
         }
         contents.models = models
-        return try MeshResource.generate(from: contents)
+        return contents
+    }
+
+    /// THE ONE PLACE EDITED TEXT CONTENTS BECOME A MESH.
+    ///
+    /// NEVER `MeshResource.generate(from: contents)` for extruded text. On
+    /// visionOS 27 that route crashes the RENDER SERVER, not the app:
+    /// `backboardd` traps in `DRValidateIndices` decoding the instanced
+    /// multi-buffer payload (`REMultiBufferMeshPayload`), although every
+    /// index in the contents is valid, and every app on the device goes down
+    /// with it. Found in the Simulator on 2026-09-19: every caption and every
+    /// anchored Title took that route. Rebuilding the parts from plain data
+    /// and going through `Contents` again crashes identically; flat
+    /// `MeshDescriptor`s, with each instance's transform baked in, do not.
+    @MainActor
+    static func realize(_ contents: MeshResource.Contents) throws -> MeshResource {
+        var descriptors: [MeshDescriptor] = []
+        func append(_ model: MeshResource.Model, transform: simd_float4x4, name: String) {
+            let rotation = simd_float3x3(SIMD3(transform.columns.0.x, transform.columns.0.y, transform.columns.0.z),
+                                         SIMD3(transform.columns.1.x, transform.columns.1.y, transform.columns.1.z),
+                                         SIMD3(transform.columns.2.x, transform.columns.2.y, transform.columns.2.z))
+            for (index, part) in model.parts.enumerated() {
+                guard let indices = part.triangleIndices?.elements, !indices.isEmpty else { continue }
+                var descriptor = MeshDescriptor(name: "\(name)#\(index)")
+                descriptor.positions = MeshBuffers.Positions(part.positions.elements.map {
+                    let p = transform * SIMD4<Float>($0, 1)
+                    return SIMD3<Float>(p.x, p.y, p.z)
+                })
+                if let normals = part.normals {
+                    descriptor.normals = MeshBuffers.Normals(normals.elements.map {
+                        let n = rotation * $0
+                        let length = simd_length(n)
+                        return length > 1e-9 ? n / length : $0
+                    })
+                }
+                if let uvs = part.textureCoordinates {
+                    descriptor.textureCoordinates = MeshBuffers.TextureCoordinates(uvs.elements)
+                }
+                descriptor.primitives = .triangles(indices)
+                descriptor.materials = .allFaces(UInt32(max(part.materialIndex, 0)))
+                descriptors.append(descriptor)
+            }
+        }
+        if contents.instances.count > 0 {
+            for instance in contents.instances {
+                guard let model = contents.models[instance.model] else { continue }
+                append(model, transform: instance.transform, name: instance.id)
+            }
+        } else {
+            for model in contents.models {
+                append(model, transform: matrix_identity_float4x4, name: model.id)
+            }
+        }
+        return try MeshResource.generate(from: descriptors)
     }
 
     static func nsAlignment(_ alignment: TextAlignmentX) -> NSTextAlignment {

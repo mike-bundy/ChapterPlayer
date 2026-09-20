@@ -88,7 +88,7 @@ public enum CaptionBlock {
         var mesh = built.mesh
         let needsLayout = runs.contains { $0.color != nil || $0.underline == true }
         let layout = needsLayout
-            ? CaptionRunLayout.glyphSpans(spec: spec, runs: runs, styleRuns: styled, mesh: mesh)
+            ? CaptionRunLayout.glyphSpans(spec: spec, runs: runs, styleRuns: styled, contents: built.contents)
             : []
         var slotByRun: [Int: UInt32] = [:]
         for (index, run) in runs.enumerated() {
@@ -97,7 +97,9 @@ public enum CaptionBlock {
             materials.append(unlit(color))
         }
         if !slotByRun.isEmpty {
-            mesh = try CaptionRunLayout.recolored(mesh, spans: layout, slotByRun: slotByRun)
+            // Pure data until the one realization (see `realize`).
+            mesh = try TitleMesh.realize(
+                CaptionRunLayout.recolored(built.contents, spans: layout, slotByRun: slotByRun))
         }
 
         var underlines: [Underline] = []
@@ -134,7 +136,8 @@ public enum CaptionBlock {
         if let outline = style.outlineColor, outline.a > 0.001,
            let width = style.outlineWidth, width > 0.0001 {
             let grow = 1 + (2 * width) / max(spec.fontSize, 0.0001)
-            outlineMesh = try CaptionRunLayout.outlined(built.mesh, growBy: grow)
+            outlineMesh = try TitleMesh.realize(
+                CaptionRunLayout.outlined(built.contents, growBy: grow))
             outlineMaterial = unlit(outline)
         }
 
