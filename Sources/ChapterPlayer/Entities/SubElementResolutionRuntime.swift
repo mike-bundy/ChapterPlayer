@@ -33,23 +33,48 @@ public enum SubElementResolutionRuntime {
         RuntimeSubElementRestComponent.registerComponent()
     }()
 
+    /// Resolve one stored prim path against a loaded subtree. The walk is
+    /// `MaestroKit.SubElementResolution.resolve`, component for component:
+    /// the two used to differ, and the difference was live. The player
+    /// resolves under the Object's CONTAINER (named by object id), with the
+    /// loaded stage one level down, so a stage root RealityKit left
+    /// anonymous resolved nothing, and a root that carried the first
+    /// component's name "resolved" to the whole model with the full path as
+    /// residual - a part's visibility then hid the Object.
     public static func resolve(_ primPath: String, under root: Entity) -> Resolution? {
         let components = primPath.split(separator: "/").map(String.init)
         guard !components.isEmpty else { return nil }
         var cursor = root
         var consumed = 0
-        for component in components {
+        while consumed < components.count {
+            let component = components[consumed]
+
+            // The cursor may BE the prim (the root prim, when the loaded
+            // entity carries its name). Anonymous containers around a loaded
+            // stage have no USD prim identity, so they are transparent to a
+            // prim path - but only while the anonymous route is unique.
+            if cursor.name == component {
+                consumed += 1
+                continue
+            }
             let matches = cursor.children.filter { $0.name == component }
             if matches.count == 1 {
                 cursor = matches[0]
                 consumed += 1
             } else if matches.count > 1 {
+                // Ambiguous by NAME at this level - refuse to guess.
+                return nil
+            } else if cursor.children.filter({ $0.name.isEmpty }).count == 1,
+                      let anonymous = cursor.children.first(where: { $0.name.isEmpty }) {
+                cursor = anonymous
+            } else if cursor.children.contains(where: { $0.name.isEmpty }) {
+                // Two anonymous routes are as ambiguous as duplicate names.
                 return nil
             } else {
                 break
             }
         }
-        guard consumed > 0 || root.name == components.first else { return nil }
+        guard consumed > 0 else { return nil }
         return Resolution(entity: cursor,
                           residualPath: components.dropFirst(consumed)
                             .joined(separator: "/"))

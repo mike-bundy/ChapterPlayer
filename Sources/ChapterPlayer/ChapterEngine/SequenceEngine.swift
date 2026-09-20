@@ -60,6 +60,9 @@ public final class SequenceEngine {
     /// a Step's immediate actions, `at` for a scheduled one. Read by the
     /// video stamp so an occurrence knows where it starts.
     private var currentFiringOffset: TimeInterval = 0
+    /// The Sequence time a seek is landing on, while its late actions are
+    /// still being fired; nil the rest of the time. See `alignToSeek`.
+    private var catchingUpTo: TimeInterval?
     public private(set) var isPaused: Bool = false
     public private(set) var isPlaying: Bool = false
 
@@ -472,6 +475,7 @@ public final class SequenceEngine {
         subElementKeyDriver?.stop(tearDown: fullReset)
         isPaused = false
         isPlaying = false
+        catchingUpTo = nil
         stepPausedDuration = 0
         sequencePausedDuration = 0
         pauseStartTime = nil
@@ -577,19 +581,7 @@ public final class SequenceEngine {
 
         logger.info("Jumping to step index \(index): \(sequence.steps[index].id)")
 
-        playTask?.cancel()
-        playTask = nil
-        cancelScheduledActions()
-        resumeIfPaused()
-        clearGate()
-        isPaused = false
-        stepPausedDuration = 0
-        sequencePausedDuration = 0
-        pauseStartTime = nil
-
-        audioExecutor?.stopAll()
-        videoExecutor?.stopAll()
-        cleanup(resetEntities: true)
+        tearDownForRelocation()
 
         var elapsed: TimeInterval = 0
         for i in 0..<index {
@@ -607,16 +599,252 @@ public final class SequenceEngine {
         startPlayTask(sequence: sequence, startIndex: index)
     }
 
+    /// What a move WITHIN the running Sequence tears down, said once for
+    /// `jumpToStep` and `seek(toSequenceTime:)`: the step loop, any wait it
+    /// was parked in, every sounding channel, and the scene back to its
+    /// canonical defaults. Narrower than `stop()` on purpose — the Sequence
+    /// Visit continues, so interactions, Explore regions and the cue drivers
+    /// are not torn down here.
+    private func tearDownForRelocation() {
+        playTask?.cancel()
+        playTask = nil
+        cancelScheduledActions()
+        resumeIfPaused()
+        clearGate()
+        isPaused = false
+        stepPausedDuration = 0
+        sequencePausedDuration = 0
+        pauseStartTime = nil
+
+        catchingUpTo = nil
+
+        audioExecutor?.stopAll()
+        videoExecutor?.stopAll()
+        cleanup(resetEntities: true)
+    }
+
+    /// Fire one action from an EARLIER Segment as part of a seek.
+    ///
+    /// The ordinary dispatch, minus the two things that are events rather
+    /// than state. A `navigate` the audience had already passed did not take
+    /// them away — they are here — and replaying it would leave the Sequence
+    /// being sought in. A spark burst is a one-shot that ended long ago.
+    ///
+    /// `setStoryState` IS replayed: a later story-condition gate waits on
+    /// what an earlier Segment remembered, and a seek past the Segment that
+    /// set it would otherwise park the story for good.
+    private func preFire(_ action: StepAction) {
+        switch action {
+        case .navigate, .startSparkBurst:
+            return
+        default:
+            // Synchronous on purpose: `executeAction` has no async case today
+            // and falls through to this same dispatch.
+            executeActionSync(action)
+        }
+    }
+
+    /// Move a video that a seek started LATE onto the media time the seek
+    /// implies. Called from the one place a video play is dispatched, so the
+    /// earlier Segments' pre-fire and the target Segment's first due-check
+    /// cannot disagree; outside a seek `catchingUpTo` is nil and this does
+    /// nothing.
+    ///
+    /// Plain occurrences only. A retimed one is driven from the authored
+    /// clock by its own surface and needs no help; a looping one would need
+    /// the media's length, which the engine never has.
+    private func alignToSeek(_ video: VideoAction) {
+        guard let seekTime = catchingUpTo, let (_, start) = firingStep,
+              video.retime?.isIdentity ?? true, !video.loop else { return }
+        let into = seekTime - (start + currentFiringOffset)
+        guard into > 0 else { return }
+        videoExecutor?.seek(channel: video.channel, to: (video.sourceIn ?? 0) + into)
+    }
+
+    /// The media plays a seek must NOT start, as positions in the pre-fire
+    /// order (every earlier Segment's immediate actions, then its scheduled
+    /// ones in fire order).
+    ///
+    /// A play that the same channel later stops or replaces, still before
+    /// the seek time, leaves nothing behind — but firing it anyway spins up a
+    /// player and sounds a first buffer before the stop lands. The target
+    /// Segment's own actions up to the offset count as "later" here, because
+    /// the step loop fires them immediately after.
+    static func supersededMediaPlays(before target: (index: Int, offset: TimeInterval),
+                                     in sequence: SequenceDefinition) -> Set<Int> {
+        var lastAudioPlay: [String: Int] = [:]
+        var lastVideoPlay: [String: Int] = [:]
+        var superseded: Set<Int> = []
+        var position = 0
+
+        func visit(_ action: StepAction, counted: Bool) {
+            switch action {
+            case .playAudio(let audio):
+                if let earlier = lastAudioPlay[audio.channel] { superseded.insert(earlier) }
+                lastAudioPlay[audio.channel] = counted ? position : nil
+            case .stopAudio(let channel):
+                if let earlier = lastAudioPlay.removeValue(forKey: channel) { superseded.insert(earlier) }
+            case .playVideo(let video):
+                if let earlier = lastVideoPlay[video.channel] { superseded.insert(earlier) }
+                lastVideoPlay[video.channel] = counted ? position : nil
+            case .prepareVideo(let video):
+                // A preheat is for a play still to come. Track it like a
+                // play so one whose play has already been and gone is dropped.
+                if let earlier = lastVideoPlay[video.channel] { superseded.insert(earlier) }
+                lastVideoPlay[video.channel] = counted ? position : nil
+            case .stopVideo(let channel):
+                if let earlier = lastVideoPlay.removeValue(forKey: channel) { superseded.insert(earlier) }
+            default:
+                break
+            }
+        }
+
+        for index in 0..<target.index {
+            let step = sequence.steps[index]
+            for action in step.actions + scheduledInFireOrder(step).map(\.action) {
+                visit(action, counted: true)
+                position += 1
+            }
+        }
+        if sequence.steps.indices.contains(target.index) {
+            let step = sequence.steps[target.index]
+            let due = step.actions
+                + scheduledInFireOrder(step).filter { $0.at <= target.offset }.map(\.action)
+            for action in due { visit(action, counted: false) }
+        }
+        return superseded
+    }
+
     public func restart() {
         guard let sequence = currentSequence else { return }
         play(sequence: sequence)
+    }
+
+    // MARK: - Seek
+
+    /// Where a Sequence time lands: the Segment that contains it and the
+    /// offset into that Segment. Half-open, so a boundary belongs to the
+    /// Segment that FOLLOWS it — the same rule Explore regions use. A time
+    /// at or past the Sequence's end lands at the END of the last Segment, so
+    /// everything authored has fired and the completion follows naturally.
+    public static func seekTarget(for time: TimeInterval,
+                                  in sequence: SequenceDefinition) -> (index: Int, offset: TimeInterval)? {
+        guard !sequence.steps.isEmpty else { return nil }
+        let clamped = max(0, time)
+        var start: TimeInterval = 0
+        for (index, step) in sequence.steps.enumerated() {
+            if clamped < start + step.duration { return (index, clamped - start) }
+            start += step.duration
+        }
+        let last = sequence.steps.count - 1
+        return (last, sequence.steps[last].duration)
+    }
+
+    /// A Segment's scheduled actions in the order they fire: by time, ties
+    /// broken by authored order. The step loop and the seek pre-fire both
+    /// read this, so a seek cannot replay a Segment in a different order than
+    /// playing through it would have.
+    static func scheduledInFireOrder(_ step: StepDefinition) -> [ScheduledAction] {
+        step.scheduledActions
+            .enumerated()
+            .sorted { a, b in
+                a.element.at != b.element.at ? a.element.at < b.element.at
+                                             : a.offset < b.offset
+            }
+            .map(\.element)
+    }
+
+    /// SEEK TO A TIME, NOT TO A BOUNDARY.
+    ///
+    /// `jumpToStep` can only land on a Segment's start, and it lands there
+    /// with a freshly reset scene — everything earlier Segments revealed is
+    /// gone. A seek applies the state the audience WOULD have at `time`:
+    /// every earlier Segment's actions fire, in order, then the target
+    /// Segment's up to the offset, and the target Segment plays on from
+    /// there.
+    ///
+    /// The earlier Segments are pre-fired HERE, synchronously, so the reset
+    /// scene and the restored one land in the same frame. The target
+    /// Segment's own actions are not: the step loop starts with its clock
+    /// already at the offset, so its first due-check fires exactly the
+    /// actions authored at or before it, through the one cursor that then
+    /// goes on to fire the rest. Nothing can fire twice because nothing has
+    /// a second path to fire on.
+    ///
+    /// Gates on earlier Segments are treated as satisfied. Everything
+    /// sampled from the authored clock — animation tracks, motion behaviors,
+    /// audio automation, backdrop, captions, keyed materials and parts —
+    /// needs no pre-fire at all; it reads the new time on its next sample.
+    ///
+    /// WHAT A PRE-FIRED ACTION CANNOT DO is arrive part-way through its own
+    /// duration: a `moveEntity` or a fade authored before `time` starts its
+    /// tween at the seek, and AUDIO starts from the top of its source range,
+    /// because the audio executor has no initial-offset entry. Video does
+    /// have `seek(channel:to:)`, so a plain occurrence is moved to the media
+    /// time the seek implies.
+    public func seek(toSequenceTime time: TimeInterval) {
+        guard let sequence = currentSequence,
+              let target = Self.seekTarget(for: time, in: sequence) else { return }
+
+        logger.info("Seeking to \(String(format: "%.2f", time))s: step index \(target.index) +\(String(format: "%.2f", target.offset))s")
+
+        tearDownForRelocation()
+        // A seek can leave an Explore region without passing its exit. Drop
+        // it; the next tick enters whichever region holds the new time.
+        storyRegions?.regionDidComplete()
+
+        var targetStart: TimeInterval = 0
+        for i in 0..<target.index { targetStart += sequence.steps[i].duration }
+        let seekTime = targetStart + target.offset
+        sequenceStartTime = Date.now.addingTimeInterval(-seekTime)
+
+        isPlaying = true
+        registerSequenceAnimation(sequence)
+        catchingUpTo = seekTime
+
+        let superseded = Self.supersededMediaPlays(before: target, in: sequence)
+        var position = 0
+        for index in 0..<target.index {
+            let step = sequence.steps[index]
+            currentStepIndex = index
+            stepStartTime = .now
+            entityExecutor?.clearStepMotions()
+            let timed: [(TimeInterval, StepAction)] =
+                step.actions.map { (0, $0) }
+                + Self.scheduledInFireOrder(step).map { (min($0.at, step.duration), $0.action) }
+            for (at, action) in timed {
+                defer { position += 1 }
+                guard !superseded.contains(position) else { continue }
+                // PARK THE AUTHORED CLOCK ON THE ACTION'S OWN INSTANT. The
+                // video stamp and a motion's `startedAt` both read it, so a
+                // move authored ten seconds ago is ten seconds into its
+                // progress rather than starting now.
+                stepStartTime = Date.now.addingTimeInterval(-at)
+                currentFiringOffset = at
+                preFire(action)
+            }
+        }
+
+        // Leave the clock ON the seek time, not on the last pre-fired
+        // action: a frame can sample it before the step loop's Task starts.
+        currentStepIndex = target.index
+        stepStartTime = Date.now.addingTimeInterval(-target.offset)
+        currentFiringOffset = 0
+        startStatusReporting()
+        startPlayTask(sequence: sequence, startIndex: target.index, startOffset: target.offset)
     }
 
     // MARK: - Step Loop
 
     /// Shared step-iteration loop used by play(), jumpToStep(), and playAndAwait().
     /// Returns the sequence completion only when playback reaches its natural end.
-    private func runStepsFrom(index startIndex: Int, in sequence: SequenceDefinition) async -> CompletionAction? {
+    ///
+    /// `startOffset` is a seek's: the FIRST Segment run begins with its clock
+    /// already that far in, so its first due-check fires everything authored
+    /// at or before the offset, in order, and the cursor carries on from
+    /// there. Every later Segment starts at zero as it always has.
+    private func runStepsFrom(index startIndex: Int, in sequence: SequenceDefinition,
+                              startOffset: TimeInterval = 0) async -> CompletionAction? {
         let stepCount = sequence.steps.count
         logger.notice("▶ runStepsFrom: sequence=\(sequence.id) startIndex=\(startIndex) stepCount=\(stepCount) isCancelled=\(Task.isCancelled)")
 
@@ -628,7 +856,8 @@ public final class SequenceEngine {
             }
 
             currentStepIndex = index
-            stepStartTime = .now
+            let enteredAt = index == startIndex ? max(0, min(startOffset, step.duration)) : 0
+            stepStartTime = Date.now.addingTimeInterval(-enteredAt)
             stepPausedDuration = 0
             logger.info("Step → \(step.id) (\(step.name), \(String(format: "%.1f", step.duration))s)")
 
@@ -645,7 +874,7 @@ public final class SequenceEngine {
 
             currentFiringOffset = 0
             await executeActions(step.actions)
-            let actionsElapsed = Date.now.timeIntervalSince(stepStartTime)
+            let actionsElapsed = Date.now.timeIntervalSince(stepStartTime) - enteredAt
             logger.info("executeActions: \(String(format: "%.3f", actionsElapsed))s for step \(step.id)")
             onStepChanged?(step, index)
             sendStatus()
@@ -665,13 +894,7 @@ public final class SequenceEngine {
             // Fires in TIME order, ties broken by authored order — which is
             // also what `MaestroKit.SequenceTime.actionsInAbsoluteOrder` does,
             // so the editor and the runtime agree on what happens first.
-            let scheduledInFireOrder = step.scheduledActions
-                .enumerated()
-                .sorted { a, b in
-                    a.element.at != b.element.at ? a.element.at < b.element.at
-                                                 : a.offset < b.offset
-                }
-                .map(\.element)
+            let scheduledInFireOrder = Self.scheduledInFireOrder(step)
             var nextScheduled = 0
 
             // An action stored past its Step's end is late, not lost: the
@@ -723,6 +946,10 @@ public final class SequenceEngine {
                         executeActionSync(scheduled.action)
                     }
                 }
+
+                // A seek's late actions have all fired by the end of the
+                // first due-check; anything after this starts on time.
+                catchingUpTo = nil
 
                 // EXPLORE runs on the loop that already exists. No display
                 // link, no second timer, no `Date` arithmetic of its own — the
@@ -800,9 +1027,11 @@ public final class SequenceEngine {
         return sequence.onComplete
     }
 
-    private func startPlayTask(sequence: SequenceDefinition, startIndex: Int) {
+    private func startPlayTask(sequence: SequenceDefinition, startIndex: Int,
+                               startOffset: TimeInterval = 0) {
         playTask = Task { @MainActor in
-            guard let completion = await self.runStepsFrom(index: startIndex, in: sequence) else { return }
+            guard let completion = await self.runStepsFrom(
+                index: startIndex, in: sequence, startOffset: startOffset) else { return }
             self.onSequenceComplete?(completion)
         }
     }
@@ -1092,6 +1321,7 @@ public final class SequenceEngine {
         // Video
         case .playVideo(let videoAction):
             videoExecutor?.play(stamped(videoAction))
+            alignToSeek(videoAction)
         case .prepareVideo(let videoAction):
             videoExecutor?.prepare(videoAction)
         case .stopVideo(let channel):
