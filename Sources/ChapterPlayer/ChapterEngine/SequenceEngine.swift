@@ -674,18 +674,25 @@ public final class SequenceEngine {
                 .map(\.element)
             var nextScheduled = 0
 
-            // An action stored past its Step's end can never fire: this loop
-            // exits while it is still pending, silently. Say so rather than
-            // letting authored behavior vanish without a word.
+            // An action stored past its Step's end is late, not lost: the
+            // boundary drain below fires it. Say so, because the document is
+            // still malformed and the author's timing is not what they wrote.
             for scheduled in scheduledInFireOrder where scheduled.at > step.duration {
                 let detail = "step '\(step.id)': action scheduled at +"
                     + String(format: "%.2f", scheduled.at) + "s but the step is only "
                     + String(format: "%.2f", step.duration)
-                    + "s long — it will NEVER fire. The document is malformed."
+                    + "s long. It fires at the step's end instead. The document is malformed."
                 logger.error("\(detail, privacy: .public)")
             }
 
-            var remaining = max(0, step.duration - Date.now.timeIntervalSince(stepStartTime))
+            // ONE CLOCK. The fire test below is pause-aware
+            // (`- stepPausedDuration`) and this exit test was not, so after a
+            // pause of P seconds the step ended P seconds early on the action
+            // clock and everything authored in that window was dropped.
+            func timeLeft() -> Double {
+                max(0, step.duration - (Date.now.timeIntervalSince(stepStartTime) - stepPausedDuration))
+            }
+            var remaining = timeLeft()
             // `repeat`, not `while`: a ZERO-DURATION step starts with
             // `remaining == 0`, so a plain `while` never entered the body and
             // anything scheduled at +0 in such a step never fired. Running the
@@ -725,8 +732,29 @@ public final class SequenceEngine {
 
                 let sleepTime = min(remaining, 0.25)
                 try? await Task.sleep(for: .seconds(sleepTime))
-                remaining = max(0, step.duration - Date.now.timeIntervalSince(stepStartTime))
+                remaining = timeLeft()
             } while remaining > 0
+
+            // THE BOUNDARY DRAIN. The due check sits at the TOP of the body
+            // and the loop exits after its final sleep WITHOUT running it
+            // again, so the whole last tick was a dead zone: anything
+            // authored in the final quarter second of a Segment, or exactly
+            // at its end, never fired, silently, on every Chapter. Fire what
+            // is left, in order, before the gate waits and before the next
+            // Segment begins. It cannot double-fire: `nextScheduled` is this
+            // Segment's own cursor and only ever advances.
+            while nextScheduled < scheduledInFireOrder.count {
+                guard !Task.isCancelled else { return nil }
+                let scheduled = scheduledInFireOrder[nextScheduled]
+                nextScheduled += 1
+                logger.info("Scheduled action fired at the boundary of step \(step.id) (authored at +\(String(format: "%.2f", scheduled.at))s of \(String(format: "%.2f", step.duration))s)")
+                currentFiringOffset = min(scheduled.at, step.duration)
+                if scheduled.action.isAsync {
+                    await executeAction(scheduled.action)
+                } else {
+                    executeActionSync(scheduled.action)
+                }
+            }
 
             if let gate = step.gate {
                 guard !Task.isCancelled else { return nil }

@@ -73,6 +73,10 @@ public class VideoPlaybackManager {
         /// Only ever true for a MONO backdrop that authored an enabled
         /// stack — see `attachToPresentation`.
         var usesSurface: Bool = false
+        /// This IMMERSIVE channel is mounted as a shell MESH (graded, or an
+        /// untagged mono master on its authored field: `ImmersiveMount`).
+        /// Teardown keys on this; `usesSurface` stays the GRADING fact.
+        var usesShellMesh: Bool = false
         var retime: RetimeCurve? = nil
         var pitch: PitchHandling? = nil
         var transition: VideoTransitionSpec? = nil
@@ -201,7 +205,7 @@ public class VideoPlaybackManager {
         // FL-09: a GRADED shell was mounted as a mesh instead. Drop it and
         // put the scale back, or the next backdrop inherits a sphere it
         // never asked for — the same reason `tearDownImageSkybox` exists.
-        if channels[channelKey]?.usesSurface == true {
+        if channels[channelKey]?.usesSurface == true || channels[channelKey]?.usesShellMesh == true {
             shell.components.remove(ModelComponent.self)
             shell.scale = .one
         }
@@ -1229,6 +1233,7 @@ public class VideoPlaybackManager {
                         }
                         channel.entity = entity
                         channel.usesSurface = true
+                        channel.usesShellMesh = true
                         logger.info("[video.immersive] channel '\(channelKey)' is GRADED: mesh + Effect surface, no VideoPlayerComponent")
                         return
                     }
@@ -1254,6 +1259,28 @@ public class VideoPlaybackManager {
                         logger.warning("[video.immersive] deferred attach abandoned before running — manager/entity/player deallocated (channel '\(channelKey)')")
                         return
                     }
+                    // DECLARED METADATA, THEN THE AUTHORED FIELD (`ImmersiveMount`).
+                    // The field used to be bound to `_` right here, so an
+                    // untagged mono 180/190/220/360 master reached the system
+                    // player with nothing to project by and drew as a flat
+                    // screen, while the Mac Viewer showed the authored shell.
+                    let declared = await Self.declaredProjection(of: player)
+                    if let advisory = ImmersiveMount.advisory(layout: layout, declared: declared) {
+                        logger.warning("[video.immersive] channel '\(channelKey)': \(advisory)")
+                    }
+                    if ImmersiveMount.decision(layout: layout, declared: declared) == .shell,
+                       case .immersive(let radius, let field) = presentation,
+                       let mesh = Self.shellMesh(field: field, radius: radius) {
+                        entity.components.remove(VideoPlayerComponent.self)
+                        entity.components.set(ModelComponent(mesh: mesh,
+                                                             materials: [VideoMaterial(avPlayer: player)]))
+                        // Seen from inside: the same inversion every
+                        // immersive surface here applies.
+                        entity.scale = SIMD3<Float>(-1, 1, 1)
+                        self.channels[channelKey]?.usesShellMesh = true
+                        logger.info("[video.immersive] channel '\(channelKey)' mounted on its AUTHORED \(Int(field.horizontalDegrees))° shell: the file carries no projection metadata")
+                        return
+                    }
                     await self.attachImmersiveComponent(
                         channelKey: channelKey, player: player, entity: entity
                     )
@@ -1265,7 +1292,25 @@ public class VideoPlaybackManager {
         }
     }
 
-    /// The shell a GRADED immersive backdrop is drawn on (FL-09).
+    /// What the FILE says about its own projection: the video track's
+    /// `ProjectionKind` format-description extension. Absent, unreadable or
+    /// rectilinear all mean the system player would draw a flat screen.
+    static func declaredProjection(of player: AVPlayer) async -> ImmersiveMount.DeclaredProjection {
+        guard let asset = player.currentItem?.asset,
+              let track = try? await asset.loadTracks(withMediaType: .video).first,
+              let descriptions = try? await track.load(.formatDescriptions)
+        else { return .none }
+        for description in descriptions {
+            guard let extensions = CMFormatDescriptionGetExtensions(description) as? [String: Any],
+                  let kind = extensions["ProjectionKind"] as? String else { continue }
+            if kind.caseInsensitiveCompare("Rectilinear") != .orderedSame { return .immersive }
+        }
+        return .none
+    }
+
+    /// The shell an immersive video is drawn on when it is not handed to the
+    /// system player: a GRADED backdrop (FL-09), or an untagged mono master
+    /// on its authored field (`ImmersiveMount`).
     ///
     /// The SAME geometry the image-backdrop path mounts: `generateSphere`
     /// for 360° (RealityKit's own UV convention renders it right way up,

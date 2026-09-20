@@ -456,11 +456,29 @@ public final class EntityActionExecutor: EntityActionExecutorProtocol {
     /// A behavior is re-applied as an OFFSET from the authored base every
     /// frame and never accumulates, so keeping one costs nothing and cannot
     /// drift.
+    ///
+    /// AND A LEGACY MOTION STILL IN FLIGHT KEEPS RUNNING. Clearing every
+    /// `animateMotion` at the boundary froze an object mid-move: it writes
+    /// the transform absolutely each frame, so once its entry is gone nothing
+    /// moves it again. The editor has never scoped these to a Segment
+    /// (`ScrubCompositor` samples from the motion's own start), so the Mac
+    /// showed the move finishing and the headset showed it stop. It matters
+    /// more now that an Explore Area edit moves Segment boundaries freely. A
+    /// motion on the authored clock has a natural end; it is dropped at the
+    /// first boundary AFTER it saturates, where dropping it changes nothing.
+    /// An unclocked one (the step-relative fallback) is still Segment-scoped,
+    /// because its progress would restart against the next Segment's clock.
     public func clearStepMotions() {
-        if !activeMotions.isEmpty {
-            logger.debug("Cleared \(self.activeMotions.count) step motion(s)")
+        let now = animationClock?()
+        let before = activeMotions.count
+        activeMotions = activeMotions.filter { _, entry in
+            guard let startedAt = entry.startedAt, let now else { return false }
+            return !MotionProgress.isComplete(startTime: startedAt, now: now,
+                                              duration: entry.action.duration)
         }
-        activeMotions.removeAll(keepingCapacity: true)
+        if before != activeMotions.count {
+            logger.debug("Cleared \(before - self.activeMotions.count) finished step motion(s); \(self.activeMotions.count) still running")
+        }
     }
 
     public func setSequenceAnimation(tracks: [EntityAnimationTrack], clock: (@MainActor () -> TimeInterval)?) {
