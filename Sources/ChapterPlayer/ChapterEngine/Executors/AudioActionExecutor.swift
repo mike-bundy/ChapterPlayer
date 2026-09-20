@@ -168,6 +168,18 @@ public final class AudioActionExecutor: AudioActionExecutorProtocol {
         audioManager.resumeAll()
     }
 
+    /// Pause ONE channel for an Explore hold, leaving the rest of the mix
+    /// running. False when nothing is playing on that channel.
+    @discardableResult
+    public func pauseForExploreHold(channel: String) -> Bool {
+        audioManager.pauseForExploreHold(channel: channel)
+    }
+
+    /// Release a channel an Explore hold paused.
+    public func releaseExploreHold(channel: String, resume: Bool) {
+        audioManager.releaseExploreHold(channel: channel, resume: resume)
+    }
+
     public var currentMasterVolume: Float {
         audioManager.mixState.masterVolume
     }

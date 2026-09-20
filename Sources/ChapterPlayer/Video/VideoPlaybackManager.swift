@@ -930,6 +930,7 @@ public class VideoPlaybackManager {
             return
         }
         stopEpoch += 1
+        explorePausedChannels.remove(channel)
         channels.removeValue(forKey: channel)
         ch.player.pause()
         held[channel] = HeldChannel(channel: ch, entityName: name, heldAt: clock())
@@ -951,6 +952,7 @@ public class VideoPlaybackManager {
         // hasn't stored its channel is exactly the one that must not
         // re-store it after this stop.
         stopEpoch += 1
+        explorePausedChannels.remove(channel)
         guard let ch = channels.removeValue(forKey: channel) else { return }
         // A dissolve whose outgoing side is still held ends with its panel.
         if let dissolve = dissolves.removeValue(forKey: channel) {
@@ -1014,6 +1016,52 @@ public class VideoPlaybackManager {
         logger.debug("Stopped video channel: \(channel)")
     }
 
+    /// A `VideoPlayerComponent` was just set on `entity` by a spatial or
+    /// immersive attach — the two presentations the system can apply a
+    /// comfort mitigation to. The host uses it to find the scene whose
+    /// `VideoComfortMitigationDidOccur` events it should follow; the manager
+    /// itself has no opinion about comfort.
+    public var onVideoComponentAttached: ((Entity) -> Void)?
+
+    // MARK: - Explore hold (one channel)
+
+    /// Channels an Explore hold has frozen on their current frame.
+    ///
+    /// A SET, not a flag on the channel, because it has to be consulted by
+    /// `resumeAll()`: a transport pause and resume DURING a hold must not
+    /// restart a picture the region froze. Pruned by `stop(channel:)`, so a
+    /// torn-down channel never comes back held.
+    public private(set) var explorePausedChannels: Set<String> = []
+
+    /// Channels the Sequence asked to play that are not frozen by a hold.
+    /// What "everything playing right now" means to a Story Region.
+    public var playRequestedChannelNames: [String] {
+        channels.compactMap { key, channel in
+            channel.isPlayRequested && !explorePausedChannels.contains(key) ? key : nil
+        }
+    }
+
+    /// HOLD LAST FRAME, for one channel. Returns false when there is no such
+    /// channel, so the caller can say so instead of recording a hold that
+    /// nothing will ever release.
+    @discardableResult
+    public func pauseForExploreHold(channel: String) -> Bool {
+        guard let ch = channels[channel] else { return false }
+        explorePausedChannels.insert(channel)
+        ch.player.pause()
+        logger.info("[explore] video channel '\(channel)' holds its frame")
+        return true
+    }
+
+    /// Let a held channel go. `resume` is false when the transport itself is
+    /// paused: the hold is over, but `resumeAll()` owns the restart.
+    public func releaseExploreHold(channel: String, resume: Bool) {
+        guard explorePausedChannels.remove(channel) != nil else { return }
+        guard resume, let ch = channels[channel], ch.isPlayRequested else { return }
+        ch.player.play()
+        logger.info("[explore] video channel '\(channel)' resumes")
+    }
+
     public func pauseAll() {
         for (_, channel) in channels {
             channel.player.pause()
@@ -1027,7 +1075,10 @@ public class VideoPlaybackManager {
         // first frame (paused, opacity 0) — blanket-playing them here let
         // a pause/resume cycle silently run a warmed video to its end, so
         // the eventual real play() started mid-file or on a dead frame.
-        for (_, channel) in channels where channel.isPlayRequested {
+        //
+        // …and never one an Explore hold froze: the region releases it.
+        for (key, channel) in channels
+        where channel.isPlayRequested && !explorePausedChannels.contains(key) {
             channel.player.play()
         }
         logger.info("Resumed all requested video channels")
@@ -1394,6 +1445,7 @@ public class VideoPlaybackManager {
             component.isPassthroughTintingEnabled = passthroughTinting
             entity.components.remove(VideoPlayerComponent.self)
             entity.components.set(component)
+            onVideoComponentAttached?(entity)
             let deadline = Date().addingTimeInterval(2.0)
             while Date() < deadline {
                 if entity.components[VideoPlayerComponent.self]?.currentRenderingStatus == .ready {
@@ -1450,6 +1502,7 @@ public class VideoPlaybackManager {
             component.desiredViewingMode = .stereo
             entity.components.remove(VideoPlayerComponent.self)
             entity.components.set(component)
+            onVideoComponentAttached?(entity)
             logger.info("[video.immersive] VideoPlayerComponent set (attempt \(attempt)/\(maxAttempts)); player.status=\(player.status.rawValue) currentItem.status=\(player.currentItem?.status.rawValue ?? -1) duration=\(player.currentItem.map { CMTimeGetSeconds($0.duration) } ?? .nan)")
 
             // RealityKit flips `currentRenderingStatus` to `.ready` once

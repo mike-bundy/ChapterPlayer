@@ -931,6 +931,14 @@ public class SpatialAudioManager {
         // drift. A `fallback` is a DECLARED degradation with a reason, not a
         // silent detour — it is logged once per channel below.
         let routing = action.routing
+        if action.playbackModel == nil {
+            // LEGACY DOCUMENT: no playback model was written down. Absent
+            // means the HISTORICAL routing and nothing else — attachment is
+            // positional, everything else is head-locked — and the file is
+            // never probed here to second-guess it. Decision record:
+            // `docs/architecture-resolution/12_AUDIO_PLAYBACK_MODEL_DEFAULT.md`.
+            logger.info("[audio.route] '\(action.channel)' has no authored playback model; historical routing -> \(routing.route.rawValue)")
+        }
         if case .fallback(_, let from, let reason) = routing {
             reportFallback(model: from, reason: reason, channel: action.channel, file: action.file)
         }
@@ -1618,6 +1626,10 @@ public class SpatialAudioManager {
         // Pipeline B occurrences live in their own player; a channel stop must
         // reach both or an encoded master keeps playing under the next cue.
         systemSpatialMedia.stop(channel: channel)
+        if !systemSpatialMedia.isActive(channel: channel),
+           ambientChannels[channel] == nil, spatialChannels[channel] == nil {
+            explorePausedChannels.remove(channel)
+        }
 
         // If channel has a loop config, trigger outro instead of hard stop
         if let state = loopStates[channel], state.phase == .looping {
@@ -1640,6 +1652,7 @@ public class SpatialAudioManager {
     }
 
     private func stopAmbient(channel: String) {
+        explorePausedChannels.remove(channel)
         if let ch = ambientChannels.removeValue(forKey: channel) {
             ch.fadeTask?.cancel()
             ch.outgoingFadeTask?.cancel()
@@ -1653,6 +1666,7 @@ public class SpatialAudioManager {
     }
 
     private func stopSpatial(channel: String) {
+        explorePausedChannels.remove(channel)
         if let ch = spatialChannels.removeValue(forKey: channel) {
             ch.controller?.stop()
             ch.entity.removeFromParent()
@@ -1695,9 +1709,11 @@ public class SpatialAudioManager {
         for zoneId in zonesToRemove {
             activeZoneChannels.removeValue(forKey: zoneId)
         }
+        explorePausedChannels = explorePausedChannels.filter { hasChannel($0) }
     }
 
     public func stopEverything() {
+        explorePausedChannels.removeAll()
         for key in ambientChannels.keys {
             cancelLoopState(channel: key)
             stopAmbient(channel: key)
@@ -1747,19 +1763,80 @@ public class SpatialAudioManager {
     }
 
     /// Resumes all ambient channel player nodes from where they were paused.
+    ///
+    /// Never a channel an Explore hold paused: the region releases that one,
+    /// and a transport pause and resume during a hold must not restart it.
     public func resumeAll() {
-        systemSpatialMedia.resumeAll()
+        for channel in systemSpatialMedia.activeChannels
+        where !explorePausedChannels.contains(channel) {
+            systemSpatialMedia.resume(channel: channel)
+        }
 
-        for (_, channel) in ambientChannels {
+        for (channelKey, channel) in ambientChannels
+        where !explorePausedChannels.contains(channelKey) {
             channel.playerNode.play()
             // Resume outgoing crossfade node if it was mid-transition
             channel.outgoingPlayerNode?.play()
         }
+        // Gain is restored for EVERY spatial channel, held or not: `pauseAll()`
+        // mutes these rather than pausing them, and a held channel whose gain
+        // stayed at zero would come back silent when its region releases it.
         for (channelKey, channel) in spatialChannels {
             let vol = effectiveVolume(requested: channel.targetVolume, channel: channelKey)
             channel.controller?.gain = Audio.Decibel(volumeToDecibels(vol))
         }
         logger.info("Resumed all audio (\(self.ambientChannels.count) ambient, \(self.spatialChannels.count) spatial)")
+    }
+
+    // MARK: - Pause / Resume, ONE channel (Explore hold)
+
+    /// Channels an Explore hold has paused. Consulted by `resumeAll()` and
+    /// pruned wherever a channel is torn down.
+    public private(set) var explorePausedChannels: Set<String> = []
+
+    /// Is anything playing on `channel`, on any of the three backends?
+    public func hasChannel(_ channel: String) -> Bool {
+        systemSpatialMedia.isActive(channel: channel)
+            || ambientChannels[channel] != nil
+            || spatialChannels[channel] != nil
+    }
+
+    /// PAUSE ONE CHANNEL WHERE IT IS, leaving every other channel running.
+    ///
+    /// This is what `pauseAll()` could never be for a Story Region: a region's
+    /// continuations are per occurrence, so one bed may hold while another
+    /// keeps playing. All three backends have a real per-channel pause —
+    /// `AVPlayer.pause()`, `AVAudioPlayerNode.pause()` and
+    /// `AudioPlaybackController.pause()` — so the position is kept and
+    /// nothing is muted-but-running.
+    ///
+    /// Returns false when the channel does not exist, so the caller never
+    /// records a hold that nothing will release.
+    @discardableResult
+    public func pauseForExploreHold(channel: String) -> Bool {
+        guard hasChannel(channel) else { return false }
+        explorePausedChannels.insert(channel)
+        systemSpatialMedia.pause(channel: channel)
+        if let ch = ambientChannels[channel] {
+            ch.playerNode.pause()
+            ch.outgoingPlayerNode?.pause()
+        }
+        spatialChannels[channel]?.controller?.pause()
+        logger.info("[explore] audio channel '\(channel)' paused for the hold")
+        return true
+    }
+
+    /// Let a paused channel go. `resume` is false while the transport itself
+    /// is paused: the hold is over, and `resumeAll()` owns the restart.
+    public func releaseExploreHold(channel: String, resume: Bool) {
+        guard explorePausedChannels.remove(channel) != nil, resume else { return }
+        systemSpatialMedia.resume(channel: channel)
+        if let ch = ambientChannels[channel] {
+            ch.playerNode.play()
+            ch.outgoingPlayerNode?.play()
+        }
+        spatialChannels[channel]?.controller?.play()
+        logger.info("[explore] audio channel '\(channel)' resumes")
     }
 
     // MARK: - Fade

@@ -71,6 +71,20 @@ public final class StoryRegionController {
     @ObservationIgnored public var applyExitFade:
         ((StoryContinuationTarget, TimeInterval) -> Void)?
 
+    /// The story has just parked at `region`'s boundary and every authored
+    /// continuation has been applied. This is where the host applies the
+    /// DEFAULT — content the author said nothing about — which the region
+    /// cannot enumerate because it owns no clip.
+    @ObservationIgnored public var holdDidBegin: ((StoryRegion) -> Void)?
+
+    /// The hold is over, for ANY reason: the exit resolved, playback was
+    /// interrupted, the engine moved past the boundary, or the visit ended.
+    /// The host releases whatever it paused. Called exactly once per
+    /// `holdDidBegin`, which is the guarantee a paused player needs — a
+    /// release that only ran on the resolved path would leave a frozen
+    /// picture behind every seek out of a region.
+    @ObservationIgnored public var holdDidEnd: (() -> Void)?
+
     /// Loop overlay for an entity's animation: the sample time an explicitly
     /// looping entity should be evaluated at while the story is held.
     @ObservationIgnored public var setAnimationLoopOverride:
@@ -119,6 +133,7 @@ public final class StoryRegionController {
 
     /// End of visit. Every transient fact goes; nothing here was ever authored.
     public func teardown() {
+        endHoldIfNeeded()
         clearLoopOverrides()
         regions = []
         active = nil
@@ -160,6 +175,7 @@ public final class StoryRegionController {
         if phase == .held, !isHolding {
             isHolding = true
             applyContinuations(for: runtime.region, phase: .enteringHold)
+            holdDidBegin?(runtime.region)
             logger.info("Explore hold at \(String(format: "%.2f", authored))s — story parked")
         }
 
@@ -176,7 +192,7 @@ public final class StoryRegionController {
             if isHolding {
                 applyContinuations(for: runtime.region, phase: .leavingHold)
                 clearLoopOverrides()
-                isHolding = false
+                endHoldIfNeeded()
                 displayDwell = 0
                 logger.info("Explore region '\(runtime.region.id)' released — resuming Directed playback")
                 releaseStory?()
@@ -216,15 +232,15 @@ public final class StoryRegionController {
         runtime.resolve(.interrupted, atRuntimeTime: now)
         active = runtime
         clearLoopOverrides()
-        isHolding = false
+        endHoldIfNeeded()
     }
 
     /// The engine crossed a region's end boundary and moved on. Drops the
     /// active region so the next one can be entered.
     public func regionDidComplete() {
+        endHoldIfNeeded()
         clearLoopOverrides()
         active = nil
-        isHolding = false
         displayDwell = 0
     }
 
@@ -255,9 +271,17 @@ public final class StoryRegionController {
                 applyExitFade?(continuation.target, seconds)
             }
 
-            // `.hold` is the default and means "do nothing", so there is
-            // nothing to apply and nothing to undo.
-            guard continuation.behavior != .hold else { continue }
+            // FOR AN ANIMATION, `.hold` means "do nothing": its only clock is
+            // the authored one, and that is already parked.
+            //
+            // FOR MEDIA IT DOES NOT. A video or a sound runs on its own
+            // player, which a parked Sequence clock does not stop — so an
+            // explicit hold has to reach the host and pause something. This
+            // guard used to skip `.hold` for every target, which made the
+            // host's pause unreachable: "Hold Last Frame" kept playing on
+            // device.
+            if case .entityAnimation = continuation.target,
+               continuation.behavior == .hold { continue }
 
             if case .entityAnimation(let entity) = continuation.target,
                continuation.behavior == .loop {
@@ -268,6 +292,13 @@ public final class StoryRegionController {
             }
             applyContinuation?(continuation.target, continuation.behavior, phase)
         }
+    }
+
+    /// Leave the held state, telling the host exactly once.
+    private func endHoldIfNeeded() {
+        guard isHolding else { return }
+        isHolding = false
+        holdDidEnd?()
     }
 
     /// Remove every animation loop overlay, returning those entities to

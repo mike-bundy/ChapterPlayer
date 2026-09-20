@@ -68,6 +68,11 @@ open class ChapterPlayerCore {
     /// continuation behaviors. See `StoryRegionController`.
     public let storyRegions = StoryRegionController()
 
+    /// Comfort and heat, as the system reports them: thermal state and video
+    /// comfort mitigations. SURFACED ONLY — nothing in the player reacts to
+    /// them. See `ComfortSignals`.
+    public let comfortSignals = ComfortSignals()
+
     /// THE ONE AUTHORITY FOR MOVEMENT BETWEEN SEQUENCES.
     ///
     /// Completion, Interaction responses and host commands all emit a
@@ -127,7 +132,14 @@ open class ChapterPlayerCore {
     /// Populated by the live-load path (Maestro over Bonjour) or the
     /// consumer's "open project" file-importer flow. Drives sequence
     /// lookup for auto-advance and any timeline UI.
-    public var loadedExperience: LoadedExperience?
+    public var loadedExperience: LoadedExperience? {
+        didSet {
+            // A newly loaded Chapter brings its own lighting. Editors that
+            // keep a live document on top of this one (MaestroVision) follow
+            // up through the same `applyEnvironment`.
+            applyEnvironment(loadedExperience?.document.environment)
+        }
+    }
 
     /// Active hot-reload subscription, when connected to a live
     /// MaestroStudio over Bonjour. Cleared on disconnect.
@@ -194,6 +206,11 @@ open class ChapterPlayerCore {
                 audioManager.entityLookup = nil
             }
 
+            // The environment outlives a remount: a fresh root gets the spec
+            // that was last asked for, which may be newer than the loaded
+            // document's (a live edit lands through `applyEnvironment`).
+            applyEnvironment(requestedEnvironment)
+
             if let document = loadedExperience?.document, immersiveSceneRoot != nil {
                 documentEntities.materialize(
                     document: document,
@@ -211,6 +228,25 @@ open class ChapterPlayerCore {
                 Task { await rebaseSceneRootToHead() }
             }
         }
+    }
+
+    // MARK: - Chapter environment
+
+    /// Owns whatever the Chapter's `EnvironmentSpec` adds to the scene root.
+    private let environmentApplier = EnvironmentApplier()
+
+    /// The spec most recently asked for, kept so a remounted scene root can be
+    /// lit again without the caller having to remember to.
+    @ObservationIgnored public private(set) var requestedEnvironment: EnvironmentSpec?
+
+    /// THE ONE ROUTE from a Chapter's environment to the scene. Loading a
+    /// Chapter, mounting the scene root and a live `setEnvironment` edit all
+    /// come through here. Idempotent; `nil` removes everything it added.
+    /// Before the root is mounted it only records the request.
+    public func applyEnvironment(_ spec: EnvironmentSpec?) {
+        requestedEnvironment = spec
+        guard let root = immersiveSceneRoot else { return }
+        environmentApplier.apply(spec, to: root)
     }
 
     // MARK: - Head-anchored scene root
@@ -533,6 +569,16 @@ open class ChapterPlayerCore {
         storyRegions.applyExitFade = { [weak self] target, seconds in
             self?.applyStoryExitFade(target: target, seconds: seconds)
         }
+        comfortSignals.startObservingThermalState()
+        videoManager.onVideoComponentAttached = { [weak self] entity in
+            self?.comfortSignals.observeVideoComfort(in: entity.scene)
+        }
+        storyRegions.holdDidBegin = { [weak self] region in
+            self?.applyDefaultStoryHold(for: region)
+        }
+        storyRegions.holdDidEnd = { [weak self] in
+            self?.releaseStoryHolds()
+        }
 
         // DocumentEntityLoader needs the two executors it registers
         // entities with. Constructed after self is fully initialized so
@@ -719,50 +765,122 @@ open class ChapterPlayerCore {
         behavior: StoryContinuationBehavior,
         phase: StoryRegionController.ContinuationPhase
     ) {
-        // An entity animation loop is handled by the sampling overlay, not here.
-        guard case .occurrence(let actionId) = target else { return }
-        guard let channel = channelForOccurrence(actionId) else {
-            logger.warning("[explore] continuation target '\(actionId)' resolves to no channel — ignoring")
+        // Everything a hold pauses is released in ONE place, `releaseStoryHolds`,
+        // which the controller calls however the hold ends. Undoing it here
+        // would only cover the path where the exit resolved.
+        guard phase == .enteringHold else { return }
+
+        switch target {
+        case .entityAnimation:
+            // An entity animation loop is handled by the sampling overlay.
+            return
+
+        case .backdropCue(let cueId):
+            applyBackdropContinuation(cueId: cueId, behavior: behavior)
+
+        case .occurrence(let actionId):
+            guard let channel = channelForOccurrence(actionId) else {
+                logger.warning("[explore] continuation target '\(actionId)' resolves to no channel — ignoring")
+                return
+            }
+            let isVideo = isVideoOccurrence(actionId)
+            switch StoryHoldPlan.command(for: behavior, on: isVideo ? .video : .audio) {
+            case .pause:
+                // HOLD. Pause where the authored pass left it; a clip that
+                // already ended is already showing its last frame.
+                if isVideo {
+                    if videoManager.pauseForExploreHold(channel: channel) {
+                        storyHeldVideoChannels.insert(channel)
+                    }
+                } else if audioExecutor.pauseForExploreHold(channel: channel) {
+                    // PER-CHANNEL, never `pauseAll()`, which would silence
+                    // channels the author asked to keep playing.
+                    storyHeldAudioChannels.insert(channel)
+                }
+            case .stop:
+                if isVideo { videoExecutor.stop(channel: channel) }
+                else { audioExecutor.stop(channel: channel) }
+            case .leaveRunning:
+                // Continuing means the content keeps running on its own clock
+                // while authored time is parked, which it is already doing.
+                break
+            case .refuse(let reason):
+                logger.warning("[explore] '\(channel)' keeps playing: \(reason)")
+            }
+        }
+    }
+
+    /// Video channels this hold froze, and audio channels it paused — so the
+    /// release undoes exactly what the hold did and nothing else.
+    @ObservationIgnored private var storyHeldVideoChannels: Set<String> = []
+    @ObservationIgnored private var storyHeldAudioChannels: Set<String> = []
+
+    /// AN ENVIRONMENT CUE, DURING A HOLD.
+    ///
+    /// The cue driver runs on the authored clock, so a parked story already
+    /// keeps the same cue on screen. What a hold can add is freezing an
+    /// Environment VIDEO, which runs on its own player: the same per-channel
+    /// pause a video occurrence uses, on the one channel a backdrop has. An
+    /// image or a USDZ Environment is already still, so Hold is trivially
+    /// true for it.
+    ///
+    /// Applies only to the cue that is actually showing at the boundary. A
+    /// policy for any other cue applies to nothing, and says so.
+    private func applyBackdropContinuation(cueId: String, behavior: StoryContinuationBehavior) {
+        guard backdropCues.activeCueID == cueId else {
+            logger.info("[explore] Environment cue '\(cueId)' is not showing at the boundary — its policy applies to nothing")
             return
         }
-
-        let isVideo = isVideoOccurrence(actionId)
-
-        switch (behavior, phase) {
-        case (.hold, .enteringHold):
-            // HOLD LAST FRAME. Pause where the authored pass left it; a clip
-            // that already ended is already showing its last frame.
-            //
-            // VIDEO ONLY, AND SAID OUT LOUD. There is no per-channel audio
-            // pause in this runtime — only `pauseAll()`, which would silence
-            // channels the author asked to keep playing — so an audio hold
-            // cannot be performed. The editors do not offer it
-            // (`StoryContinuationCapabilities`); this logs the case that can
-            // still arrive from a newer document or a hand edit, because the
-            // previous behavior was to route it through `videoManager`, get
-            // nil, and leave the sound playing with no trace anywhere.
-            if isVideo {
-                videoManager.player(for: channel)?.pause()
-            } else {
-                logger.warning("[explore] hold is not available for audio channel '\(channel)' — it keeps playing")
+        switch StoryHoldPlan.command(for: behavior, on: .backdrop) {
+        case .pause:
+            if videoManager.pauseForExploreHold(channel: Self.backdropVideoChannel) {
+                storyHeldVideoChannels.insert(Self.backdropVideoChannel)
             }
-        case (.hold, .leavingHold):
-            if isVideo { videoManager.player(for: channel)?.play() }
-        case (.stop, .enteringHold):
-            if isVideo { videoExecutor.stop(channel: channel) }
-            else { audioExecutor.stop(channel: channel) }
-        case (.continue, _):
-            // Nothing to do: continuing means the content keeps running on its
-            // own clock while authored time is parked, which is what it is
-            // already doing.
+        case .leaveRunning:
             break
-        case (.loop, _):
-            // Not offered for media in this pass — see `docs/STORY_REGIONS.md`.
-            // A clip authored to loop keeps looping under `.continue`.
-            break
-        case (.stop, .leavingHold), (.hold, _):
-            break
+        case .stop, .refuse:
+            logger.warning("[explore] Environment cue '\(cueId)' keeps playing: \(StoryHoldPlan.backdropStopRefusal)")
         }
+    }
+
+    /// THE DEFAULT, for content the author said nothing about.
+    ///
+    /// A region owns no clip, so it cannot list what is playing — the player
+    /// can. Video holds its last frame by default (`docs/STORY_REGIONS.md`
+    /// §6); an absent continuation used to do nothing at all here, so the
+    /// documented default kept playing on device while the Sequence clock
+    /// stood still, and came back out of step with its own Timeline.
+    private func applyDefaultStoryHold(for region: StoryRegion) {
+        var configured: Set<String> = []
+        for continuation in region.continuations {
+            if case .occurrence(let actionId) = continuation.target,
+               let channel = channelForOccurrence(actionId) {
+                configured.insert(channel)
+            }
+        }
+        let held = StoryHoldPlan.videoChannelsHeldByDefault(
+            playing: videoManager.playRequestedChannelNames,
+            explicitlyConfigured: configured,
+            protected: videoManager.protectedChannels
+        )
+        for channel in held where videoManager.pauseForExploreHold(channel: channel) {
+            storyHeldVideoChannels.insert(channel)
+        }
+    }
+
+    /// The hold ended — resolved, interrupted, passed or torn down. Release
+    /// everything it paused. While the transport itself is paused the hold
+    /// still ends, and `resumeAll()` restarts the players.
+    private func releaseStoryHolds() {
+        let resume = !sequenceEngine.isPaused
+        for channel in storyHeldVideoChannels {
+            videoManager.releaseExploreHold(channel: channel, resume: resume)
+        }
+        for channel in storyHeldAudioChannels {
+            audioExecutor.releaseExploreHold(channel: channel, resume: resume)
+        }
+        storyHeldVideoChannels.removeAll()
+        storyHeldAudioChannels.removeAll()
     }
 
     /// FADE THIS CONTENT OUT AS THE STORY RESUMES.

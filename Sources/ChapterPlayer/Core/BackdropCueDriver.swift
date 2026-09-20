@@ -80,6 +80,18 @@ public final class BackdropCueDriver {
     /// expensive, visibly-flickering mistake this guards against.
     private var activeCueId: String?
 
+    /// The sentinel `activeCueId` holds while NO cue governs (before the
+    /// first cue, or after a `nil` cue). Distinct from `nil`, which means
+    /// nothing has been resolved yet.
+    private static let noCueSentinel = "\u{0}none"
+
+    /// The authored id of the cue on screen, or nil when none is. What a
+    /// Story Region's backdrop continuation is matched against: a policy for
+    /// a cue that is not the one showing at the boundary applies to nothing.
+    public var activeCueID: String? {
+        activeCueId == Self.noCueSentinel ? nil : activeCueId
+    }
+
     /// How often "which cue is it now" is re-answered. 10 Hz is far finer than
     /// a backdrop SWAP can be perceived to need and costs nothing.
     private static let tickInterval: Duration = .milliseconds(100)
@@ -209,7 +221,7 @@ public final class BackdropCueDriver {
         // Before the first cue there is deliberately NO backdrop — an author
         // whose first cue is at 4s means the first four seconds are bare. The
         // nil-id sentinel distinguishes that from "nothing resolved yet".
-        let resolvedId = showing?.id ?? "\u{0}none"
+        let resolvedId = showing?.id ?? Self.noCueSentinel
         if resolvedId != activeCueId {
             activeCueId = resolvedId
             logger.info("""
