@@ -23,6 +23,9 @@ public protocol VideoActionExecutorProtocol {
     /// the outgoing panel is HELD (paused on its last frame, still shown)
     /// so the incoming play can mix it (FL-12). The default is the plain stop.
     func stop(channel: String, holdingForDissolve: Bool)
+    /// Bring the NEXT Clip on a channel up behind the one playing, so the cut
+    /// to it costs a frame instead of a cold start. Optional: see the default.
+    func warm(_ action: VideoAction)
     func seek(channel: String, to time: TimeInterval)
     func pauseAll()
     func resumeAll()
@@ -31,6 +34,7 @@ public protocol VideoActionExecutorProtocol {
 
 extension VideoActionExecutorProtocol {
     public func stop(channel: String, holdingForDissolve: Bool) { stop(channel: channel) }
+    public func warm(_ action: VideoAction) {}
 }
 
 // MARK: - Implementation
@@ -46,6 +50,10 @@ public final class VideoActionExecutor: VideoActionExecutorProtocol {
 
     public func play(_ action: VideoAction) {
         videoManager.play(action: action)
+    }
+
+    public func warm(_ action: VideoAction) {
+        videoManager.warm(action: action)
     }
 
     public func prepare(_ action: VideoAction) {

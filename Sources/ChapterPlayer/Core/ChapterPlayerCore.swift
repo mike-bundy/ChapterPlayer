@@ -495,6 +495,18 @@ open class ChapterPlayerCore {
         // (`rebaseSceneRootToHead`).
         sequenceEngine.gateDetector = gateDetection
         sequenceEngine.backdropDriver = backdropCues
+        sequenceEngine.followingSequenceProvider = { [weak self] in
+            guard let self, let current = self.sequenceEngine.currentSequence else { return nil }
+            // A DRY RUN OF THE ONE NAVIGATOR, on a copy (it is a value): the
+            // same decision completion will get, with nothing recorded.
+            var probe = self.navigator
+            let outcome = probe.handleCompletion(
+                current.onComplete.authored, from: current.id,
+                exists: { self.sequenceFromLoadedDocument(id: $0) != nil },
+                start: { self.loadedExperience?.document.defaultSequenceId })
+            guard case .enter(let next, _, _) = outcome else { return nil }
+            return self.sequenceFromLoadedDocument(id: next)
+        }
         sequenceEngine.captionDriver = captionCues
         // KEYED MATERIALS (FL-14) on the same authored clock, wired the same
         // way: the driver polls, the engine hands it the Sequence's tracks

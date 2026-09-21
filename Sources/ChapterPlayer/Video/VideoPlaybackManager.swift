@@ -463,7 +463,12 @@ public class VideoPlaybackManager {
             // so no cue seek is needed — just gate the start on readiness.
             startGatedPlayback(player: queuePlayer, action: action, awaitSourceIn: false)
         } else {
-            let player = AVPlayer(playerItem: playerItem)
+            // THE CLIP THAT WAS WARMED FOR THIS PLAY, when there is one: its
+            // item is loaded, cued and prerolled, so the gate below clears in
+            // a frame or two instead of a cold start.
+            let warm = takeWarmed(for: action)
+            let playerItem = warm?.item ?? playerItem
+            let player = warm?.player ?? AVPlayer(playerItem: playerItem)
             player.volume = action.volume
             player.automaticallyWaitsToMinimizeStalling = false
             // Non-destructive source window: cap playback at sourceOut
@@ -490,9 +495,21 @@ public class VideoPlaybackManager {
                     player: player, item: playerItem, sourceIn: action.sourceIn
                 )
             }
-            attachToPresentation(player: player, presentation: action.presentation, channelKey: action.channel, channel: &channel, layout: action.layout)
-            channels[action.channel] = channel
-            startGatedPlayback(player: player, action: action, awaitSourceIn: true)
+            // A HARD CUT FROM A CLIP STILL ON THIS SCREEN: the Screen keeps the
+            // outgoing picture, and the incoming one is bound only once it has
+            // a frame (`startGatedPlayback`, `bindingAtReveal`). Binding now and
+            // hiding the Screen until ready is what made every cut blink.
+            if adoptHeldForCut(action: action) {
+                channel.entity = cutHolds[action.channel]?.entity
+                    ?? pendingDissolves[action.channel]?.channel.entity
+                channels[action.channel] = channel
+                startGatedPlayback(player: player, action: action, awaitSourceIn: true,
+                                   bindingAtReveal: true)
+            } else {
+                attachToPresentation(player: player, presentation: action.presentation, channelKey: action.channel, channel: &channel, crop: action.crop, layout: action.layout)
+                channels[action.channel] = channel
+                startGatedPlayback(player: player, action: action, awaitSourceIn: true)
+            }
         }
 
         logger.info("Playing video: \(action.file) on channel '\(action.channel)'")
@@ -526,7 +543,8 @@ public class VideoPlaybackManager {
         player: AVPlayer,
         action: VideoAction,
         awaitSourceIn: Bool,
-        forceCue: Bool = false
+        forceCue: Bool = false,
+        bindingAtReveal: Bool = false
     ) {
         // Immersive presentations do NOT gate. The skybox shows nothing
         // until the deferred VideoPlayerComponent attach lands, so there
@@ -551,9 +569,12 @@ public class VideoPlaybackManager {
             logger.info("[video.immersive] playback started ungated on channel '\(action.channel)' (VPC attach follows item readiness)")
             return
         }
-        if case .entity = action.presentation, let entity = channels[action.channel]?.entity {
+        // A cut keeps the OUTGOING picture on the Screen through this gate, so
+        // there is nothing to hide: the new Clip is not bound yet.
+        if !bindingAtReveal, case .entity = action.presentation, let entity = channels[action.channel]?.entity {
             entity.components.set(OpacityComponent(opacity: 0))
         }
+        let askedAt = Date.now
         Task { @MainActor [weak self, weak player] in
             guard let self, let player else { return }
             let isReady = await self.awaitCurrentItemReadyToPlay(player: player, timeout: 8.0)
@@ -603,10 +624,34 @@ public class VideoPlaybackManager {
                 // Revealing the stale capture flips opacity on a detached
                 // orphan while the REAL panel stays invisible forever —
                 // the "video at t=0 never appears" terminal state.
+                if bindingAtReveal, var live = self.channels[action.channel] {
+                    // THE CUT LANDS HERE: the incoming Clip is rolling and has
+                    // a frame, so the Screen changes hands in one write and the
+                    // outgoing player goes back. An Effect surface that painted
+                    // over the old picture is dropped first, so the next tick
+                    // builds it on the material that is actually there.
+                    if let entity = self.surfaceEntity(key: action.channel, live) {
+                        self.effectSurface.restore(channel: action.channel, entity: entity, livePlayer: player)
+                    }
+                    self.attachToPresentation(player: player, presentation: action.presentation,
+                                              channelKey: action.channel, channel: &live,
+                                              crop: action.crop, layout: action.layout)
+                    self.channels[action.channel] = live
+                    self.releaseCutHold(channel: action.channel)
+                    // A dissolve's outgoing side goes back where the adoption
+                    // looks for it, now that there is an incoming side to mix.
+                    if let outgoing = self.pendingDissolves.removeValue(forKey: action.channel) {
+                        self.held[action.channel] = outgoing
+                        self.adoptHeldForDissolve(action: action)
+                        self.refreshSurfaceTicker()
+                    }
+                }
                 if let entity = self.resolveLivePanelEntity(for: action) {
                     entity.isEnabled = true
                     entity.components.set(OpacityComponent(opacity: 1))
                 }
+                let ms = Date.now.timeIntervalSince(askedAt) * 1000
+                logger.notice("[cut] '\(action.file, privacy: .public)' on screen \(String(format: "%.0f", ms)) ms after play (\(bindingAtReveal ? "outgoing picture held" : "Screen hidden meanwhile", privacy: .public))")
             }
         }
     }
@@ -957,6 +1002,13 @@ public class VideoPlaybackManager {
         // re-store it after this stop.
         stopEpoch += 1
         explorePausedChannels.remove(channel)
+        // A stop that lands while a cut is still in hand ends both Clips: the
+        // outgoing one owes the Screen its full stop after all.
+        releaseCutHold(channel: channel, releasesDestination: channels[channel] == nil)
+        if let pending = pendingDissolves.removeValue(forKey: channel) {
+            finishStop(pending.channel, channel: channel + "#pending",
+                       releasesDestination: channels[channel] == nil)
+        }
         guard let ch = channels.removeValue(forKey: channel) else { return }
         // A dissolve whose outgoing side is still held ends with its panel.
         if let dissolve = dissolves.removeValue(forKey: channel) {
@@ -1016,6 +1068,20 @@ public class VideoPlaybackManager {
                 // replay structurally identical to a first play, mirroring
                 // what releaseImmersiveShell does for the skybox.
                 entity.components.remove(VideoPlayerComponent.self)
+                // AND THE PICTURE ITSELF. The plane's `VideoMaterial` names the
+                // player being discarded here, and a material left on a Screen
+                // is a trap for whoever next reads the component and writes it
+                // back: RealityKit dereferences the dead video asset
+                // (`REVideoAssetSetPreventPlaybackUntilReady`, SIGSEGV).
+                // `applyPanelStyles` did exactly that at the next Sequence's
+                // entry, whenever a corner radius differed. A stopped Screen
+                // goes back to what it was built as, an anchor that draws
+                // nothing; the next bind makes its plane from scratch, as it
+                // always has.
+                if let model = entity.components[ModelComponent.self],
+                   model.materials.contains(where: { $0 is VideoMaterial }) {
+                    entity.components.remove(ModelComponent.self)
+                }
                 if entity.components.has(OpacityComponent.self) {
                     entity.components[OpacityComponent.self]?.opacity = 1
                 }
@@ -1114,6 +1180,13 @@ public class VideoPlaybackManager {
     public func stopAll() {
         for (channel, holding) in held { finishStop(holding.channel, channel: channel) }
         held.removeAll()
+        for channel in Array(cutHolds.keys) { releaseCutHold(channel: channel, releasesDestination: true) }
+        for (channel, pending) in pendingDissolves { finishStop(pending.channel, channel: channel + "#pending") }
+        pendingDissolves.removeAll()
+        // `warmed` SURVIVES THIS ON PURPOSE. A Sequence hand-off runs through
+        // here, and the Clip warmed for the next Sequence's opening is the one
+        // thing that must outlive it. It is one paused, muted player per
+        // Screen at most, replaced by the next warm on that channel.
         for dissolve in dissolves.values { dissolve.outgoingChannel.player.pause() }
         dissolves.removeAll()
         refreshSurfaceTicker()
@@ -1567,6 +1640,114 @@ public class VideoPlaybackManager {
     /// shadow built-in assets without requiring a rebuild.
     public var mediaResolver: MediaResolver?
 
+    // MARK: - The next Clip, already up (2026-09-21)
+
+    /// A player for a Clip that has not been asked for yet: item loaded, cued
+    /// to its in point, prerolled, attached to nothing.
+    private struct WarmedClip {
+        let key: String
+        let player: AVPlayer
+        let item: AVPlayerItem
+    }
+    /// One per channel: the Clip that follows the one playing there.
+    private var warmed: [String: WarmedClip] = [:]
+
+    /// What makes a warmed player THE player for a play: the same bytes cut
+    /// the same way. Anything else plays cold, exactly as before.
+    private static func warmKey(_ action: VideoAction) -> String {
+        "\(action.file)|\(action.sourceIn ?? 0)|\(action.sourceOut ?? -1)|\(action.loop)"
+    }
+
+    /// PREHEATING WAS ONE CLIP PER CHANNEL, ONCE, AT LOAD, and a Screen is one
+    /// channel: of all the Clips ever cut onto a Screen only the first in the
+    /// Chapter was warm. Every later cut built an `AVPlayer` from nothing at
+    /// the instant it was due, and the Screen waited on it. This brings the
+    /// NEXT Clip up while the current one plays. Plain (non-looping) Clips on a
+    /// Screen only: a looper and an immersive shell have their own start
+    /// disciplines, recorded where they live, and are left to them.
+    public func warm(action: VideoAction) {
+        guard case .entity = action.presentation, !action.loop,
+              let url = findVideoURL(file: action.file) else { return }
+        let key = Self.warmKey(action)
+        if warmed[action.channel]?.key == key { return }
+        let item = AVPlayerItem(asset: AVURLAsset(url: url))
+        selectEmbeddedSubtitles(action.embeddedSubtitles ?? false, on: item)
+        if let out = action.sourceOut {
+            item.forwardPlaybackEndTime = CMTime(seconds: out, preferredTimescale: 600)
+        }
+        let player = AVPlayer(playerItem: item)
+        player.automaticallyWaitsToMinimizeStalling = false
+        player.isMuted = true
+        warmed[action.channel] = WarmedClip(key: key, player: player, item: item)
+        let sourceIn = max(0, action.sourceIn ?? 0)
+        Task { @MainActor [weak self, weak player] in
+            guard let self, let player,
+                  await self.awaitCurrentItemReadyToPlay(player: player, timeout: 8.0),
+                  self.warmed[action.channel]?.player === player else { return }
+            await withCheckedContinuation { (cont: CheckedContinuation<Void, Never>) in
+                player.seek(to: CMTime(seconds: sourceIn, preferredTimescale: 600),
+                            toleranceBefore: .zero, toleranceAfter: .zero) { _ in cont.resume() }
+            }
+            guard self.warmed[action.channel]?.player === player else { return }
+            await withCheckedContinuation { (cont: CheckedContinuation<Void, Never>) in
+                player.preroll(atRate: 1.0) { _ in cont.resume() }
+            }
+        }
+    }
+
+    /// The warmed player for `action`, if that is what was warmed. Taken, not
+    /// shared: a player belongs to one Clip.
+    private func takeWarmed(for action: VideoAction) -> WarmedClip? {
+        guard let clip = warmed[action.channel], clip.key == Self.warmKey(action) else { return nil }
+        warmed[action.channel] = nil
+        clip.player.isMuted = false
+        return clip
+    }
+
+    // MARK: - A cut that does not blink
+
+    /// The outgoing Clip of a HARD CUT, still on the Screen. Held from the
+    /// stop until the incoming Clip has a frame to show in its place.
+    private var cutHolds: [String: VideoChannel] = [:]
+
+    /// A held channel this play will simply replace (no renderable transition;
+    /// a dissolve is adopted elsewhere). Flat Screens only: the picture is a
+    /// material there, and a material can be swapped in one write. A spatial
+    /// panel's component attach is asynchronous and is left to its own path.
+    ///
+    /// A DISSOLVE TAKES THE SAME ROUTE. It used to bind the incoming Clip at
+    /// once and hide the Screen until that Clip was ready, so the one
+    /// transition whose whole purpose is continuity opened with a blank. The
+    /// outgoing picture now stands through the gate, and the mix is adopted
+    /// when the incoming Clip lands (`pendingDissolves`).
+    private func adoptHeldForCut(action: VideoAction) -> Bool {
+        let dissolves = action.videoTransition.map { $0.isRenderable && $0.duration > 0 } ?? false
+        guard case .entity(let name, _, _) = action.presentation,
+              let holding = held[action.channel], holding.entityName == name,
+              let entity = videoEntityRegistry[name],
+              entity.components[VideoPanelStyleComponent.self]?.spatialPresentation ?? .flat == .flat,
+              entity.components.has(ModelComponent.self) else { return false }
+        held[action.channel] = nil
+        releaseCutHold(channel: action.channel)      // never two
+        if dissolves {
+            pendingDissolves[action.channel] = holding
+        } else {
+            cutHolds[action.channel] = holding.channel
+        }
+        return true
+    }
+
+    /// The outgoing side of a dissolve whose incoming Clip is still coming
+    /// up. Out of `held`, so the 150 ms lapse cannot end it under the gate.
+    private var pendingDissolves: [String: HeldChannel] = [:]
+
+    /// Give the outgoing Clip's player back. The Screen is the incoming
+    /// Clip's now, so it is not touched.
+    private func releaseCutHold(channel: String, releasesDestination: Bool = false) {
+        guard let old = cutHolds.removeValue(forKey: channel) else { return }
+        finishStop(old, channel: channel + "#cut", releasesDestination: releasesDestination)
+    }
+
     // MARK: - Dissolve adoption (FL-12)
 
     /// The incoming play adopts the channel held for it: the outgoing
@@ -1578,8 +1759,15 @@ public class VideoPlaybackManager {
               let holding = held.removeValue(forKey: action.channel),
               case .entity(let name, _, _) = action.presentation,
               name == holding.entityName else {
+            // A hold nothing adopted (a looping Clip, a spatial panel, a play
+            // that took the prepared fast path). The Screen already belongs
+            // to the play that just bound it, so only the old player goes
+            // back, under a key of its own: the full stop under the LIVE
+            // channel's key disabled the Screen the new Clip had just taken
+            // and tore down the new Clip's Effect surface with it.
             if let stale = held.removeValue(forKey: action.channel) {
-                finishStop(stale.channel, channel: action.channel)
+                finishStop(stale.channel, channel: action.channel + "#stale",
+                           releasesDestination: false)
             }
             return
         }

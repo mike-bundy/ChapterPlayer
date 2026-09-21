@@ -163,6 +163,11 @@ public final class SequenceEngine {
     /// animation and audio-automation clocks are, so a gate holds a backdrop
     /// cue exactly where it holds a curve.
     public weak var backdropDriver: BackdropCueDriver?
+    /// The Sequence this one's completion would lead to, for warming its
+    /// first Clips; nil when it leads nowhere. THE HOST'S ANSWER, because where
+    /// a completion leads is the navigator's decision and this engine does not
+    /// read completions for itself (`sequence_reference_audit`).
+    public var followingSequenceProvider: (() -> SequenceDefinition?)?
     /// The caption follower (FL-08) — same relationship as the backdrop
     /// driver: hangs off the engine, is not part of it.
     public weak var captionDriver: CaptionCueDriver?
@@ -952,7 +957,8 @@ public final class SequenceEngine {
                       elapsedSinceStepStart >= scheduledInFireOrder[nextScheduled].at {
                     let scheduled = scheduledInFireOrder[nextScheduled]
                     nextScheduled += 1
-                    logger.info("Scheduled action fired at +\(String(format: "%.1f", scheduled.at))s in step \(step.id)")
+                    let lateMs = (Date.now.timeIntervalSince(stepStartTime) - stepPausedDuration - scheduled.at) * 1000
+                    logger.notice("[timing] action at +\(String(format: "%.3f", scheduled.at))s fired \(String(format: "%.0f", lateMs)) ms late (step \(step.id, privacy: .public))")
                     currentFiringOffset = scheduled.at
                     if scheduled.action.isAsync {
                         await executeAction(scheduled.action)
@@ -971,7 +977,18 @@ public final class SequenceEngine {
                 // experience does not age its region.
                 storyRegions?.tick()
 
-                let sleepTime = min(remaining, 0.25)
+                // WAKE FOR THE NEXT ACTION, NOT FOR THE NEXT QUARTER SECOND.
+                // The due check runs when this sleep returns, so a fixed
+                // 250 ms sleep fired every timed action somewhere between on
+                // time and a quarter second late, at a phase that differed on
+                // every playback: a cut authored at 3.833 s landed anywhere
+                // up to 4.083 s, and no two runs of a Sequence matched. The
+                // housekeeping cadence (status, Explore) stays the ceiling.
+                var sleepTime = min(remaining, 0.25)
+                if nextScheduled < scheduledInFireOrder.count {
+                    let now = Date.now.timeIntervalSince(stepStartTime) - stepPausedDuration
+                    sleepTime = min(sleepTime, max(0.002, scheduledInFireOrder[nextScheduled].at - now))
+                }
                 try? await Task.sleep(for: .seconds(sleepTime))
                 remaining = timeLeft()
             } while remaining > 0
@@ -1262,6 +1279,13 @@ public final class SequenceEngine {
     /// Whether a renderable dissolve play on `channel` fires at the SAME
     /// instant as the stop being dispatched — the butted predecessor the
     /// Kit's overlap arbiter requires.
+    ///
+    /// ANY play, not only a dissolve. A hard cut is a stop and a play at one
+    /// instant too, and the plain stop blanks the Screen while the incoming
+    /// Clip's player comes up: every cut between two Clips on one Screen
+    /// blinked. The outgoing picture is held for both; what the incoming play
+    /// does with it (mix it, or simply replace it once it has a frame) is the
+    /// video manager's decision.
     private func dissolveFollowsStop(on channel: String) -> Bool {
         guard let (step, _) = firingStep else { return false }
         let offset = currentFiringOffset
@@ -1269,9 +1293,29 @@ public final class SequenceEngine {
             step.actions.map { (0, $0) } + step.scheduledActions.map { ($0.at, $0.action) }
         return timed.contains { at, action in
             guard abs(at - offset) < 1e-6, case .playVideo(let v) = action,
-                  v.channel == channel, let spec = v.videoTransition else { return false }
-            return spec.isRenderable && spec.duration > 0
+                  v.channel == channel else { return false }
+            return true
         }
+    }
+
+    /// The next Clip on `channel` after the one firing now, anywhere later in
+    /// the Sequence. The video manager warms it while this one plays.
+    static func upcomingVideo(on channel: String, after absoluteTime: TimeInterval,
+                              in sequence: SequenceDefinition) -> VideoAction? {
+        var stepStart: TimeInterval = 0
+        var best: (time: TimeInterval, action: VideoAction)?
+        for step in sequence.steps {
+            let timed: [(TimeInterval, StepAction)] =
+                step.actions.map { (0, $0) } + step.scheduledActions.map { ($0.at, $0.action) }
+            for (at, action) in timed {
+                guard case .playVideo(let video) = action, video.channel == channel else { continue }
+                let time = stepStart + min(at, step.duration)
+                guard time > absoluteTime + 1e-6 else { continue }
+                if best == nil || time < best!.time { best = (time, video) }
+            }
+            stepStart += step.duration
+        }
+        return best?.action
     }
 
     /// Async action dispatch — for actions where the executor is actually async.
@@ -1336,6 +1380,19 @@ public final class SequenceEngine {
         case .playVideo(let videoAction):
             videoExecutor?.play(stamped(videoAction))
             alignToSeek(videoAction)
+            // The Clip after this one on the same Screen starts coming up now.
+            if let sequence = currentSequence {
+                if let next = Self.upcomingVideo(on: videoAction.channel,
+                                                 after: sequenceAnimationTime, in: sequence) {
+                    videoExecutor?.warm(next)
+                } else if let following = followingSequenceProvider?(),
+                          let first = Self.upcomingVideo(on: videoAction.channel, after: -1, in: following) {
+                    // The last Clip on this Screen in this Sequence: the first
+                    // one the NEXT Sequence cuts onto it comes up instead, so
+                    // an auto-advance does not open on an empty Screen.
+                    videoExecutor?.warm(first)
+                }
+            }
         case .prepareVideo(let videoAction):
             videoExecutor?.prepare(videoAction)
         case .stopVideo(let channel):
