@@ -248,6 +248,14 @@ public final class SequenceEngine {
 
         logger.info("Playing sequence: \(sequence.id) from step index \(clampedStart)/\(stepCount) (\(String(format: "%.1f", sequence.totalDuration))s total)")
 
+        // THE HOST LEARNS WHICH SEQUENCE THIS IS BEFORE ANYTHING IS PRESENTED
+        // FOR IT. `registerSequenceAnimation` begins the backdrop and caption
+        // drivers, and a backdrop presented while the host still held the
+        // previous Sequence's id (nil on a first play) was stamped with that
+        // id: its USDZ finished loading, failed the "is this still the
+        // Sequence that asked" check, and was thrown away. A first play of any
+        // Sequence with a USDZ Environment showed no Environment at all.
+        onSequenceStarted?(sequence.id)
         registerSequenceAnimation(sequence)
         // Re-arm interactions here rather than at each call site: this is the
         // one place every route into a Sequence passes through, and it runs
@@ -256,7 +264,6 @@ public final class SequenceEngine {
         // Explore regions belong to the same Sequence Visit.
         storyRegions?.begin(regions: sequence.storyRegions)
         startStatusReporting()
-        onSequenceStarted?(sequence.id)
 
         logger.notice("▶ play() creating playTask for sequence=\(sequence.id) stepIndex=\(clampedStart)")
         startPlayTask(sequence: sequence, startIndex: clampedStart)
@@ -286,6 +293,14 @@ public final class SequenceEngine {
 
         logger.info("Playing sequence (await): \(sequence.id) from step index \(clampedStart)/\(stepCount) (\(String(format: "%.1f", sequence.totalDuration))s total)")
 
+        // THE HOST LEARNS WHICH SEQUENCE THIS IS BEFORE ANYTHING IS PRESENTED
+        // FOR IT. `registerSequenceAnimation` begins the backdrop and caption
+        // drivers, and a backdrop presented while the host still held the
+        // previous Sequence's id (nil on a first play) was stamped with that
+        // id: its USDZ finished loading, failed the "is this still the
+        // Sequence that asked" check, and was thrown away. A first play of any
+        // Sequence with a USDZ Environment showed no Environment at all.
+        onSequenceStarted?(sequence.id)
         registerSequenceAnimation(sequence)
         // Re-arm interactions here rather than at each call site: this is the
         // one place every route into a Sequence passes through, and it runs
@@ -294,7 +309,6 @@ public final class SequenceEngine {
         // Explore regions belong to the same Sequence Visit.
         storyRegions?.begin(regions: sequence.storyRegions)
         startStatusReporting()
-        onSequenceStarted?(sequence.id)
 
         return await runStepsFrom(index: clampedStart, in: sequence)
     }

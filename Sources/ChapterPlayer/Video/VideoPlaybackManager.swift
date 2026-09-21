@@ -962,10 +962,17 @@ public class VideoPlaybackManager {
         refreshSurfaceTicker()
     }
 
-    private func finishStop(_ stopped: VideoChannel, channel: String) {
+    /// - Parameter releasesDestination: false for the OUTGOING side of a
+    ///   dissolve that has run its course. That Clip shares its Screen with the
+    ///   incoming one, which is still playing: giving its player back is all
+    ///   that is owed. Running the whole stop disabled the Screen and stripped
+    ///   its video component out from under the live Clip, so every cross
+    ///   dissolve ended by blanking its Screen until the next Clip rebound it.
+    private func finishStop(_ stopped: VideoChannel, channel: String,
+                            releasesDestination: Bool = true) {
         var ch = stopped
         if let entity = surfaceEntity(key: channel, ch) {
-            effectSurface.restore(channel: channel, entity: entity)
+            effectSurface.restore(channel: channel, entity: entity, livePlayer: ch.player)
         }
         effectSurface.forget(channel: channel)
         ch.player.pause()
@@ -974,6 +981,8 @@ public class VideoPlaybackManager {
             NotificationCenter.default.removeObserver(token)
             ch.loopObserver = nil
         }
+
+        guard releasesDestination else { return }
 
         // Hide / unbind the channel's target entity. For flat panels
         // we just disable it. For the immersive skybox, drop the
@@ -1571,7 +1580,17 @@ public class VideoPlaybackManager {
     /// A channel needs the per-frame path while it carries an enabled
     /// stack, a live dissolve, or a retime.
     private func channelNeedsTick(_ key: String, _ ch: VideoChannel) -> Bool {
-        guard case .entity = ch.presentation else { return false }
+        // A Screen, or an immersive shell MOUNTED AS A SURFACE. The graded
+        // immersive mount puts a black placeholder on the shell and relies on
+        // this tick to paint it; refusing every immersive channel here left
+        // it black for the length of the Clip, so any 180 or 360 carrying an
+        // Effect played as a void. `surfaceEntity` already makes the same
+        // distinction, and the two must agree.
+        switch ch.presentation {
+        case .entity: break
+        case .immersive: guard ch.usesSurface else { return false }
+        case .attachment: return false
+        }
         if ch.effects?.contains(where: \.enabled) == true { return true }
         if dissolves[key] != nil { return true }
         if let curve = ch.retime, !curve.isIdentity, ch.firedAt != nil, ch.span != nil { return true }
@@ -1600,7 +1619,7 @@ public class VideoPlaybackManager {
             surfaceTicker = nil
             for (key, ch) in channels {
                 if let entity = surfaceEntity(key: key, ch) {
-                    effectSurface.restore(channel: key, entity: entity)
+                    effectSurface.restore(channel: key, entity: entity, livePlayer: ch.player)
                 }
             }
         }
@@ -1653,12 +1672,13 @@ public class VideoPlaybackManager {
             if needsSurface {
                 jobs.append(job)
             } else {
-                effectSurface.restore(channel: key, entity: entity)
+                effectSurface.restore(channel: key, entity: entity, livePlayer: ch.player)
             }
         }
         for key in finished {
             if let dissolve = dissolves.removeValue(forKey: key) {
-                finishStop(dissolve.outgoingChannel, channel: key + "#outgoing")
+                finishStop(dissolve.outgoingChannel, channel: key + "#outgoing",
+                           releasesDestination: false)
             }
         }
         // FL-11: every occurrence some stack in this tick names as a

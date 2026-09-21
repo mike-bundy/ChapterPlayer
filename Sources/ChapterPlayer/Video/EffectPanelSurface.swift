@@ -274,7 +274,9 @@ final class EffectPanelSurface {
             if existing.width == width, existing.height == height {
                 return existing
             }
-            restore(channel: channel, entity: entity)
+            // Resizing: the new surface binds over whatever is there, so there
+            // is no video to put back in between.
+            restore(channel: channel, entity: entity, livePlayer: nil)
         }
         var descriptor = LowLevelTexture.Descriptor()
         descriptor.pixelFormat = .rgba16Float
@@ -319,12 +321,31 @@ final class EffectPanelSurface {
 
     /// A panel whose stack emptied and whose window closed goes back to its
     /// `VideoMaterial`.
-    func restore(channel: String, entity: Entity?) {
+    ///
+    /// FROM THE LIVE PLAYER, NEVER FROM THE SAVED MATERIAL. The originals were
+    /// captured when this surface took the panel over, and a Screen outlives
+    /// its Clips: each play makes its own `AVPlayer` and releases the last. A
+    /// `VideoMaterial` saved under one Clip and put back under a later one
+    /// names a video asset that is gone, and RealityKit does not refuse it:
+    /// it dereferences it (`REVideoAssetSetPreventPlaybackUntilReady`, a
+    /// segfault that takes the app down mid-Sequence). Anything else that was
+    /// saved is inert data and goes back as it was.
+    func restore(channel: String, entity: Entity?, livePlayer: AVPlayer?) {
         guard let surface = surfaces.removeValue(forKey: channel) else { return }
         lastFrames.removeValue(forKey: channel)
         lastFrameColorSpaces.removeValue(forKey: channel)
-        if let entity, ObjectIdentifier(entity) == surface.entityIdentity {
-            Self.setMaterials(surface.originals, on: entity)
+        guard let entity, ObjectIdentifier(entity) == surface.entityIdentity else { return }
+        let restored = Self.restorable(surface.originals, livePlayer: livePlayer)
+        if !restored.isEmpty { Self.setMaterials(restored, on: entity) }
+    }
+
+    /// The saved materials with every video material re-minted on the player
+    /// that is alive now, or dropped when none is.
+    static func restorable(_ originals: [any RealityKit.Material],
+                           livePlayer: AVPlayer?) -> [any RealityKit.Material] {
+        originals.compactMap { material in
+            guard material is VideoMaterial else { return material }
+            return livePlayer.map { VideoMaterial(avPlayer: $0) }
         }
     }
 

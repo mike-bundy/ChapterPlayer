@@ -93,6 +93,13 @@ public final class EntityFactory {
             // the sequence's `EntityAnimationTrack`, and `playSpatial` parents
             // the sound to it. RealityKit then carries the sound along.
             entity = Entity()
+        case .placeholder where definition.isVideoDestination:
+            // A SCREEN WITH NO FOOTAGE OF ITS OWN IS STILL A SCREEN. It is
+            // built exactly as a Screen is: an invisible anchor that draws
+            // nothing until a video binds to it, so the rule below holds (no
+            // gray box can reach an audience) and the videos authored on it
+            // have somewhere to play.
+            entity = makeVideoPanel(definition)
         case .placeholder:
             // BLOCKING CONTENT BUILDS NOTHING AT RUNTIME.
             //
@@ -424,7 +431,7 @@ public final class EntityFactory {
         // definition. Stamped whenever any of it is non-default.
         let presentation = def.videoPanel?.spatialPresentation ?? .flat
         let tinting = def.videoPanel?.passthroughTinting ?? false
-        let radius = def.videoPanel?.cornerRadius ?? 0
+        let radius = def.videoPanel?.cornerRadius ?? def.placeholder?.cornerRadius ?? 0
         if radius > 0 || presentation != .flat || tinting {
             entity.components.set(VideoPanelStyleComponent(
                 cornerRadius: radius,

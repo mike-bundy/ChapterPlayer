@@ -211,12 +211,29 @@ open class ChapterPlayerCore {
             // document's (a live edit lands through `applyEnvironment`).
             applyEnvironment(requestedEnvironment)
 
-            if let document = loadedExperience?.document, immersiveSceneRoot != nil {
+            // The host's LIVE document and resolver, where it has them. An
+            // editor host used to let this build the scene from the load-time
+            // pair and then build it all again from its own a moment later:
+            // every model in the Chapter loaded twice on every mount.
+            if let document = currentDocumentForStyling(), immersiveSceneRoot != nil {
                 documentEntities.materialize(
                     document: document,
                     sceneRoot: immersiveSceneRoot,
-                    mediaResolver: loadedExperience?.mediaResolver
+                    mediaResolver: currentMediaResolver()
                 )
+                // A SCENE THAT ARRIVES MID-SEQUENCE IS BROUGHT TO THE MOMENT.
+                // Whoever opens the space (this core, or a host's own
+                // coordinator), the root can mount after Play: the Sequence's
+                // opening actions have then already fired at an empty
+                // registry, and fresh entities come up hidden. Everything
+                // they should have revealed stayed hidden for the rest of the
+                // Sequence (a Screen with its video playing, unseen). A seek
+                // to where the clock already is pre-fires what came before.
+                if sequenceEngine.isPlaying {
+                    let now = sequenceEngine.sequenceAnimationTime
+                    logger.info("[scene] built mid-Sequence at \(String(format: "%.2f", now))s: re-firing what came before")
+                    sequenceEngine.seek(toSequenceTime: now)
+                }
             }
             // Rebase the scene root to the viewer's head so all authored
             // coordinates are implicitly head-relative — entities placed
@@ -389,6 +406,9 @@ open class ChapterPlayerCore {
     /// on every teardown; a completion whose generation has moved on discards
     /// itself instead of installing a second copy.
     private var backdropUSDZGeneration: UInt64 = 0
+    /// The asset the mounted (or in-flight) USDZ backdrop came from, so the
+    /// same world presented again is MOVED rather than reloaded.
+    private var backdropUSDZAssetId: String?
 
     /// Whether the skybox entity currently holds a `.image` backdrop's
     /// sphere mesh + UnlitMaterial. Tracked separately from the
@@ -664,6 +684,26 @@ open class ChapterPlayerCore {
         // every entry would reset the memory on the first Go To.
         if !storyState.isSessionActive { beginChapterPlaybackSession() }
         await applySequencePresentation(sequence)
+        // THE SCENE EXISTS BEFORE ANYTHING IS ASKED OF IT. The same race as
+        // the skybox wait below, one level up: a host that plays as soon as
+        // it has opened (an autoplaying Chapter, a Play pressed while the
+        // space is still coming up) reached the engine with nothing
+        // registered. Every action at t=0 then named an entity that "did not
+        // exist", was logged and dropped, and what it should have revealed
+        // stayed hidden for the rest of the Sequence. Bounded: a host with no
+        // immersive scene at all (windowed) is not held up for long.
+        // ONLY WHILE A SPACE IS COMING UP. `applySequencePresentation` has just
+        // returned with the space open, and the scene root mounts a beat after
+        // that. A host with no immersive space (a windowed player, a test) is
+        // never going to build a scene, and must not be made to wait for one.
+        if immersiveSpaceState == .open,
+           currentDocumentForStyling()?.entities.isEmpty == false, !documentEntities.hasMaterialized {
+            let deadline = Date().addingTimeInterval(5.0)
+            while Date() < deadline, !documentEntities.hasMaterialized {
+                try? await Task.sleep(nanoseconds: 100_000_000)
+            }
+            logger.info("[scene] materialize wait finished (built=\(self.documentEntities.hasMaterialized))")
+        }
         // The FIRST play of a session races the ImmersiveSpace open:
         // openSpace returns when the system creates the scene, but the
         // consumer's RealityView registers the skybox shell a beat later
@@ -701,6 +741,12 @@ open class ChapterPlayerCore {
     /// by default; an editor host with a live synced copy overrides.
     open func currentDocumentForStyling() -> ChapterDocument? {
         loadedExperience?.document
+    }
+
+    /// The resolver the scene is built with: the load-time one by default; an
+    /// editor host with on-device media overrides.
+    open func currentMediaResolver() -> MediaResolver? {
+        loadedExperience?.mediaResolver
     }
 
     /// Apply a sequence's panel-style overrides (`SequenceDefinitionDTO
@@ -1257,6 +1303,22 @@ open class ChapterPlayerCore {
                 return
             }
         }
+        // THE SAME WORLD, PRESENTED AGAIN, IS MOVED.
+        //
+        // A Sequence start presents cue zero twice (the host, then the cue
+        // driver's own synchronous apply), and every seek or Segment jump
+        // presents it once more. Each used to tear the model down and load it
+        // again; an environment is routinely hundreds of megabytes, so a
+        // ruler tap cost seconds of nothing and the first play loaded it
+        // twice. Mounted or still loading, the placement is what changed.
+        if case .usdz(let assetId)? = backdropSpec,
+           sequencePresentation != .windowed,
+           assetId == backdropUSDZAssetId,
+           immersiveSceneRoot != nil,
+           currentBackdropUSDZ == nil || currentBackdropUSDZ?.parent === immersiveSceneRoot {
+            applyBackdropPlacement()
+            return
+        }
         // First, drop whatever was bound for the previous sequence so
         // the new sequence starts from a clean slate.
         videoManager.stop(channel: Self.backdropVideoChannel)
@@ -1265,6 +1327,7 @@ open class ChapterPlayerCore {
         backdropUSDZGeneration &+= 1
         currentBackdropUSDZ?.removeFromParent()
         currentBackdropUSDZ = nil
+        backdropUSDZAssetId = nil
         tearDownImageSkybox()
 
         // Backdrops only make sense for immersive / mixed sequences.
@@ -1349,11 +1412,15 @@ open class ChapterPlayerCore {
             // install the backdrop into the torn-down scene.
             backdropUSDZGeneration &+= 1
             let generation = backdropUSDZGeneration
+            backdropUSDZAssetId = assetId
             Task { @MainActor in
                 do {
                     let entity = try await Entity(contentsOf: url)
-                    guard self.backdropUSDZGeneration == generation,
-                          self.activeSequenceId == sequenceId else { return }
+                    // The generation IS the staleness test: every present and
+                    // every teardown moves it. The Sequence id was checked here
+                    // too, and a present stamped before the host learned the id
+                    // failed it on a load nothing had superseded.
+                    guard self.backdropUSDZGeneration == generation else { return }
                     guard let liveRoot = self.immersiveSceneRoot else {
                         logger.warning("Backdrop USDZ '\(assetId)' finished loading after the immersive root went away — discarding.")
                         return
@@ -1365,6 +1432,7 @@ open class ChapterPlayerCore {
                     self.currentBackdropUSDZ = entity
                     self.applyBackdropPlacement()
                 } catch {
+                    if self.backdropUSDZGeneration == generation { self.backdropUSDZAssetId = nil }
                     logger.warning("Failed to load backdrop USDZ '\(assetId)': \(String(describing: error))")
                 }
             }
@@ -1383,10 +1451,14 @@ open class ChapterPlayerCore {
             logger.warning("Image backdrop has no 'skybox' entity registered.")
             return
         }
+        // Every present and teardown moves the generation, so it answers "is
+        // this still the backdrop anyone asked for" without depending on when
+        // the host learned the Sequence's id (see the USDZ branch).
+        let generation = backdropUSDZGeneration
         Task { @MainActor in
             do {
                 let texture = try await TextureResource(contentsOf: url, options: .init(semantic: .color))
-                guard self.activeSequenceId == sequenceId else { return }
+                guard self.backdropUSDZGeneration == generation else { return }
                 let mesh: MeshResource
                 switch field {
                 case .equirect360:

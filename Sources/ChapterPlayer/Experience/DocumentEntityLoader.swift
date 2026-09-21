@@ -62,8 +62,33 @@ public final class DocumentEntityLoader {
     /// Build every entity in `document.entities` and wire it into the
     /// scene + executors. Idempotent: a second call with a new document
     /// removes the prior batch first.
+    /// What the standing scene was built from, so a caller that only wants
+    /// the scene to MATCH can ask (`isCurrent`) instead of rebuilding.
+    private var builtFrom: (entities: [EntityDefinition], presets: [ParticleEmitterPreset],
+                            root: ObjectIdentifier, hadResolver: Bool)?
+
+    /// True once a document's entities stand in a scene. A Sequence started
+    /// before this fires its opening reveals at an empty registry.
+    public var hasMaterialized: Bool { anchor?.parent != nil }
+
+    /// True when the standing scene was built from exactly these inputs.
+    /// NOT a reason to skip a rebuild asked for because media ARRIVED: the
+    /// same inputs can resolve to more files than they did.
+    public func isCurrent(document: ChapterDocument, sceneRoot: Entity, mediaResolver: MediaResolver?) -> Bool {
+        guard let builtFrom, anchor?.parent === sceneRoot else { return false }
+        return builtFrom.root == ObjectIdentifier(sceneRoot)
+            // Resolvers are values with no identity to compare. Whether one
+            // was supplied is what distinguishes the two builds a host makes.
+            && builtFrom.hadResolver == (mediaResolver != nil)
+            && builtFrom.entities == document.entities
+            && builtFrom.presets == document.particlePresets
+    }
+
     public func materialize(document: ChapterDocument, sceneRoot: Entity?, mediaResolver: MediaResolver? = nil) {
         unload()
+        builtFrom = sceneRoot.map {
+            (document.entities, document.particlePresets, ObjectIdentifier($0), mediaResolver != nil)
+        }
 
         // Give the factory the resolver so image entities ("Add Image"
         // reveals) can locate their files and render as textured planes.
@@ -117,7 +142,7 @@ public final class DocumentEntityLoader {
             // VideoPanel entities are *also* discoverable by the
             // VideoPlaybackManager so `.entity(name:)` presentation can
             // bind a `VideoMaterial` on the right plane.
-            if definition.kind == .videoPanel {
+            if definition.isVideoDestination {
                 videoManager.videoEntityRegistry[definition.id] = entity
             }
 
@@ -212,7 +237,7 @@ public final class DocumentEntityLoader {
         anchor.addChild(entity)
         entityExecutor.register(entity, name: definition.id)
         registeredNames.insert(definition.id)
-        if definition.kind == .videoPanel {
+        if definition.isVideoDestination {
             videoManager.videoEntityRegistry[definition.id] = entity
         }
         docEntityLogger.info("Incrementally materialized '\(definition.id)'")
@@ -245,6 +270,7 @@ public final class DocumentEntityLoader {
     /// backdrop so a subsequent bundled-content play still gets its
     /// authored scenery.
     public func unload() {
+        builtFrom = nil
         guard let entityExecutor, let videoManager else { return }
         for name in registeredNames {
             entityExecutor.unregister(name: name)
