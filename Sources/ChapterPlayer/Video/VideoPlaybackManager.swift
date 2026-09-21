@@ -113,6 +113,12 @@ public class VideoPlaybackManager {
         let channel: VideoChannel
         let entityName: String
         let heldAt: TimeInterval
+        /// The outgoing Clip's file and media time AT THE HOLD. Read then,
+        /// because on a Screen's persistent player the "outgoing player" is
+        /// also the incoming one, and by the time a dissolve is adopted its
+        /// current item is the new Clip.
+        var outgoingURL: URL? = nil
+        var outgoingSeconds: Double = 0
     }
     private var held: [String: HeldChannel] = [:]
     /// A live dissolve on a channel: the outgoing side's held frame and
@@ -466,9 +472,21 @@ public class VideoPlaybackManager {
             // THE CLIP THAT WAS WARMED FOR THIS PLAY, when there is one: its
             // item is loaded, cued and prerolled, so the gate below clears in
             // a frame or two instead of a cold start.
-            let warm = takeWarmed(for: action)
-            let playerItem = warm?.item ?? playerItem
-            let player = warm?.player ?? AVPlayer(playerItem: playerItem)
+            // A CUT FROM A CLIP STILL ON THIS SCREEN stays on the Screen's
+            // player (`cutOnTheScreensPlayer`): no new player, no new
+            // material, nothing for a headset to blink through.
+            let heldForThisPlay = adoptHeldForCut(action: action)
+            let screensPlayer = heldForThisPlay ? cutOnTheScreensPlayer(action: action) : nil
+            let warm = screensPlayer == nil ? takeWarmed(for: action) : nil
+            let playerItem = screensPlayer?.currentItem ?? warm?.item ?? playerItem
+            // A queue player, so the NEXT Clip can be queued behind this one.
+            // With one item it is a plain player; `.pause` keeps the engine,
+            // not the end of a file, in charge of when a cut happens.
+            let player: AVPlayer = screensPlayer ?? warm?.player ?? {
+                let queue = AVQueuePlayer(items: [playerItem])
+                queue.actionAtItemEnd = .pause
+                return queue
+            }()
             player.volume = action.volume
             player.automaticallyWaitsToMinimizeStalling = false
             // Non-destructive source window: cap playback at sourceOut
@@ -499,12 +517,12 @@ public class VideoPlaybackManager {
             // outgoing picture, and the incoming one is bound only once it has
             // a frame (`startGatedPlayback`, `bindingAtReveal`). Binding now and
             // hiding the Screen until ready is what made every cut blink.
-            if adoptHeldForCut(action: action) {
+            if heldForThisPlay {
                 channel.entity = cutHolds[action.channel]?.entity
                     ?? pendingDissolves[action.channel]?.channel.entity
                 channels[action.channel] = channel
                 startGatedPlayback(player: player, action: action, awaitSourceIn: true,
-                                   bindingAtReveal: true)
+                                   bindingAtReveal: true, onTheScreensPlayer: screensPlayer != nil)
             } else {
                 attachToPresentation(player: player, presentation: action.presentation, channelKey: action.channel, channel: &channel, crop: action.crop, layout: action.layout)
                 channels[action.channel] = channel
@@ -544,7 +562,8 @@ public class VideoPlaybackManager {
         action: VideoAction,
         awaitSourceIn: Bool,
         forceCue: Bool = false,
-        bindingAtReveal: Bool = false
+        bindingAtReveal: Bool = false,
+        onTheScreensPlayer: Bool = false
     ) {
         // Immersive presentations do NOT gate. The skybox shows nothing
         // until the deferred VideoPlayerComponent attach lands, so there
@@ -633,9 +652,24 @@ public class VideoPlaybackManager {
                     if let entity = self.surfaceEntity(key: action.channel, live) {
                         self.effectSurface.restore(channel: action.channel, entity: entity, livePlayer: player)
                     }
-                    self.attachToPresentation(player: player, presentation: action.presentation,
-                                              channelKey: action.channel, channel: &live,
-                                              crop: action.crop, layout: action.layout)
+                    if onTheScreensPlayer, let entity = live.entity,
+                       var model = entity.components[ModelComponent.self],
+                       model.materials.contains(where: { ($0 as? VideoMaterial)?.avPlayer === player }),
+                       case .entity(_, let width, let height) = action.presentation {
+                        // THE MATERIAL STAYS. Only the plane can differ between
+                        // two Clips (a crop), and a mesh is inert data: writing
+                        // the model back with its LIVE material re-registers
+                        // nothing.
+                        let radius = entity.components[VideoPanelStyleComponent.self]?.cornerRadius ?? 0
+                        model.mesh = VideoPanelCropMesh.make(
+                            width: width, height: height,
+                            cornerRadius: min(radius, min(width, height) / 2), crop: action.crop)
+                        entity.components.set(model)
+                    } else {
+                        self.attachToPresentation(player: player, presentation: action.presentation,
+                                                  channelKey: action.channel, channel: &live,
+                                                  crop: action.crop, layout: action.layout)
+                    }
                     self.channels[action.channel] = live
                     self.releaseCutHold(channel: action.channel)
                     // A dissolve's outgoing side goes back where the adoption
@@ -651,7 +685,7 @@ public class VideoPlaybackManager {
                     entity.components.set(OpacityComponent(opacity: 1))
                 }
                 let ms = Date.now.timeIntervalSince(askedAt) * 1000
-                logger.notice("[cut] '\(action.file, privacy: .public)' on screen \(String(format: "%.0f", ms)) ms after play (\(bindingAtReveal ? "outgoing picture held" : "Screen hidden meanwhile", privacy: .public))")
+                logger.notice("[cut] '\(action.file, privacy: .public)' on screen \(String(format: "%.0f", ms)) ms after play (\(onTheScreensPlayer ? "same player and material" : bindingAtReveal ? "outgoing picture held, new material" : "Screen hidden meanwhile", privacy: .public))")
             }
         }
     }
@@ -982,7 +1016,11 @@ public class VideoPlaybackManager {
         explorePausedChannels.remove(channel)
         channels.removeValue(forKey: channel)
         ch.player.pause()
-        held[channel] = HeldChannel(channel: ch, entityName: name, heldAt: clock())
+        let outgoingItem = ch.player.currentItem
+        held[channel] = HeldChannel(
+            channel: ch, entityName: name, heldAt: clock(),
+            outgoingURL: (outgoingItem?.asset as? AVURLAsset)?.url,
+            outgoingSeconds: outgoingItem?.currentTime().seconds ?? 0)
         Task { [weak self] in
             try? await Task.sleep(for: .milliseconds(150))
             self?.lapseHold(channel: channel)
@@ -1009,9 +1047,12 @@ public class VideoPlaybackManager {
             finishStop(pending.channel, channel: channel + "#pending",
                        releasesDestination: channels[channel] == nil)
         }
+        queuedNext[channel] = nil
         guard let ch = channels.removeValue(forKey: channel) else { return }
         // A dissolve whose outgoing side is still held ends with its panel.
         if let dissolve = dissolves.removeValue(forKey: channel) {
+            // (When the Screen's player is shared this is the live player,
+            // and the full stop below pauses it anyway.)
             dissolve.outgoingChannel.player.pause()
         }
         finishStop(ch, channel: channel)
@@ -1024,14 +1065,17 @@ public class VideoPlaybackManager {
     ///   that is owed. Running the whole stop disabled the Screen and stripped
     ///   its video component out from under the live Clip, so every cross
     ///   dissolve ended by blanking its Screen until the next Clip rebound it.
+    /// - Parameter pausesPlayer: false when the outgoing Clip's player IS the
+    ///   incoming Clip's (a cut on a Screen's persistent player): pausing it
+    ///   here would freeze the Clip that has just started.
     private func finishStop(_ stopped: VideoChannel, channel: String,
-                            releasesDestination: Bool = true) {
+                            releasesDestination: Bool = true, pausesPlayer: Bool = true) {
         var ch = stopped
         if let entity = surfaceEntity(key: channel, ch) {
             effectSurface.restore(channel: channel, entity: entity, livePlayer: ch.player)
         }
         effectSurface.forget(channel: channel)
-        ch.player.pause()
+        if pausesPlayer { ch.player.pause() }
         ch.looper = nil
         if let token = ch.loopObserver {
             NotificationCenter.default.removeObserver(token)
@@ -1183,6 +1227,7 @@ public class VideoPlaybackManager {
         for channel in Array(cutHolds.keys) { releaseCutHold(channel: channel, releasesDestination: true) }
         for (channel, pending) in pendingDissolves { finishStop(pending.channel, channel: channel + "#pending") }
         pendingDissolves.removeAll()
+        queuedNext.removeAll()
         // `warmed` SURVIVES THIS ON PURPOSE. A Sequence hand-off runs through
         // here, and the Clip warmed for the next Sequence's opening is the one
         // thing that must outlive it. It is one paused, muted player per
@@ -1646,7 +1691,7 @@ public class VideoPlaybackManager {
     /// to its in point, prerolled, attached to nothing.
     private struct WarmedClip {
         let key: String
-        let player: AVPlayer
+        let player: AVQueuePlayer
         let item: AVPlayerItem
     }
     /// One per channel: the Clip that follows the one playing there.
@@ -1668,6 +1713,13 @@ public class VideoPlaybackManager {
     public func warm(action: VideoAction) {
         guard case .entity = action.presentation, !action.loop,
               let url = findVideoURL(file: action.file) else { return }
+        // ON THE SCREEN'S OWN PLAYER when a Clip is playing there: that is
+        // what makes the cut to it seamless on a headset. A separate warmed
+        // player is for a Screen nothing is playing on (a Sequence's opening).
+        if let live = channels[action.channel], case .entity = live.presentation, live.looper == nil,
+           let queue = live.player as? AVQueuePlayer, queueNext(action, on: queue) {
+            return
+        }
         let key = Self.warmKey(action)
         if warmed[action.channel]?.key == key { return }
         let item = AVPlayerItem(asset: AVURLAsset(url: url))
@@ -1675,7 +1727,8 @@ public class VideoPlaybackManager {
         if let out = action.sourceOut {
             item.forwardPlaybackEndTime = CMTime(seconds: out, preferredTimescale: 600)
         }
-        let player = AVPlayer(playerItem: item)
+        let player = AVQueuePlayer(items: [item])
+        player.actionAtItemEnd = .pause
         player.automaticallyWaitsToMinimizeStalling = false
         player.isMuted = true
         warmed[action.channel] = WarmedClip(key: key, player: player, item: item)
@@ -1745,7 +1798,98 @@ public class VideoPlaybackManager {
     /// Clip's now, so it is not touched.
     private func releaseCutHold(channel: String, releasesDestination: Bool = false) {
         guard let old = cutHolds.removeValue(forKey: channel) else { return }
-        finishStop(old, channel: channel + "#cut", releasesDestination: releasesDestination)
+        finishStop(old, channel: channel + "#cut", releasesDestination: releasesDestination,
+                   pausesPlayer: channels[channel]?.player !== old.player)
+    }
+
+    // MARK: - One player per Screen (2026-09-21)
+
+    /// The Clip queued behind the one playing on a Screen's player.
+    private var queuedNext: [String: (key: String, item: AVPlayerItem)] = [:]
+
+    /// A NEW `VideoMaterial` DRAWS NOTHING UNTIL REALITYKIT HAS REGISTERED AS
+    /// ITS PLAYER'S VIDEO TARGET AND A FRAME HAS CROSSED OVER, which on a
+    /// headset is a round trip to another process and on the Simulator is not.
+    /// So a cut that made a player and a material per Clip blinked on device
+    /// and measured clean on the Simulator, while the Mac Viewer, which keeps
+    /// ONE queue player per destination "so the VideoMaterial binding
+    /// survives a source change", never blinked at all. This is that design:
+    /// a Screen's player and material stay, and a cut is the next item.
+    ///
+    /// Returns the queue player carrying `action`'s item as its current item,
+    /// or nil when this cut cannot take that route (the caller plays it the
+    /// old way, which is still correct, only not seamless).
+    private func cutOnTheScreensPlayer(action: VideoAction) -> AVQueuePlayer? {
+        // A cut's hold or a dissolve's. What the Screen is SHOWING is not asked:
+        // under a graded Clip it is the Effect surface's material, and the
+        // video material comes back (the same instance, on this same player)
+        // when the surface is restored.
+        guard let outgoing = cutHolds[action.channel] ?? pendingDissolves[action.channel]?.channel,
+              let queue = outgoing.player as? AVQueuePlayer,
+              outgoing.looper == nil,
+              outgoing.entity?.components.has(ModelComponent.self) == true
+        else { return nil }
+
+        let item: AVPlayerItem
+        if let queued = queuedNext[action.channel], queued.key == Self.warmKey(action),
+           queue.items().contains(queued.item) {
+            item = queued.item
+        } else {
+            guard let url = findVideoURL(file: action.file) else { return nil }
+            item = AVPlayerItem(asset: AVURLAsset(url: url))
+            selectEmbeddedSubtitles(action.embeddedSubtitles ?? false, on: item)
+            if let out = action.sourceOut {
+                item.forwardPlaybackEndTime = CMTime(seconds: out, preferredTimescale: 600)
+            }
+            guard queue.canInsert(item, after: queue.currentItem) else { return nil }
+            queue.insert(item, after: queue.currentItem)
+        }
+        queuedNext[action.channel] = nil
+        // Exactly the outgoing item and this one: anything else queued was for
+        // a cut that did not happen.
+        for stray in queue.items() where stray !== item && stray !== queue.currentItem {
+            queue.remove(stray)
+        }
+        if queue.currentItem !== item { queue.advanceToNextItem() }
+        return queue.currentItem === item ? queue : nil
+    }
+
+    /// Put the next Clip on the Screen's own player, behind the one playing.
+    /// AVFoundation prepares a queued item itself, which is the whole reason
+    /// a queue player exists.
+    private func queueNext(_ action: VideoAction, on queue: AVQueuePlayer) -> Bool {
+        guard let url = findVideoURL(file: action.file) else { return false }
+        let key = Self.warmKey(action)
+        if queuedNext[action.channel]?.key == key { return true }
+        if let stale = queuedNext[action.channel]?.item, queue.items().contains(stale),
+           stale !== queue.currentItem {
+            queue.remove(stale)
+        }
+        let item = AVPlayerItem(asset: AVURLAsset(url: url))
+        selectEmbeddedSubtitles(action.embeddedSubtitles ?? false, on: item)
+        if let out = action.sourceOut {
+            item.forwardPlaybackEndTime = CMTime(seconds: out, preferredTimescale: 600)
+        }
+        guard queue.canInsert(item, after: queue.items().last) else { return false }
+        queue.insert(item, after: queue.items().last)
+        queuedNext[action.channel] = (key, item)
+        let sourceIn = max(0, action.sourceIn ?? 0)
+        guard sourceIn > 0 else { return true }
+        // Cue it to its in point as soon as it can be cued, so the cut does
+        // not have to.
+        Task { @MainActor [weak self, weak item] in
+            for _ in 0..<400 {
+                guard let self, let item, self.queuedNext[action.channel]?.item === item else { return }
+                if item.status == .readyToPlay {
+                    await item.seek(to: CMTime(seconds: sourceIn, preferredTimescale: 600),
+                                    toleranceBefore: .zero, toleranceAfter: .zero)
+                    return
+                }
+                if item.status == .failed { return }
+                try? await Task.sleep(nanoseconds: 20_000_000)
+            }
+        }
+        return true
     }
 
     // MARK: - Dissolve adoption (FL-12)
@@ -1775,9 +1919,8 @@ public class VideoPlaybackManager {
         dissolves[action.channel] = LiveDissolve(
             outgoing: nil, outgoingEffects: outgoing.effects ?? [],
             outgoingChannel: outgoing, startedAt: firedAt, duration: spec.duration)
-        guard let item = outgoing.player.currentItem,
-              let url = (item.asset as? AVURLAsset)?.url else { return }
-        let seconds = item.currentTime().seconds
+        guard let url = holding.outgoingURL else { return }
+        let seconds = holding.outgoingSeconds
         Task { [weak self] in
             let frame = await EffectPanelSurface.heldFrame(of: url, at: seconds)
             guard let self, var live = self.dissolves[action.channel],
@@ -1890,7 +2033,8 @@ public class VideoPlaybackManager {
         for key in finished {
             if let dissolve = dissolves.removeValue(forKey: key) {
                 finishStop(dissolve.outgoingChannel, channel: key + "#outgoing",
-                           releasesDestination: false)
+                           releasesDestination: false,
+                           pausesPlayer: channels[key]?.player !== dissolve.outgoingChannel.player)
             }
         }
         // FL-11: every occurrence some stack in this tick names as a

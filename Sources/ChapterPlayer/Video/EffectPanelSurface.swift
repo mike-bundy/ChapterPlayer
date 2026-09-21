@@ -344,7 +344,12 @@ final class EffectPanelSurface {
     static func restorable(_ originals: [any RealityKit.Material],
                            livePlayer: AVPlayer?) -> [any RealityKit.Material] {
         originals.compactMap { material in
-            guard material is VideoMaterial else { return material }
+            guard let video = material as? VideoMaterial else { return material }
+            // THE SAME MATERIAL BACK when it is on the player that is alive:
+            // a Screen keeps its player across Clips now, and a material that
+            // goes back as itself has nothing to re-register. A fresh one
+            // draws nothing on a headset until its video target is bound.
+            if let livePlayer, video.avPlayer === livePlayer { return video }
             return livePlayer.map { VideoMaterial(avPlayer: $0) }
         }
     }
