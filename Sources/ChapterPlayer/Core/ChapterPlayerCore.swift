@@ -262,8 +262,26 @@ open class ChapterPlayerCore {
     /// Before the root is mounted it only records the request.
     public func applyEnvironment(_ spec: EnvironmentSpec?) {
         requestedEnvironment = spec
+        refreshSceneLight()
+    }
+
+    /// What stands around the viewer right now, for light. A still
+    /// Environment is known here (`presentBackdrop`); an immersive video,
+    /// cue or Clip, is reported by the video manager, and wins while it plays
+    /// because it is what the viewer is actually inside.
+    private var stillSurround: EnvironmentApplier.Surround = .room
+    private var videoSurround: EnvironmentApplier.Surround?
+    /// True while the presented Sequence is fully immersive. In passthrough
+    /// the room IS the world, and its light is the right light.
+    private var lightIsTheWorlds = false
+
+    public var currentLightSurround: EnvironmentApplier.Surround {
+        lightIsTheWorlds ? (videoSurround ?? stillSurround) : .room
+    }
+
+    private func refreshSceneLight() {
         guard let root = immersiveSceneRoot else { return }
-        environmentApplier.apply(spec, to: root)
+        environmentApplier.apply(requestedEnvironment, surround: currentLightSurround, to: root)
     }
 
     // MARK: - Head-anchored scene root
@@ -525,6 +543,21 @@ open class ChapterPlayerCore {
         // are authored after load; arming from the load-time snapshot armed
         // the Chapter as opened, so an Interaction made this session never
         // answered a tap until the Chapter was reopened.
+        environmentApplier.mediaURL = { [weak self] file, isVideo in
+            self?.resolveBackdropAssetURL(file: file, kind: isVideo ? .video : .image)
+        }
+        videoManager.onImmersiveSurroundChanged = { [weak self] surround in
+            guard let self else { return }
+            self.videoSurround = surround.map {
+                .video(file: $0.file, time: $0.sourceIn, layout: $0.layout, coverage: $0.coverage)
+            }
+            // An immersive Clip can play in a Sequence that presented no
+            // Environment at all, so the presentation is read here too.
+            if surround != nil, let sequence = self.sequenceEngine.currentSequence {
+                self.lightIsTheWorlds = sequence.presentation == .immersive
+            }
+            self.refreshSceneLight()
+        }
         interactions.documentProvider = { [weak self] in
             self?.currentDocumentForStyling()
         }
@@ -1266,6 +1299,13 @@ open class ChapterPlayerCore {
         // plate turned differently is the same mount, moved — so a cue that
         // only re-places the world takes the fast path and is simply moved.
         currentBackdropTransform = transform
+        lightIsTheWorlds = sequencePresentation == .immersive
+        switch backdropSpec {
+        case .image(let file, _, _)?: stillSurround = .image(file: file)
+        case .usdz?: stillSurround = .model
+        case .video?, nil: stillSurround = .room   // a video reports itself when it mounts
+        }
+        refreshSceneLight()
         logger.info("[backdrop] present sequence=\(sequenceId) presentation=\(String(describing: sequencePresentation)) backdrop=\(String(describing: backdropSpec))")
         // REPLAY FAST PATH — the single most important rule this pipeline
         // has learned on device: re-attaching a VideoPlayerComponent after

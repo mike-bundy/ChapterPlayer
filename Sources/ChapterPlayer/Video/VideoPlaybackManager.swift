@@ -199,6 +199,10 @@ public class VideoPlaybackManager {
     /// as before. Critically, this touches ONE channel's host — stopping A no
     /// longer strips the component B is rendering through.
     private func releaseImmersiveShell(for channelKey: String) {
+        if surroundingChannel == channelKey {
+            surroundingChannel = nil
+            onImmersiveSurroundChanged?(nil)
+        }
         let key = Self.immersiveShellKey(for: channelKey)
         guard let shell = videoEntityRegistry.removeValue(forKey: key) else { return }
         shell.components.remove(VideoPlayerComponent.self)
@@ -1032,6 +1036,20 @@ public class VideoPlaybackManager {
     /// itself has no opinion about comfort.
     public var onVideoComponentAttached: ((Entity) -> Void)?
 
+    /// An immersive video now surrounds the viewer (an Environment cue or an
+    /// immersive Clip; both mount here), or has stopped doing so (`nil`). The
+    /// host lights the scene from it: see `EnvironmentApplier.Surround`.
+    public struct ImmersiveSurround: Equatable, Sendable {
+        public let channel: String
+        public let file: String
+        public let sourceIn: Double
+        public let layout: VideoLayout
+        /// Fraction of the full turn the field fills.
+        public let coverage: Float
+    }
+    public var onImmersiveSurroundChanged: ((ImmersiveSurround?) -> Void)?
+    private var surroundingChannel: String?
+
     // MARK: - Explore hold (one channel)
 
     /// Channels an Explore hold has frozen on their current frame.
@@ -1257,6 +1275,12 @@ public class VideoPlaybackManager {
             // the skybox permanently black (AIVU regression).
             if let entity = immersiveShell(for: channelKey) {
                 logger.info("[video.immersive] channel '\(channelKey)' binding to shell '\(entity.name)' (parent=\(entity.parent?.name ?? "nil"))")
+                if case .immersive(_, let field) = presentation {
+                    surroundingChannel = channelKey
+                    onImmersiveSurroundChanged?(ImmersiveSurround(
+                        channel: channelKey, file: channel.file, sourceIn: channel.sourceIn ?? 0,
+                        layout: layout, coverage: field.horizontalDegrees / 360))
+                }
                 entity.isEnabled = true
                 // FL-09: A GRADED IMMERSIVE BACKDROP.
                 //
