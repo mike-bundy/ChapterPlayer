@@ -215,7 +215,9 @@ private extension AudioAction {
             file: dto.file,
             channel: dto.channel,
             scope: AudioScope(dto.scope),
-            volume: dto.volume,
+            // Clip mute is one more fact about the level (ChapterScript
+            // `audibleVolume`), read here so the device agrees with the editor.
+            volume: dto.audibleVolume,
             loop: dto.loop,
             fadeIn: dto.fadeIn,
             fadeOut: dto.fadeOut,
