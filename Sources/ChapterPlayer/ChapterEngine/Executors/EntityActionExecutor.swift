@@ -22,7 +22,7 @@ public protocol EntityActionExecutorProtocol {
     func showEntity(named: String)
     func hideEntity(named: String)
     func moveEntity(_ action: MoveAction)
-    func scaleEntity(named: String, multiplier: Float, duration: TimeInterval, timing: StepTimingFunction)
+    func scaleEntity(named: String, multiplier: Float, duration: TimeInterval, timing: SegmentTimingFunction)
     func fadeEntity(_ action: FadeAction)
     func revealEntity(_ action: RevealAction)
     func enableGesture(named: String)
@@ -33,10 +33,10 @@ public protocol EntityActionExecutorProtocol {
     func beginMotion(_ action: AnimateMotionAction)
     func beginMotionBehavior(_ behavior: ChapterScript.MotionBehaviorDTO)
     func clearAllMotions()
-    /// Clear only the STEP-SCOPED motions. See the implementation for why
+    /// Clear only the SEGMENT-SCOPED motions. See the implementation for why
     /// Motion Actions 2.0 behaviors are deliberately not among them.
-    func clearStepMotions()
-    func applyActiveMotions(stepElapsed: TimeInterval, totalElapsed: TimeInterval)
+    func clearSegmentMotions()
+    func applyActiveMotions(segmentElapsed: TimeInterval, totalElapsed: TimeInterval)
     func setSequenceAnimation(tracks: [EntityAnimationTrack], clock: (@MainActor () -> TimeInterval)?)
 }
 
@@ -47,7 +47,7 @@ public extension EntityActionExecutorProtocol {
     func beginMotionBehavior(_ behavior: ChapterScript.MotionBehaviorDTO) {}
     /// Defaults to the old behavior for conformers outside this package, which
     /// never had Motion Actions 2.0 to keep alive in the first place.
-    func clearStepMotions() { clearAllMotions() }
+    func clearSegmentMotions() { clearAllMotions() }
 }
 
 // MARK: - Implementation
@@ -64,23 +64,23 @@ public final class EntityActionExecutor: EntityActionExecutorProtocol {
     private var originalTransforms: [String: Transform] = [:]
 
     /// Names of entities that should survive sequence transitions.
-    /// Populated by `.persistEntity` step actions; respected by `resetAllEntities()`.
+    /// Populated by `.persistEntity` segment actions; respected by `resetAllEntities()`.
     public var persistedEntityNames: Set<String> = []
 
-    /// Per-entity active motion curves. Populated by `.animateMotion` step actions;
-    /// cleared at every step boundary by `clearAllMotions()`.
-    /// `applyActiveMotions(stepElapsed:totalElapsed:)` samples each entry per frame
+    /// Per-entity active motion curves. Populated by `.animateMotion` segment actions;
+    /// cleared at every segment boundary by `clearAllMotions()`.
+    /// `applyActiveMotions(segmentElapsed:totalElapsed:)` samples each entry per frame
     /// and writes the result back to the entity's transform.
     ///
     /// `startedAt` is the AUTHORED sequence time at which the motion began, and
     /// it is what progress is measured from. It used to be measured from the
-    /// STEP's start instead, which meant a motion scheduled 5s into a 10s step
+    /// SEGMENT's start instead, which meant a motion scheduled 5s into a 10s segment
     /// began life already 50% complete — while the editor's `ScrubCompositor`
     /// drew the same motion from its beginning. The author saw one thing and
     /// the headset did another. Both now call `MotionProgress`.
     ///
     /// nil when no authored clock was available at registration; the sampler
-    /// then falls back to the old step-relative behavior rather than freezing.
+    /// then falls back to the old segment-relative behavior rather than freezing.
     private var activeMotions: [String: (action: AnimateMotionAction, startedAt: TimeInterval?)] = [:]
 
     /// MOTION ACTIONS 2.0 — active behaviors per entity, MANY per entity
@@ -95,7 +95,7 @@ public final class EntityActionExecutor: EntityActionExecutorProtocol {
     /// Sequence-level animation tracks, registered once at sequence start and
     /// sampled every frame on the AUTHORED sequence clock (`animationClock`) —
     /// not wall time, so gates and pauses hold curves instead of skipping
-    /// them. Independent of the per-step `activeMotions` above (which stay
+    /// them. Independent of the per-segment `activeMotions` above (which stay
     /// for legacy documents).
     private var sequenceAnimationTracks: [EntityAnimationTrack] = []
     private var animationClock: (@MainActor () -> TimeInterval)?
@@ -249,7 +249,7 @@ public final class EntityActionExecutor: EntityActionExecutorProtocol {
         }
     }
 
-    public func scaleEntity(named name: String, multiplier: Float, duration: TimeInterval, timing: StepTimingFunction) {
+    public func scaleEntity(named name: String, multiplier: Float, duration: TimeInterval, timing: SegmentTimingFunction) {
         guard let entity = entityRegistry[name] else {
             logger.warning("scaleEntity: '\(name)' not found in registry")
             return
@@ -418,7 +418,7 @@ public final class EntityActionExecutor: EntityActionExecutorProtocol {
             return
         }
         // Stamp the authored clock NOW, so progress is measured from when this
-        // motion actually started rather than from whenever its step did.
+        // motion actually started rather than from whenever its segment did.
         activeMotions[action.entity] = (action, animationClock?())
         logger.debug("beginMotion: \(action.entity) (duration \(action.duration)s)")
     }
@@ -431,9 +431,9 @@ public final class EntityActionExecutor: EntityActionExecutorProtocol {
         activeBehaviors.removeAll(keepingCapacity: true)
     }
 
-    /// A STEP BOUNDARY ENDS A LEGACY MOTION AND DOES NOT END A BEHAVIOR.
+    /// A SEGMENT BOUNDARY ENDS A LEGACY MOTION AND DOES NOT END A BEHAVIOR.
     ///
-    /// `animateMotion` is per-step by design — it is sampled on `stepElapsed`
+    /// `animateMotion` is per-segment by design — it is sampled on `segmentElapsed`
     /// and the engine's comment at the call site says so. Motion Actions 2.0
     /// behaviors were swept into the same call only because they were added to
     /// the dictionary next door, and clearing them at a boundary is wrong for
@@ -444,10 +444,10 @@ public final class EntityActionExecutor: EntityActionExecutorProtocol {
     ///      has a natural end of its own and does not need a boundary to stop
     ///      it; past that point it simply holds its final offset.
     ///   2. Clearing one restores the authored rest pose, so an EXIT that had
-    ///      finished faded the object out and then a step boundary popped it
+    ///      finished faded the object out and then a segment boundary popped it
     ///      back to full opacity at its original position.
     ///   3. The editor never scoped them this way. `SequencePreviewCompositor`
-    ///      walks every timed entry at or before the playhead with no step
+    ///      walks every timed entry at or before the playhead with no segment
     ///      scoping at all, so the Mac showed a behavior persisting while the
     ///      headset dropped it — the editor and the device disagreeing about
     ///      the same authored fact, which is the failure the `startedAt` work
@@ -466,9 +466,9 @@ public final class EntityActionExecutor: EntityActionExecutorProtocol {
     /// more now that an Explore Area edit moves Segment boundaries freely. A
     /// motion on the authored clock has a natural end; it is dropped at the
     /// first boundary AFTER it saturates, where dropping it changes nothing.
-    /// An unclocked one (the step-relative fallback) is still Segment-scoped,
+    /// An unclocked one (the segment-relative fallback) is still Segment-scoped,
     /// because its progress would restart against the next Segment's clock.
-    public func clearStepMotions() {
+    public func clearSegmentMotions() {
         let now = animationClock?()
         let before = activeMotions.count
         activeMotions = activeMotions.filter { _, entry in
@@ -477,7 +477,7 @@ public final class EntityActionExecutor: EntityActionExecutorProtocol {
                                               duration: entry.action.duration)
         }
         if before != activeMotions.count {
-            logger.debug("Cleared \(before - self.activeMotions.count) finished step motion(s); \(self.activeMotions.count) still running")
+            logger.debug("Cleared \(before - self.activeMotions.count) finished segment motion(s); \(self.activeMotions.count) still running")
         }
     }
 
@@ -603,7 +603,7 @@ public final class EntityActionExecutor: EntityActionExecutorProtocol {
         }
     }
 
-    public func applyActiveMotions(stepElapsed: TimeInterval, totalElapsed: TimeInterval) {
+    public func applyActiveMotions(segmentElapsed: TimeInterval, totalElapsed: TimeInterval) {
         applySequenceAnimationTracks()
         applyActiveBehaviors()
         guard !activeMotions.isEmpty else { return }
@@ -613,7 +613,7 @@ public final class EntityActionExecutor: EntityActionExecutorProtocol {
             guard let entity = entityRegistry[action.entity], entity.isEnabled else { continue }
             // Measured from the MOTION's own start on the authored clock — the
             // same rule `ScrubCompositor` uses, so the editor and the headset
-            // draw the same frame. Falls back to the legacy step-relative
+            // draw the same frame. Falls back to the legacy segment-relative
             // measure only when no authored clock was available.
             let progress: Float
             if let startedAt, let authoredNow {
@@ -622,7 +622,7 @@ public final class EntityActionExecutor: EntityActionExecutorProtocol {
                                                    duration: action.duration)
             } else {
                 progress = MotionProgress.progress(startTime: 0,
-                                                   now: stepElapsed,
+                                                   now: segmentElapsed,
                                                    duration: action.duration)
             }
 
@@ -653,7 +653,7 @@ public final class EntityActionExecutor: EntityActionExecutorProtocol {
     /// Sample every sequence track at the authored sequence time and write the
     /// poses. Runs even for disabled entities so a reveal mid-curve finds
     /// the entity already in the right pose. Opacity is only driven when the
-    /// track keys it — otherwise the step/action system owns visibility.
+    /// track keys it — otherwise the segment/action system owns visibility.
     /// EXPLORE LOOP OVERLAY, by authored entity id.
     ///
     /// Set only for the few entities an author explicitly marked "Loop During
@@ -718,7 +718,7 @@ public final class EntityActionExecutor: EntityActionExecutorProtocol {
     }
 
     /// One placement, edited while its Sequence is current. An editor host
-    /// moves the entity itself; this keeps the BASELINE in step, so a reset
+    /// moves the entity itself; this keeps the BASELINE in segment, so a reset
     /// that does not pass through a fresh Sequence entry returns the object to
     /// where it was just put rather than to the placement it had at entry.
     /// `nil` clears the placement (the Chapter rest applies again).

@@ -44,7 +44,7 @@ public struct LiveTransport: Sendable {
     }
 }
 
-/// Stateless helpers that pick the transport. Bounded at every step:
+/// Stateless helpers that pick the transport. Bounded at every segment:
 /// with no wired interface present the whole pass costs one path-monitor
 /// gate (≤ 300 ms, usually immediate).
 enum LiveTransportResolver {
@@ -102,7 +102,7 @@ enum LiveTransportResolver {
         }
     }
 
-    // MARK: - Steps
+    // MARK: - Segments
 
     /// Does ANY wired path exist right now? One-shot NWPathMonitor gate.
     private static func wiredPathExists(gate: Duration) async -> Bool {

@@ -9,7 +9,7 @@
 //  a fade or a backdrop holds.
 //
 //  Modeled on `CaptionCueDriver`, and deliberately NOT part of
-//  `SequenceEngine`: a keyed material is not a step, a gate or an action.
+//  `SequenceEngine`: a keyed material is not a segment, a gate or an action.
 //  Polling, not scheduling, for the same five reasons (pause, gate, seek,
 //  scrub, next-sequence staleness).
 //

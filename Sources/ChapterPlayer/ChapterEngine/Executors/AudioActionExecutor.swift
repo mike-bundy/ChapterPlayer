@@ -2,7 +2,7 @@
 //  AudioActionExecutor.swift
 //  SharedVisions
 //
-//  Bridges StepAction audio commands to SpatialAudioManager.
+//  Bridges SegmentAction audio commands to SpatialAudioManager.
 //
 
 import OSLog
@@ -21,7 +21,7 @@ public protocol AudioActionExecutorProtocol {
     func setTrackGains(_ gains: [String: Float])
     func setDuckingRules(_ rules: [DuckingRule])
 
-    func play(_ action: AudioAction, stepContext: String?)
+    func play(_ action: AudioAction, segmentContext: String?)
     func stop(channel: String)
     func fade(channel: String, to: Float, duration: TimeInterval)
     func pauseAll()
@@ -120,11 +120,11 @@ public final class AudioActionExecutor: AudioActionExecutorProtocol {
         }
     }
 
-    public func play(_ action: AudioAction, stepContext: String?) {
+    public func play(_ action: AudioAction, segmentContext: String?) {
         if action.scope == .ambient {
             protectedChannels.insert(action.channel)
         }
-        audioManager.play(action: action, stepContext: stepContext)
+        audioManager.play(action: action, segmentContext: segmentContext)
     }
 
     public func stop(channel: String) {

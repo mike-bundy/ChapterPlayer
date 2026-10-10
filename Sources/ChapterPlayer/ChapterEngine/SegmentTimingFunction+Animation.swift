@@ -1,14 +1,14 @@
 //
-//  StepTimingFunction+Animation.swift
+//  SegmentTimingFunction+Animation.swift
 //  SharedVisions
 //
-//  Maps StepTimingFunction (data layer) to RealityKit's AnimationTimingFunction.
+//  Maps SegmentTimingFunction (data layer) to RealityKit's AnimationTimingFunction.
 //  Kept in its own file so SequenceDefinition stays a pure data layer (no RealityKit import).
 //
 
 import RealityKit
 
-extension StepTimingFunction {
+extension SegmentTimingFunction {
     /// Convert to RealityKit's animation timing function for entity animations.
     public var animationTimingFunction: AnimationTimingFunction {
         switch self {

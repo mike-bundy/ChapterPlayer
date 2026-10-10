@@ -12,14 +12,14 @@
 //
 //  WHAT THIS DELIBERATELY DOES NOT OWN: the hold itself.
 //
-//  A region's exit is a GATE on the step that ends at its boundary, and the
-//  engine already parks `sequenceAnimationTime` at a step's end while a gate
+//  A region's exit is a GATE on the segment that ends at its boundary, and the
+//  engine already parks `sequenceAnimationTime` at a segment's end while a gate
 //  waits — animation, audio automation and backdrop cues have held there since
 //  gates were wired. So Explore's hold is the mechanism the runtime already
 //  had, and this file adds no second way to stop the story. Resolving the exit
 //  is `satisfyGate()`, the same call a tap has always made.
 //
-//  That is also why there is no second detector: the exit is a `StepGate`, so
+//  That is also why there is no second detector: the exit is a `SegmentGate`, so
 //  `GateDetectionController` and `SpatialTriggerDetector` do the sensing, and
 //  an accessible activation of the same interaction releases the region exactly
 //  as a physical one does.

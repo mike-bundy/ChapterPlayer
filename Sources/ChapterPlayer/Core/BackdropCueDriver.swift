@@ -12,7 +12,7 @@
 //  sat there.
 //
 //  This is the missing driver. It is deliberately small, and deliberately
-//  NOT part of `SequenceEngine`: the engine owns steps, gates and actions, and
+//  NOT part of `SequenceEngine`: the engine owns segments, gates and actions, and
 //  a backdrop is none of those. It hangs off the engine the same way
 //  `gateDetector` does.
 //
@@ -21,8 +21,8 @@
 //  `sequenceAnimationTime` — the same clock animation curves and audio
 //  automation sample. Wall time would drift past a gate: a viewer who stands
 //  at a viewer-facing gate for thirty seconds would watch the backdrop cut to the next
-//  cue while the step they are gated on is still waiting. Cue times are
-//  authored against the step grid, so they must be read against the step grid.
+//  cue while the segment they are gated on is still waiting. Cue times are
+//  authored against the segment grid, so they must be read against the segment grid.
 //
 //  POLLING, NOT SCHEDULING.
 //
@@ -96,7 +96,7 @@ public final class BackdropCueDriver {
     /// a backdrop SWAP can be perceived to need and costs nothing.
     private static let tickInterval: Duration = .milliseconds(100)
 
-    /// …but a FADE is a continuous ramp, and 10 Hz of it is visibly stepped.
+    /// …but a FADE is a continuous ramp, and 10 Hz of it is visibly choppy.
     /// Used only while the track actually contains a fade.
     private static let fadingTickInterval: Duration = .milliseconds(33)
 

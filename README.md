@@ -6,15 +6,15 @@ ChapterPlayer is the same runtime that powers playback in [Maestro](https://maes
 
 ## What's in the package
 
-- **`SequenceEngine`** — the declarative sequence/step choreographer. Always resets entities on sequence change; pluggable executor protocols for entity / audio / video / attachment / effect actions.
-- **`GateDetectionController`** — holds a step until its gate resolves (tap, gaze, approach, grab, or timeout), behind the `GateDetecting` protocol.
+- **`SequenceEngine`** — the declarative sequence/segment choreographer. Always resets entities on sequence change; pluggable executor protocols for entity / audio / video / attachment / effect actions.
+- **`GateDetectionController`** — holds playback at a segment boundary until the gate resolves (tap, gaze, approach, grab, or timeout), behind the `GateDetecting` protocol.
 - **`SpatialAudioManager`** — `AVAudioEngine`-based channel system with audio buses, ducking rules, audio zones, and loop configs.
 - **`VideoPlaybackManager`** — per-channel `AVPlayer` orchestrator: flat scene panels, attachment-based SwiftUI overlays, and 360°/180° immersive skybox playback via `VideoPlayerComponent`.
 - **`EntityFactory`** + **`DocumentEntityLoader`** — build RealityKit entities for ChapterScript `EntityDefinition`s (primitives, USDZs, text, lights, video panels) and materialize a document's entities into the immersive scene, registered with the executors.
 - **`BackdropCueDriver`** — drives sequence backdrop presentation behind the `BackdropCuePresenting` protocol.
 - **`MotionCurveEvaluator`** — a thin delegate over ChapterScript's canonical `MotionCurveSampling`, so playback matches editors' scrub previews, motion trails, and graph rendering exactly.
 - **Experience providers + media resolvers** — `BundledExperienceProvider` / `LocalFolderExperienceProvider` for shipped content, and `LiveDevExperienceProvider` + `LiveServerBrowser` + `LiveMediaResolver` for Bonjour discovery and concurrent asset prefetch from a Maestro Studio peer on the LAN. `AssetPreloader` warms media before playback.
-- **`PulseRingEntity` / `SparkBurstEntity`** — procedural VFX primitives the engine fires via the corresponding step actions.
+- **`PulseRingEntity` / `SparkBurstEntity`** — procedural VFX primitives the engine fires via the corresponding segment actions.
 
 ## Consumer responsibilities
 

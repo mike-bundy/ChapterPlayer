@@ -31,12 +31,12 @@ private let logger = Logger(
 
 /// Engine-side hook for spatial gate detection. `SequenceEngine` calls
 /// `gateDidStart` when a gate begins waiting and `gateDidEnd` when the gate
-/// resolves for any reason (satisfied, timed out, step loop cancelled).
+/// resolves for any reason (satisfied, timed out, segment loop cancelled).
 @MainActor
 public protocol GateDetecting: AnyObject {
     /// Start whatever detection matches the gate's type. Call `satisfy`
     /// (at most once) when the user meets the gate.
-    func gateDidStart(_ gate: StepGate, satisfy: @escaping @MainActor @Sendable () -> Void)
+    func gateDidStart(_ gate: SegmentGate, satisfy: @escaping @MainActor @Sendable () -> Void)
     /// Stop all detection. Idempotent.
     func gateDidEnd()
 }
@@ -95,7 +95,7 @@ public final class GateDetectionController: GateDetecting {
     ///
     /// Deliberately separate from `onGateStarted`/`onGateEnded`, which remain
     /// the consumer's prompt UI.
-    @ObservationIgnored public var onGateActivated: ((StepGate) -> Void)?
+    @ObservationIgnored public var onGateActivated: ((SegmentGate) -> Void)?
     @ObservationIgnored public var onGateResolved: (() -> Void)?
 
     public init(detector: SpatialTriggerDetector = SpatialTriggerDetector()) {
@@ -104,7 +104,7 @@ public final class GateDetectionController: GateDetecting {
 
     // MARK: GateDetecting
 
-    public func gateDidStart(_ gate: StepGate, satisfy: @escaping @MainActor @Sendable () -> Void) {
+    public func gateDidStart(_ gate: SegmentGate, satisfy: @escaping @MainActor @Sendable () -> Void) {
         gateDidEnd()
         onGateActivated?(gate)
         switch gate.type {

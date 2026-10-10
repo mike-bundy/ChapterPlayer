@@ -9,7 +9,7 @@
 //  or a backdrop holds.
 //
 //  Modeled on `BackdropCueDriver`, and deliberately NOT part of
-//  `SequenceEngine`: a caption is not a step, a gate or an action. Polling,
+//  `SequenceEngine`: a caption is not a segment, a gate or an action. Polling,
 //  not scheduling, for the same five reasons (pause, gate, seek, scrub,
 //  next-sequence staleness). The lookup is a binary search over a sorted,
 //  non-overlapping list — an hour of captions is thousands of cues and this

@@ -4,7 +4,7 @@
 //
 //  ONE DETECTOR FOR "FACE IT", "WALK UP TO IT" AND "GRAB IT".
 //
-//  Two features now ask the same three questions of the same hardware: a step
+//  Two features now ask the same three questions of the same hardware: a segment
 //  GATE ("the story waits until you look at the radio") and an entity
 //  INTERACTION ("tapping the radio plays the broadcast"). They mean different
 //  things to the author and identical things to the sensors.

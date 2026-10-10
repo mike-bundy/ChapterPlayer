@@ -30,7 +30,7 @@ extension Entity {
     ///
     /// For `duration == 0`, sets opacity immediately (synchronous snap — load-bearing
     /// for same-loop ordering where snap must complete before `showEntity` in the
-    /// same step action array).
+    /// same segment action array).
     ///
     /// - Parameters:
     ///   - targetOpacity: Target opacity value (0.0 to 1.0)

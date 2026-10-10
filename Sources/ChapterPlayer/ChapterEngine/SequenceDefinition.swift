@@ -2,7 +2,7 @@
 //  SequenceDefinition.swift
 //  SharedVisions
 //
-//  Declarative sequence and step definitions for the SequenceEngine.
+//  Declarative sequence and segment definitions for the SequenceEngine.
 //  Sequences are defined as data — the engine handles timing, controls, and reporting.
 //
 
@@ -47,10 +47,10 @@ public struct SequenceDefinition: Sendable {
     public let materialKeyTracks: [MaterialKeyTrack]
     /// FL-16: keyed transforms for stored `(objectId, primPath)` targets.
     public let subElementKeyTracks: [SubElementKeyTrack]
-    public let steps: [StepDefinition]
+    public let segments: [SegmentDefinition]
     /// Sequence-level keyframe animation tracks (format types used directly —
     /// the curves are pure data sampled by `SequenceAnimationEvaluator`).
-    /// Keys sit at absolute seconds on the sequence's authored step grid.
+    /// Keys sit at absolute seconds on the sequence's authored segment grid.
     public let animationTracks: [EntityAnimationTrack]
     /// Sequence-level audio volume automation, one track per channel plus an
     /// optional `master` bus. Sampled on the same authored clock as
@@ -88,7 +88,7 @@ public struct SequenceDefinition: Sendable {
         effectKeyTracks: [EffectKeyTrack] = [],
         materialKeyTracks: [MaterialKeyTrack] = [],
         subElementKeyTracks: [SubElementKeyTrack] = [],
-        steps: [StepDefinition],
+        segments: [SegmentDefinition],
         animationTracks: [EntityAnimationTrack] = [],
         audioTracks: [AudioAutomationTrack] = [],
         mutedDestinations: [String] = [],
@@ -97,7 +97,7 @@ public struct SequenceDefinition: Sendable {
         storyRegions: [StoryRegion] = [],
         restPlacements: [String: TransformData] = [:],
         visibility: VisibilityState = VisibilityState(),
-        onComplete: CompletionAction = .holdOnLastStep
+        onComplete: CompletionAction = .holdOnLastSegment
     ) {
         self.id = id
         self.name = name
@@ -109,7 +109,7 @@ public struct SequenceDefinition: Sendable {
         self.effectKeyTracks = effectKeyTracks
         self.materialKeyTracks = materialKeyTracks
         self.subElementKeyTracks = subElementKeyTracks
-        self.steps = steps
+        self.segments = segments
         self.animationTracks = animationTracks
         self.audioTracks = audioTracks
         self.mutedDestinations = mutedDestinations
@@ -122,7 +122,7 @@ public struct SequenceDefinition: Sendable {
     }
 
     public var totalDuration: TimeInterval {
-        steps.reduce(0) { $0 + $1.duration }
+        segments.reduce(0) { $0 + $1.duration }
     }
 }
 
@@ -143,7 +143,7 @@ public enum SequencePresentation: String, Sendable, Equatable {
 /// fields needed by `VideoPlaybackManager` (for `.video`), the static-image
 /// skybox path (for `.image`), or the document entity loader (for `.usdz`)
 /// when the sequence activates. Reuses the `VideoLayout` and `ImmersiveField`
-/// enums from `StepAction` so AppModel can hand them straight to
+/// enums from `SegmentAction` so AppModel can hand them straight to
 /// `VideoAction` without converting.
 public enum SequenceBackdrop: Sendable, Equatable {
     case video(file: String, layout: VideoLayout, field: ImmersiveField, radius: Float, loop: Bool, audioEnabled: Bool)
@@ -151,23 +151,23 @@ public enum SequenceBackdrop: Sendable, Equatable {
     case usdz(assetId: String)
 }
 
-// MARK: - Step Definition
+// MARK: - Segment Definition
 
-public struct StepDefinition: Sendable {
+public struct SegmentDefinition: Sendable {
     public let id: String
     public let name: String
     public let duration: TimeInterval
-    public let actions: [StepAction]
+    public let actions: [SegmentAction]
     public let scheduledActions: [ScheduledAction]
-    public let gate: StepGate?
+    public let gate: SegmentGate?
 
     public init(
         id: String,
         name: String,
         duration: TimeInterval,
-        actions: [StepAction],
+        actions: [SegmentAction],
         scheduledActions: [ScheduledAction] = [],
-        gate: StepGate? = nil
+        gate: SegmentGate? = nil
     ) {
         self.id = id
         self.name = name
@@ -178,7 +178,7 @@ public struct StepDefinition: Sendable {
     }
 }
 
-// MARK: - Step Gate
+// MARK: - Segment Gate
 
 public enum GateType: String, Sendable {
     case tap          // User interaction on headset
@@ -216,7 +216,7 @@ extension GateType {
     }
 }
 
-public struct StepGate: Sendable {
+public struct SegmentGate: Sendable {
     public let type: GateType
     public let timeout: TimeInterval?
     public let prompt: String?
@@ -250,8 +250,8 @@ public struct StepGate: Sendable {
     /// the story's memory continues it — is answered by the ONE authority in
     /// `ChapterScript.GateActivation`, rather than by a rule reimplemented here
     /// against the runtime mirror.
-    public var authored: StepGateDTO {
-        StepGateDTO(type: type.authored, timeout: timeout, prompt: prompt,
+    public var authored: SegmentGateDTO {
+        SegmentGateDTO(type: type.authored, timeout: timeout, prompt: prompt,
                     targetEntity: targetEntity, radius: radius,
                     storyConditions: storyConditions)
     }
@@ -289,7 +289,7 @@ public struct VisibilityState: Sendable, Equatable {
 // MARK: - Completion Action
 
 public enum CompletionAction: Sendable, Equatable {
-    case holdOnLastStep
+    case holdOnLastSegment
     case transitionTo(phase: String, visibility: VisibilityState)
     case autoAdvance(nextSequenceId: String)
     case dismissToHome
@@ -303,7 +303,7 @@ public enum CompletionAction: Sendable, Equatable {
     /// because ChapterPlayer only builds for visionOS: the Mac suites were
     /// green over a **broken device build**.
     ///
-    /// Mapping it to `.holdOnLastStep` instead would have been worse than the
+    /// Mapping it to `.holdOnLastSegment` instead would have been worse than the
     /// build error — every authored Return, Restart and End would have become a
     /// silent hold on device while the editor showed the author what they
     /// asked for. A runtime type that cannot say what the format says is not a
@@ -313,7 +313,7 @@ public enum CompletionAction: Sendable, Equatable {
 
 // MARK: - Timing Function
 
-public enum StepTimingFunction: String, Sendable {
+public enum SegmentTimingFunction: String, Sendable {
     case linear
     case easeIn
     case easeOut

@@ -447,10 +447,10 @@ open class ChapterPlayerCore {
     private var skyboxRestTransform: Transform?
 
     /// Channel name reserved for the sequence-level immersive backdrop
-    /// video. Independent from any per-step `playVideo` channel so
+    /// video. Independent from any per-segment `playVideo` channel so
     /// authors can mix the two without clobbering each other (last
     /// write to the "skybox" entity still wins on visionOS — sequence
-    /// backdrop runs at sequence start; step-level skybox plays can
+    /// backdrop runs at sequence start; segment-level skybox plays can
     /// override it intentionally).
     public static let backdropVideoChannel = "sequenceBackdrop"
 
@@ -479,7 +479,7 @@ open class ChapterPlayerCore {
         // ChapterPlayerCore scope (one backdrop per sequence, swapped at
         // sequence transitions), not at the sequence-engine scope.
         // Protect it from `videoManager.stopAll()` which the engine
-        // calls on every sequence transition to wipe per-step video
+        // calls on every sequence transition to wipe per-segment video
         // state — see `VideoPlaybackManager.protectedChannels`.
         videoManager.protectedChannels.insert(Self.backdropVideoChannel)
 
@@ -540,7 +540,7 @@ open class ChapterPlayerCore {
         }
 
         // Interactions: same registry, and responses handed straight back to
-        // the engine so they run through the executors a step's actions use.
+        // the engine so they run through the executors a segment's actions use.
         sequenceEngine.interactionController = interactions
         interactions.entityProvider = { [weak self] name in
             self?.entityExecutor.entityRegistry[name]
@@ -621,7 +621,7 @@ open class ChapterPlayerCore {
             self?.sequenceEngine.totalElapsed ?? 0
         }
         storyRegions.authoredClock = { [weak self] in
-            // The Sequence clock. The engine clamps it at a step's end during a
+            // The Sequence clock. The engine clamps it at a segment's end during a
             // gate wait, and that clamping IS the Explore hold.
             self?.sequenceEngine.sequenceAnimationTime ?? 0
         }
@@ -669,7 +669,7 @@ open class ChapterPlayerCore {
         // currently-loaded ChapterScript document — the core no longer
         // ships bundled demo sequences as a fallback.
         // AN AUTHORED NAVIGATION — from an Interaction response, or from any
-        // step — reaches the ONE navigator here.
+        // segment — reaches the ONE navigator here.
         //
         // Accessibility gets this for free: an accessible activation runs the
         // same `InteractionSpec.actions` a physical one does, so it produces
@@ -713,15 +713,15 @@ open class ChapterPlayerCore {
     /// Start playback of a named sequence. If another sequence is already
     /// running it is stopped first. Awaits any required immersive-space
     /// transition (`.immersive` sequence wants the space open,
-    /// `.windowed` wants it dismissed) before the sequence's first step
+    /// `.windowed` wants it dismissed) before the sequence's first segment
     /// runs so the engine never fires audio / video against a
     /// mis-presented stage.
     /// ONE PERFORMER. `ExperienceNavigator` decides where to go; this is the
     /// only thing that starts a Sequence, so the immersive-space transition and
     /// the skybox-registration wait below cannot be bypassed by a second entry
-    /// path. `startingAtStepIndex` is non-zero only for a resumed visit.
+    /// path. `startingAtSegmentIndex` is non-zero only for a resumed visit.
     public func playSequence(_ sequence: SequenceDefinition,
-                             startingAtStepIndex startIndex: Int = 0) async {
+                             startingAtSegmentIndex startIndex: Int = 0) async {
         // A HOST THAT JUMPS STRAIGHT INTO A SEQUENCE still gets a session, so
         // its Story States hold their authored initial values rather than being
         // undefined. Guarded on the session FLAG, not on emptiness: a Chapter
@@ -779,7 +779,7 @@ open class ChapterPlayerCore {
            let dto = document.sequences.first(where: { $0.id == sequence.id }) {
             applyPanelStyles(for: dto, in: document)
         }
-        sequenceEngine.play(sequence: sequence, startingAtStepIndex: startIndex)
+        sequenceEngine.play(sequence: sequence, startingAtSegmentIndex: startIndex)
     }
 
     /// The document panel styling resolves against — the load-time snapshot
@@ -944,7 +944,7 @@ open class ChapterPlayerCore {
     /// can. Video holds its last frame by default (`docs/STORY_REGIONS.md`
     /// §6); an absent continuation used to do nothing at all here, so the
     /// documented default kept playing on device while the Sequence clock
-    /// stood still, and came back out of step with its own Timeline.
+    /// stood still, and came back out of segment with its own Timeline.
     private func applyDefaultStoryHold(for region: StoryRegion) {
         var configured: Set<String> = []
         for continuation in region.continuations {
@@ -998,8 +998,8 @@ open class ChapterPlayerCore {
     private func isVideoOccurrence(_ actionId: String) -> Bool {
         guard let document = loadedExperience?.document else { return false }
         for sequence in document.sequences {
-            for step in sequence.steps {
-                for authored in step.authoredActions where authored.id == actionId {
+            for segment in sequence.segments {
+                for authored in segment.authoredActions where authored.id == actionId {
                     switch authored.action {
                     case .playVideo, .prepareVideo: return true
                     default: return false
@@ -1018,8 +1018,8 @@ open class ChapterPlayerCore {
     private func channelForOccurrence(_ actionId: String) -> String? {
         guard let document = loadedExperience?.document else { return nil }
         for sequence in document.sequences {
-            for step in sequence.steps {
-                for authored in step.authoredActions where authored.id == actionId {
+            for segment in sequence.segments {
+                for authored in segment.authoredActions where authored.id == actionId {
                     switch authored.action {
                     case .playVideo(let v), .prepareVideo(let v): return v.channel
                     case .playAudio(let a): return a.channel
@@ -1094,8 +1094,8 @@ open class ChapterPlayerCore {
             // implementation ACCIDENTALLY — they share this one deliberately,
             // because entering is entering, and they differ in the VISIT the
             // navigator handed back.
-            let startIndex = resumingFrom.map { stepIndex(of: next, atAuthoredTime: $0) } ?? 0
-            await playSequence(next, startingAtStepIndex: startIndex)
+            let startIndex = resumingFrom.map { segmentIndex(of: next, atAuthoredTime: $0) } ?? 0
+            await playSequence(next, startingAtSegmentIndex: startIndex)
 
             // ── WHAT A VISIT OWNS, RESTORED OR RE-ARMED ─────────────────────
             //
@@ -1165,21 +1165,21 @@ open class ChapterPlayerCore {
         storyState.beginSession(loadedExperience?.document.storyState ?? [])
     }
 
-    /// The step a resumed visit re-enters at.
+    /// The segment a resumed visit re-enters at.
     ///
-    /// AUTHORED-BOUNDARY RESUME: playback resumes at the start of the step the
+    /// AUTHORED-BOUNDARY RESUME: playback resumes at the start of the segment the
     /// visit had reached, not at an arbitrary sub-second offset. Reconstructing
     /// exact mid-action runtime state (a video part-played, a fade half-run, a
     /// gate part-dwelt) would need a retained live graph per suspended visit,
     /// which an hour-long chapter cannot afford. Documented as such rather than
     /// faked — see `docs/EXPERIENCE_FLOW.md` §Resume.
-    private func stepIndex(of sequence: SequenceDefinition, atAuthoredTime time: TimeInterval) -> Int {
+    private func segmentIndex(of sequence: SequenceDefinition, atAuthoredTime time: TimeInterval) -> Int {
         var elapsed: TimeInterval = 0
-        for (index, step) in sequence.steps.enumerated() {
-            elapsed += step.duration
+        for (index, segment) in sequence.segments.enumerated() {
+            elapsed += segment.duration
             if time < elapsed { return index }
         }
-        return max(sequence.steps.count - 1, 0)
+        return max(sequence.segments.count - 1, 0)
     }
 
     /// Arm the loaded document's interactions against the live scene.
@@ -1527,7 +1527,7 @@ open class ChapterPlayerCore {
                     // instead of being smeared across a full sphere
                     // (ShellGeometry — the runtime twin of the Mac's
                     // `MaestroKit.BackdropGeometry`, conventions in
-                    // lock-step by contract).
+                    // lock-segment by contract).
                     //
                     // NOTE: Apple Immersive remains an EDITOR APPROXIMATION
                     // here — Apple's projection is parametric fisheye, not

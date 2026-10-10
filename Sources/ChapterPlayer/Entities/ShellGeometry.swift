@@ -6,7 +6,7 @@
 //  runtime twin of `MaestroKit.BackdropGeometry`, vendored because this
 //  package cannot depend on MaestroKit (it lives inside the chapterengine
 //  repo and is consumed by path). THE CONVENTIONS ARE A CONTRACT and the
-//  two files must stay in lock-step: a shell the editor previews and the
+//  two files must stay in lock-segment: a shell the editor previews and the
 //  shell the player renders must be the same shell.
 //
 //  COORDINATE CONVENTION — matches the rest of the engine:

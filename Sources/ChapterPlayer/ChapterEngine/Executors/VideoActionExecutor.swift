@@ -2,7 +2,7 @@
 //  VideoActionExecutor.swift
 //  SharedVisions
 //
-//  Bridges StepAction video commands to VideoPlaybackManager.
+//  Bridges SegmentAction video commands to VideoPlaybackManager.
 //
 
 import OSLog

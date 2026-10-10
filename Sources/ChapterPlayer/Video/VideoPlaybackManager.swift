@@ -139,7 +139,7 @@ public class VideoPlaybackManager {
     /// teardown and abandons the preheat if ANY stop landed while it was
     /// suspended. Without this, a preheat awaiting its asset load across
     /// `SequenceEngine.play()`'s stopAll could re-store a half-built muted
-    /// channel in the gap before step 0's `playVideo` executes — and the
+    /// channel in the gap before segment 0's `playVideo` executes — and the
     /// engine's supposedly-cold start would silently adopt that zombie
     /// (skipping the cue discipline the cold path guarantees).
     private var stopEpoch: Int = 0
@@ -447,9 +447,9 @@ public class VideoPlaybackManager {
             queuePlayer.volume = action.volume
             // Don't make the player wait for a full buffer before showing
             // the first frame — visionOS HTTP streaming over the live
-            // channel was sometimes stalling for the entire sequence step
+            // channel was sometimes stalling for the entire sequence segment
             // before producing any frame, so the author saw nothing
-            // during the step then a paused frame after it ended.
+            // during the segment then a paused frame after it ended.
             queuePlayer.automaticallyWaitsToMinimizeStalling = false
 
             var channel = VideoChannel(
@@ -770,7 +770,7 @@ public class VideoPlaybackManager {
     ///   • AVPlayerItem.preroll(atRate: 1.0) complete
     ///   • If `.entity` presentation: ModelComponent (mesh + VideoMaterial)
     ///     bound onto the target entity, so RealityKit's GPU upload
-    ///     happens *now* rather than at sequence step time
+    ///     happens *now* rather than at sequence segment time
     ///   • A brief play→pause→seek-to-zero cycle so AVPlayer has actually
     ///     produced its first decoded frame and visionOS's video pipeline
     ///     is warm
@@ -906,17 +906,17 @@ public class VideoPlaybackManager {
 
         // 2) Force visionOS to actually decode + render the first frame.
         //    The trick: play() then pause(), and rely on AVPlayer's
-        //    natural position (a few ms in) so the sequence step's
+        //    natural position (a few ms in) so the sequence segment's
         //    eventual play() resumes from a warm decode buffer.
         //
         //    Earlier revisions did `seek(to: .zero, toleranceBefore: .zero,
         //    toleranceAfter: .zero)` here to rewind to exactly frame 0.
         //    Zero-tolerance seek is precise but flushes AVPlayer's
         //    decoded-frame buffer — which destroyed the entire reason
-        //    for the warmup. Step 1 of every sequence would then play
+        //    for the warmup. Segment 1 of every sequence would then play
         //    1+ seconds late while the decoder re-primed. We accept a
         //    handful of frames of offset (the user can't perceive ~50ms
-        //    on a sequence-step entry) in exchange for actual instant
+        //    on a sequence-segment entry) in exchange for actual instant
         //    playback.
         player.play()
         // Two render frames @ ~90Hz on visionOS ≈ 22ms; a touch over
@@ -1246,8 +1246,8 @@ public class VideoPlaybackManager {
         // sequence boundaries and must survive the reset. Without this
         // guard, an immersive video backdrop bound by
         // `applySequenceBackdrop` was getting wiped out the moment the
-        // engine started the sequence's step loop (because the engine
-        // calls stop() before running steps).
+        // engine started the sequence's segment loop (because the engine
+        // calls stop() before running segments).
         // Bump once even when no channels exist yet: preheats still in
         // their asset-load await (channel not stored) must also observe
         // this teardown and stand down.
@@ -1314,7 +1314,7 @@ public class VideoPlaybackManager {
                 // VideoPlayerComponent on top of an UnlitMaterial
                 // placeholder, which on visionOS left the gray placeholder
                 // visible and never reliably swapped in the video texture
-                // before the sequence step ended.
+                // before the sequence segment ended.
                 // Rounded corners ride on the entity (stamped from
                 // VideoPanelSpec at materialize) — the geometry clips,
                 // the video texture stays rect-mapped.

@@ -70,7 +70,7 @@ private struct LoopState {
     public var config: LoopConfig
     public var phase: LoopPhase
     public var transitionTask: Task<Void, Never>?
-    public var stepContext: String?
+    public var segmentContext: String?
 }
 
 // MARK: - Zone Tracking State (3A)
@@ -469,7 +469,7 @@ public class SpatialAudioManager {
     ///
     /// Only covers the simple ambient path (spatial == nil, loopConfig == nil).
     /// loopConfig channels have multi-phase scheduling (intro/loop/outro) and are not prewarmed.
-    public func prewarmStep(actions: [StepAction]) {
+    public func prewarmSegment(actions: [SegmentAction]) {
         for action in actions {
             guard case .playAudio(let audioAction) = action,
                   audioAction.spatial == nil,
@@ -905,7 +905,7 @@ public class SpatialAudioManager {
 
     // MARK: - Playback
 
-    public func play(action: AudioAction, stepContext: String? = nil) {
+    public func play(action: AudioAction, segmentContext: String? = nil) {
         // Set channel category if explicit
         if let category = action.category {
             channelCategories[action.channel] = category
@@ -955,16 +955,16 @@ public class SpatialAudioManager {
                     model: .positional,
                     reason: "Cues with an intro/loop/outro play unspatialized. Use a plain looping cue to place this sound.",
                     channel: action.channel, file: action.file)
-                playWithLoopConfig(action: action, loopConfig: loopConfig, stepContext: stepContext)
+                playWithLoopConfig(action: action, loopConfig: loopConfig, segmentContext: segmentContext)
             } else {
-                playSpatial(action: action, stepContext: stepContext)
+                playSpatial(action: action, segmentContext: segmentContext)
             }
 
         case .systemSpatialMedia:
             // PIPELINE B — an encoded master, handed over whole. `loopConfig`'s
             // three-file form is a graph construct and has no meaning here; a
             // plain `loop` does, and the system player handles it.
-            playSystemSpatialMedia(action: action, stepContext: stepContext)
+            playSystemSpatialMedia(action: action, segmentContext: segmentContext)
 
         case .headLocked, .sceneBased:
             // Scene-based still degrades to here, declared, until its source
@@ -972,9 +972,9 @@ public class SpatialAudioManager {
             // rather than defaulted so giving it a path is a compile error
             // here rather than a silent continuation.
             if let loopConfig = action.loopConfig {
-                playWithLoopConfig(action: action, loopConfig: loopConfig, stepContext: stepContext)
+                playWithLoopConfig(action: action, loopConfig: loopConfig, segmentContext: segmentContext)
             } else {
-                playAmbient(action: action, stepContext: stepContext)
+                playAmbient(action: action, segmentContext: segmentContext)
             }
         }
         applyDucking(forTriggerChannel: action.channel)
@@ -1005,13 +1005,13 @@ public class SpatialAudioManager {
     /// chain: those are `AVAudioUnit`s in the engine graph, and putting the
     /// asset through the graph is precisely what destroys it. Level yes,
     /// insert effects no — documented rather than forced.
-    private func playSystemSpatialMedia(action: AudioAction, stepContext: String? = nil) {
+    private func playSystemSpatialMedia(action: AudioAction, segmentContext: String? = nil) {
         let resolvedFile = resolveVariation(for: action.file)
         guard let url = findAudioURL(file: resolvedFile) else {
             logger.error("""
                 Spatial media DROPPED — file: \(resolvedFile, privacy: .public), \
                 channel: \(action.channel, privacy: .public), \
-                beat: \(stepContext ?? "unknown", privacy: .public)
+                beat: \(segmentContext ?? "unknown", privacy: .public)
                 """)
             return
         }
@@ -1023,7 +1023,7 @@ public class SpatialAudioManager {
         )
     }
 
-    private func playAmbient(action: AudioAction, stepContext: String? = nil) {
+    private func playAmbient(action: AudioAction, segmentContext: String? = nil) {
         // MARK: Prewarm hit path (spec 038)
         // Check before resolveVariation to avoid double-advancing variation indices.
         // IMPORTANT: do NOT call applyDucking() here — play(action:) calls it after playAmbient returns.
@@ -1061,7 +1061,7 @@ public class SpatialAudioManager {
 #if DEBUG
             audioSignposter.endInterval("prewarm_hit", _hitState)
 #endif
-            logger.info("Prewarm hit: \(prewarmed.file) on '\(action.channel)' (beat: \(stepContext ?? "?"))")
+            logger.info("Prewarm hit: \(prewarmed.file) on '\(action.channel)' (beat: \(segmentContext ?? "?"))")
             // NOTE: do NOT call applyDucking here — play(action:) handles it after we return.
             return
         }
@@ -1071,7 +1071,7 @@ public class SpatialAudioManager {
         // Crossfade (2A) — if channel is occupied and crossfade is set
         if let crossfadeDuration = action.crossfade, crossfadeDuration > 0,
            ambientChannels[action.channel] != nil {
-            crossfadeAmbient(action: action, resolvedFile: resolvedFile, duration: crossfadeDuration, stepContext: stepContext)
+            crossfadeAmbient(action: action, resolvedFile: resolvedFile, duration: crossfadeDuration, segmentContext: segmentContext)
             return
         }
 
@@ -1079,7 +1079,7 @@ public class SpatialAudioManager {
         stopAmbient(channel: action.channel)
 
         guard let url = findAudioURL(file: resolvedFile) else {
-            logger.error("Ambient audio DROPPED — file: \(resolvedFile), channel: \(action.channel), beat: \(stepContext ?? "unknown")")
+            logger.error("Ambient audio DROPPED — file: \(resolvedFile), channel: \(action.channel), beat: \(segmentContext ?? "unknown")")
             return
         }
 
@@ -1261,7 +1261,7 @@ public class SpatialAudioManager {
 
     // MARK: - Crossfade (2A) — AVAudioEngine version
 
-    private func crossfadeAmbient(action: AudioAction, resolvedFile: String, duration: TimeInterval, stepContext: String? = nil) {
+    private func crossfadeAmbient(action: AudioAction, resolvedFile: String, duration: TimeInterval, segmentContext: String? = nil) {
         guard var existing = ambientChannels[action.channel] else { return }
 
         // Cancel any in-progress outgoing fade
@@ -1275,7 +1275,7 @@ public class SpatialAudioManager {
         existing.fadeTask?.cancel()
 
         guard let url = findAudioURL(file: resolvedFile) else {
-            logger.error("Crossfade audio DROPPED — file: \(resolvedFile), channel: \(action.channel), beat: \(stepContext ?? "unknown")")
+            logger.error("Crossfade audio DROPPED — file: \(resolvedFile), channel: \(action.channel), beat: \(segmentContext ?? "unknown")")
             return
         }
 
@@ -1335,14 +1335,14 @@ public class SpatialAudioManager {
     }
 
     private func animateFade(node: AVAudioPlayerNode, from startVol: Float, to endVol: Float, duration: TimeInterval) async {
-        let steps = max(Int(duration * 30), 1)
-        let stepDuration = duration / Double(steps)
-        let volumeStep = (endVol - startVol) / Float(steps)
+        let increments = max(Int(duration * 30), 1)
+        let segmentDuration = duration / Double(increments)
+        let volumeIncrement = (endVol - startVol) / Float(increments)
 
-        for i in 0..<steps {
+        for i in 0..<increments {
             guard !Task.isCancelled else { break }
-            node.volume = startVol + volumeStep * Float(i + 1)
-            try? await Task.sleep(for: .seconds(stepDuration))
+            node.volume = startVol + volumeIncrement * Float(i + 1)
+            try? await Task.sleep(for: .seconds(segmentDuration))
         }
         if !Task.isCancelled {
             node.volume = endVol
@@ -1351,7 +1351,7 @@ public class SpatialAudioManager {
 
     // MARK: - Loop Config (2C)
 
-    private func playWithLoopConfig(action: AudioAction, loopConfig: LoopConfig, stepContext: String? = nil) {
+    private func playWithLoopConfig(action: AudioAction, loopConfig: LoopConfig, segmentContext: String? = nil) {
         // Clean up any existing loop state
         cancelLoopState(channel: action.channel)
         stopAmbient(channel: action.channel)
@@ -1360,8 +1360,8 @@ public class SpatialAudioManager {
             // Play intro, then transition to loop
             let resolvedIntro = resolveVariation(for: introFile)
             guard let url = findAudioURL(file: resolvedIntro) else {
-                logger.error("Loop intro DROPPED — file: \(resolvedIntro), channel: \(action.channel), beat: \(stepContext ?? "unknown")")
-                startLoopPhase(action: action, loopConfig: loopConfig, stepContext: stepContext)
+                logger.error("Loop intro DROPPED — file: \(resolvedIntro), channel: \(action.channel), beat: \(segmentContext ?? "unknown")")
+                startLoopPhase(action: action, loopConfig: loopConfig, segmentContext: segmentContext)
                 return
             }
 
@@ -1403,27 +1403,27 @@ public class SpatialAudioManager {
                     let waitTime = max(introDuration - loopConfig.crossfade, 0)
                     try? await Task.sleep(for: .seconds(waitTime))
                     guard !Task.isCancelled else { return }
-                    self.startLoopPhase(action: action, loopConfig: loopConfig, stepContext: stepContext)
+                    self.startLoopPhase(action: action, loopConfig: loopConfig, segmentContext: segmentContext)
                 }
 
                 loopStates[action.channel] = LoopState(
                     config: loopConfig,
                     phase: .playingIntro,
                     transitionTask: transitionTask,
-                    stepContext: stepContext
+                    segmentContext: segmentContext
                 )
 
                 logger.info("Loop intro: \(resolvedIntro) on '\(action.channel)'")
             } catch {
                 logger.error("Failed to play intro \(resolvedIntro): \(error.localizedDescription)")
-                startLoopPhase(action: action, loopConfig: loopConfig, stepContext: stepContext)
+                startLoopPhase(action: action, loopConfig: loopConfig, segmentContext: segmentContext)
             }
         } else {
-            startLoopPhase(action: action, loopConfig: loopConfig, stepContext: stepContext)
+            startLoopPhase(action: action, loopConfig: loopConfig, segmentContext: segmentContext)
         }
     }
 
-    private func startLoopPhase(action: AudioAction, loopConfig: LoopConfig, stepContext: String? = nil) {
+    private func startLoopPhase(action: AudioAction, loopConfig: LoopConfig, segmentContext: String? = nil) {
         let resolvedLoop = resolveVariation(for: loopConfig.loop)
 
         // Use crossfade if intro was playing
@@ -1435,11 +1435,11 @@ public class SpatialAudioManager {
                 loop: true,
                 crossfade: loopConfig.crossfade
             )
-            crossfadeAmbient(action: loopAction, resolvedFile: resolvedLoop, duration: loopConfig.crossfade, stepContext: stepContext)
+            crossfadeAmbient(action: loopAction, resolvedFile: resolvedLoop, duration: loopConfig.crossfade, segmentContext: segmentContext)
         } else {
             stopAmbient(channel: action.channel)
             guard let url = findAudioURL(file: resolvedLoop) else {
-                logger.error("Loop audio DROPPED — file: \(resolvedLoop), channel: \(action.channel), beat: \(stepContext ?? "unknown")")
+                logger.error("Loop audio DROPPED — file: \(resolvedLoop), channel: \(action.channel), beat: \(segmentContext ?? "unknown")")
                 return
             }
             do {
@@ -1477,7 +1477,7 @@ public class SpatialAudioManager {
             state.transitionTask = nil
             loopStates[action.channel] = state
         } else {
-            loopStates[action.channel] = LoopState(config: loopConfig, phase: .looping, stepContext: stepContext)
+            loopStates[action.channel] = LoopState(config: loopConfig, phase: .looping, segmentContext: segmentContext)
         }
         logger.info("Loop phase: looping on '\(action.channel)'")
     }
@@ -1502,11 +1502,11 @@ public class SpatialAudioManager {
                 loop: false,
                 crossfade: state.config.crossfade
             )
-            crossfadeAmbient(action: outroAction, resolvedFile: resolvedOutro, duration: state.config.crossfade, stepContext: state.stepContext)
+            crossfadeAmbient(action: outroAction, resolvedFile: resolvedOutro, duration: state.config.crossfade, segmentContext: state.segmentContext)
         } else {
             stopAmbient(channel: channel)
             guard let url = findAudioURL(file: resolvedOutro) else {
-                logger.error("Outro audio DROPPED — file: \(resolvedOutro), channel: \(channel), beat: \(state.stepContext ?? "unknown")")
+                logger.error("Outro audio DROPPED — file: \(resolvedOutro), channel: \(channel), beat: \(state.segmentContext ?? "unknown")")
                 loopStates.removeValue(forKey: channel)
                 return
             }
@@ -1552,7 +1552,7 @@ public class SpatialAudioManager {
         }
     }
 
-    private func playSpatial(action: AudioAction, stepContext: String? = nil) {
+    private func playSpatial(action: AudioAction, segmentContext: String? = nil) {
         stopSpatial(channel: action.channel)
 
         let sourceEntity = Entity()
@@ -1610,7 +1610,7 @@ public class SpatialAudioManager {
             )
             logger.info("Playing spatial: \(resolvedFile) on channel '\(action.channel)'")
         } else {
-            let ctx = stepContext ?? "unknown"
+            let ctx = segmentContext ?? "unknown"
             let wasPreloaded = resolvedURLs[resolvedFile] != nil
             logger.error("Spatial audio DROPPED — file: \(resolvedFile), channel: \(action.channel), beat: \(ctx). Not in preloadedResources.")
             if wasPreloaded {
@@ -1901,15 +1901,15 @@ public class SpatialAudioManager {
 
         let node = ch.playerNode
         let startVolume = node.volume
-        let steps = max(Int(duration * 30), 1)
-        let stepDuration = duration / Double(steps)
-        let volumeStep = (effectiveTarget - startVolume) / Float(steps)
+        let increments = max(Int(duration * 30), 1)
+        let segmentDuration = duration / Double(increments)
+        let volumeIncrement = (effectiveTarget - startVolume) / Float(increments)
 
         ch.fadeTask = Task { @MainActor [self] in
-            for i in 0..<steps {
+            for i in 0..<increments {
                 guard !Task.isCancelled else { break }
-                node.volume = startVolume + volumeStep * Float(i + 1)
-                try? await Task.sleep(for: .seconds(stepDuration))
+                node.volume = startVolume + volumeIncrement * Float(i + 1)
+                try? await Task.sleep(for: .seconds(segmentDuration))
             }
             node.volume = effectiveTarget
             if effectiveTarget <= 0.001 {
@@ -1929,15 +1929,15 @@ public class SpatialAudioManager {
             return
         }
         let start = systemSpatialMedia.volume(channel: channel) ?? target
-        let steps = max(Int(duration * 30), 1)
-        let stepDuration = duration / Double(steps)
-        let delta = (target - start) / Float(steps)
+        let increments = max(Int(duration * 30), 1)
+        let segmentDuration = duration / Double(increments)
+        let delta = (target - start) / Float(increments)
 
         systemSpatialFadeTasks[channel] = Task { @MainActor [self] in
-            for i in 0..<steps {
+            for i in 0..<increments {
                 guard !Task.isCancelled else { break }
                 systemSpatialMedia.setVolume(start + delta * Float(i + 1), channel: channel)
-                try? await Task.sleep(for: .seconds(stepDuration))
+                try? await Task.sleep(for: .seconds(segmentDuration))
             }
             guard !Task.isCancelled else { return }
             systemSpatialMedia.setVolume(target, channel: channel)
@@ -1955,15 +1955,15 @@ public class SpatialAudioManager {
 
         let node = ch.playerNode
         let startVolume = node.volume
-        let steps = max(Int(duration * 30), 1)
-        let stepDuration = duration / Double(steps)
-        let volumeStep = (rawTarget - startVolume) / Float(steps)
+        let increments = max(Int(duration * 30), 1)
+        let segmentDuration = duration / Double(increments)
+        let volumeIncrement = (rawTarget - startVolume) / Float(increments)
 
         ch.fadeTask = Task { @MainActor in
-            for i in 0..<steps {
+            for i in 0..<increments {
                 guard !Task.isCancelled else { break }
-                node.volume = startVolume + volumeStep * Float(i + 1)
-                try? await Task.sleep(for: .seconds(stepDuration))
+                node.volume = startVolume + volumeIncrement * Float(i + 1)
+                try? await Task.sleep(for: .seconds(segmentDuration))
             }
             node.volume = rawTarget
         }

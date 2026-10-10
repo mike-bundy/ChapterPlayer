@@ -2,8 +2,8 @@
 //  SequenceEngine.swift
 //  SharedVisions
 //
-//  Generic step choreographer.
-//  Reads SequenceDefinitions and executes StepActions through pluggable executors.
+//  Generic segment choreographer.
+//  Reads SequenceDefinitions and executes SegmentActions through pluggable executors.
 //  Handles timing, pause/resume/skip/goto/restart.
 //
 
@@ -17,9 +17,9 @@ private let logger = Logger(
 )
 
 #if DEBUG
-/// Step-1 dispatch signposter — marks when the first step's actions begin executing.
+/// Segment-1 dispatch signposter — marks when the first segment's actions begin executing.
 /// Paired with SpatialAudioManager's "prewarm_hit" signpost for Instruments profiling.
-private let stepSignposter = OSSignposter(
+private let segmentSignposter = OSSignposter(
     subsystem: Bundle.main.bundleIdentifier ?? "com.shellcorp.sharedvisions",
     category: "AudioPerf"
 )
@@ -29,14 +29,14 @@ private let stepSignposter = OSSignposter(
 
 public struct SequenceStatus: Sendable {
     public let sequenceId: String
-    public let stepId: String
-    public let stepIndex: Int
-    public let stepName: String
-    public let stepElapsed: TimeInterval
-    public let stepDuration: TimeInterval
+    public let segmentId: String
+    public let segmentIndex: Int
+    public let segmentName: String
+    public let segmentElapsed: TimeInterval
+    public let segmentDuration: TimeInterval
     public let totalElapsed: TimeInterval
     public let totalDuration: TimeInterval
-    public let totalSteps: Int
+    public let totalSegments: Int
     public let isPlaying: Bool
     public let isWaiting: Bool
     public let isComplete: Bool
@@ -55,9 +55,9 @@ public final class SequenceEngine {
     // MARK: - State
 
     public private(set) var currentSequence: SequenceDefinition?
-    public private(set) var currentStepIndex: Int = 0
-    /// The offset into the current Step of the action being fired — 0 for
-    /// a Step's immediate actions, `at` for a scheduled one. Read by the
+    public private(set) var currentSegmentIndex: Int = 0
+    /// The offset into the current Segment of the action being fired — 0 for
+    /// a Segment's immediate actions, `at` for a scheduled one. Read by the
     /// video stamp so an occurrence knows where it starts.
     private var currentFiringOffset: TimeInterval = 0
     /// The Sequence time a seek is landing on, while its late actions are
@@ -69,14 +69,14 @@ public final class SequenceEngine {
     // MARK: - Gate State
 
     public private(set) var isWaiting: Bool = false
-    public private(set) var currentGate: StepGate?
+    public private(set) var currentGate: SegmentGate?
     public private(set) var waitStartTime: Date?
 
     // MARK: - Timing
 
-    private var stepStartTime: Date = .now
+    private var segmentStartTime: Date = .now
     private var sequenceStartTime: Date = .now
-    private var stepPausedDuration: TimeInterval = 0
+    private var segmentPausedDuration: TimeInterval = 0
     private var sequencePausedDuration: TimeInterval = 0
     private var pauseStartTime: Date?
 
@@ -102,13 +102,13 @@ public final class SequenceEngine {
 
     // MARK: - Audio Completion Tracking
 
-    private var audioCompletionActions: [String: [StepAction]] = [:]
+    private var audioCompletionActions: [String: [SegmentAction]] = [:]
     private var completionWired = false
 
     // MARK: - Callbacks
 
-    /// Called when a step changes — lets AppModel/ImmersiveView react
-    public var onStepChanged: ((StepDefinition, Int) -> Void)?
+    /// Called when a segment changes — lets AppModel/ImmersiveView react
+    public var onSegmentChanged: ((SegmentDefinition, Int) -> Void)?
     /// Called when sequence completes
     /// AN AUTHORED NAVIGATION WANTS TO HAPPEN.
     ///
@@ -118,12 +118,12 @@ public final class SequenceEngine {
     public var onNavigationRequested: ((NavigationIntent) -> Void)?
 
     public var onSequenceComplete: ((CompletionAction) -> Void)?
-    /// Called to send step status (observers / utility window)
+    /// Called to send segment status (observers / utility window)
     public var onStatusUpdate: ((SequenceStatus) -> Void)?
     /// Called when a sequence starts playing
     public var onSequenceStarted: ((String) -> Void)?
     /// Called when a gate activates — lets ImmersiveView show a prompt
-    public var onGateStarted: ((StepGate) -> Void)?
+    public var onGateStarted: ((SegmentGate) -> Void)?
     /// Called when a gate is satisfied — lets ImmersiveView hide the prompt
     public var onGateEnded: (() -> Void)?
 
@@ -144,7 +144,7 @@ public final class SequenceEngine {
     /// gate, whether an Explore region is still holding the story.
     ///
     /// It does NOT own the hold: a region's exit is a gate on the boundary
-    /// step, and the engine has parked `sequenceAnimationTime` at a step's end
+    /// segment, and the engine has parked `sequenceAnimationTime` at a segment's end
     /// during a gate wait since gates were wired. Explore reuses that.
     public weak var storyRegions: StoryRegionController?
 
@@ -158,7 +158,7 @@ public final class SequenceEngine {
     public weak var storyState: StoryStateStore?
 
     /// Follows the sequence's timed backdrop track. Hung off the engine rather
-    /// than owned by it: the engine's business is steps, gates and actions,
+    /// than owned by it: the engine's business is segments, gates and actions,
     /// and a backdrop is none of those. It is driven from the same places the
     /// animation and audio-automation clocks are, so a gate holds a backdrop
     /// cue exactly where it holds a curve.
@@ -192,31 +192,31 @@ public final class SequenceEngine {
 
     // MARK: - Computed
 
-    public var currentStep: StepDefinition? {
+    public var currentSegment: SegmentDefinition? {
         guard let sequence = currentSequence,
-              currentStepIndex >= 0,
-              currentStepIndex < sequence.steps.count else { return nil }
-        return sequence.steps[currentStepIndex]
+              currentSegmentIndex >= 0,
+              currentSegmentIndex < sequence.segments.count else { return nil }
+        return sequence.segments[currentSegmentIndex]
     }
 
     public var currentSequenceId: String {
         currentSequence?.id ?? ""
     }
 
-    public var currentStepId: String {
-        currentStep?.id ?? ""
+    public var currentSegmentId: String {
+        currentSegment?.id ?? ""
     }
 
     public var totalDuration: TimeInterval {
         currentSequence?.totalDuration ?? 0
     }
 
-    public var stepElapsed: TimeInterval {
+    public var segmentElapsed: TimeInterval {
         guard isPlaying else { return 0 }
         let now = Date.now
-        let raw = now.timeIntervalSince(stepStartTime)
+        let raw = now.timeIntervalSince(segmentStartTime)
         let activePause = pauseStartTime.map { now.timeIntervalSince($0) } ?? 0
-        return raw - stepPausedDuration - activePause
+        return raw - segmentPausedDuration - activePause
     }
 
     public var totalElapsed: TimeInterval {
@@ -229,29 +229,29 @@ public final class SequenceEngine {
 
     // MARK: - Play
 
-    /// Starts sequence playback. Use `startingAtStepIndex` to skip earlier steps.
+    /// Starts sequence playback. Use `startingAtSegmentIndex` to skip earlier segments.
     /// Always resets entities, attachments, and effects to their canonical defaults so
     /// switching sequences starts from a clean slate (SharedVisions policy: safe full reset).
-    public func play(sequence: SequenceDefinition, startingAtStepIndex startIndex: Int = 0) {
+    public func play(sequence: SequenceDefinition, startingAtSegmentIndex startIndex: Int = 0) {
         stop(resetEntities: true)
 
         currentSequence = sequence
-        let stepCount = sequence.steps.count
-        let clampedStart = max(0, min(startIndex, stepCount > 0 ? stepCount - 1 : 0))
-        currentStepIndex = clampedStart
+        let segmentCount = sequence.segments.count
+        let clampedStart = max(0, min(startIndex, segmentCount > 0 ? segmentCount - 1 : 0))
+        currentSegmentIndex = clampedStart
         isPaused = false
         isPlaying = true
-        stepPausedDuration = 0
+        segmentPausedDuration = 0
         sequencePausedDuration = 0
         pauseStartTime = nil
 
         var elapsed: TimeInterval = 0
         for i in 0..<clampedStart {
-            elapsed += sequence.steps[i].duration
+            elapsed += sequence.segments[i].duration
         }
         sequenceStartTime = Date.now.addingTimeInterval(-elapsed)
 
-        logger.info("Playing sequence: \(sequence.id) from step index \(clampedStart)/\(stepCount) (\(String(format: "%.1f", sequence.totalDuration))s total)")
+        logger.info("Playing sequence: \(sequence.id) from segment index \(clampedStart)/\(segmentCount) (\(String(format: "%.1f", sequence.totalDuration))s total)")
 
         // THE HOST LEARNS WHICH SEQUENCE THIS IS BEFORE ANYTHING IS PRESENTED
         // FOR IT. `registerSequenceAnimation` begins the backdrop and caption
@@ -270,33 +270,33 @@ public final class SequenceEngine {
         storyRegions?.begin(regions: sequence.storyRegions)
         startStatusReporting()
 
-        logger.notice("▶ play() creating playTask for sequence=\(sequence.id) stepIndex=\(clampedStart)")
+        logger.notice("▶ play() creating playTask for sequence=\(sequence.id) segmentIndex=\(clampedStart)")
         startPlayTask(sequence: sequence, startIndex: clampedStart)
     }
 
-    /// Async variant: runs the step loop in the caller's Task context instead of
+    /// Async variant: runs the segment loop in the caller's Task context instead of
     /// creating a new fire-and-forget Task. Use from auto-advance chains.
     /// Always resets entities/attachments/effects (SharedVisions policy).
-    public func playAndAwait(sequence: SequenceDefinition, startingAtStepIndex startIndex: Int = 0) async -> CompletionAction? {
+    public func playAndAwait(sequence: SequenceDefinition, startingAtSegmentIndex startIndex: Int = 0) async -> CompletionAction? {
         stop(resetEntities: true)
 
         currentSequence = sequence
-        let stepCount = sequence.steps.count
-        let clampedStart = max(0, min(startIndex, stepCount > 0 ? stepCount - 1 : 0))
-        currentStepIndex = clampedStart
+        let segmentCount = sequence.segments.count
+        let clampedStart = max(0, min(startIndex, segmentCount > 0 ? segmentCount - 1 : 0))
+        currentSegmentIndex = clampedStart
         isPaused = false
         isPlaying = true
-        stepPausedDuration = 0
+        segmentPausedDuration = 0
         sequencePausedDuration = 0
         pauseStartTime = nil
 
         var elapsed: TimeInterval = 0
         for i in 0..<clampedStart {
-            elapsed += sequence.steps[i].duration
+            elapsed += sequence.segments[i].duration
         }
         sequenceStartTime = Date.now.addingTimeInterval(-elapsed)
 
-        logger.info("Playing sequence (await): \(sequence.id) from step index \(clampedStart)/\(stepCount) (\(String(format: "%.1f", sequence.totalDuration))s total)")
+        logger.info("Playing sequence (await): \(sequence.id) from segment index \(clampedStart)/\(segmentCount) (\(String(format: "%.1f", sequence.totalDuration))s total)")
 
         // THE HOST LEARNS WHICH SEQUENCE THIS IS BEFORE ANYTHING IS PRESENTED
         // FOR IT. `registerSequenceAnimation` begins the backdrop and caption
@@ -315,7 +315,7 @@ public final class SequenceEngine {
         storyRegions?.begin(regions: sequence.storyRegions)
         startStatusReporting()
 
-        return await runStepsFrom(index: clampedStart, in: sequence)
+        return await runSegmentsFrom(index: clampedStart, in: sequence)
     }
 
     /// Hand the sequence's animation tracks to the entity executor, clocked
@@ -350,7 +350,7 @@ public final class SequenceEngine {
                             fadeOutDuration: spec.release)])
         })
         // Backdrop cues ride the SAME authored clock. On wall time a viewer
-        // held at a gate would watch the backdrop cut ahead of the step they
+        // held at a gate would watch the backdrop cut ahead of the segment they
         // are still waiting on.
         backdropDriver?.begin(
             track: sequence.backdropTrack,
@@ -389,14 +389,14 @@ public final class SequenceEngine {
     /// walk, at sequence start, never on a frame.
     static func authoredFades(in sequence: SequenceDefinition) -> [String: [AudioFade]] {
         var channels: Set<String> = []
-        var stepStart = 0.0
+        var segmentStart = 0.0
         var result: [String: [AudioFade]] = [:]
-        for step in sequence.steps {
-            // Both buckets: an immediate action fires at the step's start, a
+        for segment in sequence.segments {
+            // Both buckets: an immediate action fires at the segment's start, a
             // scheduled one at its own offset.
-            let timed: [(Double, StepAction)] =
-                step.actions.map { (stepStart, $0) }
-                + step.scheduledActions.map { (stepStart + $0.at, $0.action) }
+            let timed: [(Double, SegmentAction)] =
+                segment.actions.map { (segmentStart, $0) }
+                + segment.scheduledActions.map { (segmentStart + $0.at, $0.action) }
             for (time, action) in timed {
                 switch action {
                 case .playAudio(let a):
@@ -406,8 +406,8 @@ public final class SequenceEngine {
                     // past the middle hears them meet rather than one of
                     // them silently winning. Same arithmetic as the editor's
                     // — `MediaFadeCurve.fitted` is the one place it lives.
-                    let clipEnd = stepStart + Self.audioOccurrenceEnd(
-                        channel: a.channel, firedAt: time - stepStart, in: step)
+                    let clipEnd = segmentStart + Self.audioOccurrenceEnd(
+                        channel: a.channel, firedAt: time - segmentStart, in: segment)
                     let ramps = MediaFadeCurve.fitted(fadeIn: a.fadeIn,
                                                       fadeOut: a.fadeOut,
                                                       span: clipEnd - time)
@@ -431,7 +431,7 @@ public final class SequenceEngine {
                     break
                 }
             }
-            stepStart += step.duration
+            segmentStart += segment.duration
         }
         for channel in result.keys {
             result[channel]?.sort { $0.startTime < $1.startTime }
@@ -439,18 +439,18 @@ public final class SequenceEngine {
         return result
     }
 
-    /// Where an AUDIO occurrence ends inside its Step (FL-18 N12).
+    /// Where an AUDIO occurrence ends inside its Segment (FL-18 N12).
     ///
     /// The same rule `occurrenceSpan` applies to picture, said once for
-    /// sound: the channel's next stop or play LATER in the Step, else the
-    /// Step's end. A fade-out that ends at the wrong instant is audible,
+    /// sound: the channel's next stop or play LATER in the Segment, else the
+    /// Segment's end. A fade-out that ends at the wrong instant is audible,
     /// so this is stated rather than approximated by the clip's media
     /// length — which is a different fact and often longer.
     static func audioOccurrenceEnd(channel: String, firedAt offset: TimeInterval,
-                                   in step: StepDefinition) -> TimeInterval {
-        var end = step.duration
-        let timed: [(TimeInterval, StepAction)] =
-            step.actions.map { (0, $0) } + step.scheduledActions.map { ($0.at, $0.action) }
+                                   in segment: SegmentDefinition) -> TimeInterval {
+        var end = segment.duration
+        let timed: [(TimeInterval, SegmentAction)] =
+            segment.actions.map { (0, $0) } + segment.scheduledActions.map { ($0.at, $0.action) }
         for (at, action) in timed where at > offset + 1e-6 && at < end {
             switch action {
             case .stopAudio(let c) where c == channel: end = at
@@ -462,16 +462,16 @@ public final class SequenceEngine {
     }
 
     /// The authored sequence clock: absolute seconds along the sequence's
-    /// step grid — the domain animation-track keys live in. Unlike
+    /// segment grid — the domain animation-track keys live in. Unlike
     /// `totalElapsed` (wall time minus pauses), this clock stops at a
-    /// gated step's end and never drifts when gates stretch real time.
+    /// gated segment's end and never drifts when gates stretch real time.
     public var sequenceAnimationTime: TimeInterval {
         guard let sequence = currentSequence, isPlaying else { return 0 }
-        let index = max(0, min(currentStepIndex, sequence.steps.count - 1))
+        let index = max(0, min(currentSegmentIndex, sequence.segments.count - 1))
         var start: TimeInterval = 0
-        for i in 0..<index { start += sequence.steps[i].duration }
-        let stepDuration = sequence.steps.indices.contains(index) ? sequence.steps[index].duration : 0
-        return start + min(max(stepElapsed, 0), stepDuration)
+        for i in 0..<index { start += sequence.segments[i].duration }
+        let segmentDuration = sequence.segments.indices.contains(index) ? sequence.segments[index].duration : 0
+        return start + min(max(segmentElapsed, 0), segmentDuration)
     }
 
     // MARK: - Stop
@@ -495,7 +495,7 @@ public final class SequenceEngine {
         isPaused = false
         isPlaying = false
         catchingUpTo = nil
-        stepPausedDuration = 0
+        segmentPausedDuration = 0
         sequencePausedDuration = 0
         pauseStartTime = nil
         resumeIfPaused()
@@ -550,7 +550,7 @@ public final class SequenceEngine {
         guard isPaused else { return }
         if let start = pauseStartTime {
             let elapsed = Date.now.timeIntervalSince(start)
-            stepPausedDuration += elapsed
+            segmentPausedDuration += elapsed
             sequencePausedDuration += elapsed
         }
         pauseStartTime = nil
@@ -569,42 +569,42 @@ public final class SequenceEngine {
 
     public func skip() {
         guard let sequence = currentSequence else { return }
-        let nextIndex = currentStepIndex + 1
-        guard nextIndex < sequence.steps.count else {
-            logger.info("Already at last step — cannot skip")
+        let nextIndex = currentSegmentIndex + 1
+        guard nextIndex < sequence.segments.count else {
+            logger.info("Already at last segment — cannot skip")
             return
         }
-        jumpToStep(index: nextIndex)
+        jumpToSegment(index: nextIndex)
     }
 
     public func previous() {
-        guard currentStepIndex > 0 else {
-            logger.info("Already at first step — cannot go previous")
+        guard currentSegmentIndex > 0 else {
+            logger.info("Already at first segment — cannot go previous")
             return
         }
-        jumpToStep(index: currentStepIndex - 1)
+        jumpToSegment(index: currentSegmentIndex - 1)
     }
 
-    public func jumpToStep(_ stepId: String) {
+    public func jumpToSegment(_ segmentId: String) {
         guard let sequence = currentSequence,
-              let index = sequence.steps.firstIndex(where: { $0.id == stepId }) else {
-            logger.warning("Unknown step ID: \(stepId)")
+              let index = sequence.segments.firstIndex(where: { $0.id == segmentId }) else {
+            logger.warning("Unknown segment ID: \(segmentId)")
             return
         }
-        jumpToStep(index: index)
+        jumpToSegment(index: index)
     }
 
-    public func jumpToStep(index: Int) {
+    public func jumpToSegment(index: Int) {
         guard let sequence = currentSequence,
-              index >= 0, index < sequence.steps.count else { return }
+              index >= 0, index < sequence.segments.count else { return }
 
-        logger.info("Jumping to step index \(index): \(sequence.steps[index].id)")
+        logger.info("Jumping to segment index \(index): \(sequence.segments[index].id)")
 
         tearDownForRelocation()
 
         var elapsed: TimeInterval = 0
         for i in 0..<index {
-            elapsed += sequence.steps[i].duration
+            elapsed += sequence.segments[i].duration
         }
         sequenceStartTime = Date.now.addingTimeInterval(-elapsed)
 
@@ -619,7 +619,7 @@ public final class SequenceEngine {
     }
 
     /// What a move WITHIN the running Sequence tears down, said once for
-    /// `jumpToStep` and `seek(toSequenceTime:)`: the step loop, any wait it
+    /// `jumpToSegment` and `seek(toSequenceTime:)`: the segment loop, any wait it
     /// was parked in, every sounding channel, and the scene back to its
     /// canonical defaults. Narrower than `stop()` on purpose — the Sequence
     /// Visit continues, so interactions, Explore regions and the cue drivers
@@ -631,7 +631,7 @@ public final class SequenceEngine {
         resumeIfPaused()
         clearGate()
         isPaused = false
-        stepPausedDuration = 0
+        segmentPausedDuration = 0
         sequencePausedDuration = 0
         pauseStartTime = nil
 
@@ -652,7 +652,7 @@ public final class SequenceEngine {
     /// `setStoryState` IS replayed: a later story-condition gate waits on
     /// what an earlier Segment remembered, and a seek past the Segment that
     /// set it would otherwise park the story for good.
-    private func preFire(_ action: StepAction) {
+    private func preFire(_ action: SegmentAction) {
         switch action {
         case .navigate, .startSparkBurst:
             return
@@ -673,7 +673,7 @@ public final class SequenceEngine {
     /// clock by its own surface and needs no help; a looping one would need
     /// the media's length, which the engine never has.
     private func alignToSeek(_ video: VideoAction) {
-        guard let seekTime = catchingUpTo, let (_, start) = firingStep,
+        guard let seekTime = catchingUpTo, let (_, start) = firingSegment,
               video.retime?.isIdentity ?? true, !video.loop else { return }
         let into = seekTime - (start + currentFiringOffset)
         guard into > 0 else { return }
@@ -688,7 +688,7 @@ public final class SequenceEngine {
     /// the seek time, leaves nothing behind — but firing it anyway spins up a
     /// player and sounds a first buffer before the stop lands. The target
     /// Segment's own actions up to the offset count as "later" here, because
-    /// the step loop fires them immediately after.
+    /// the segment loop fires them immediately after.
     static func supersededMediaPlays(before target: (index: Int, offset: TimeInterval),
                                      in sequence: SequenceDefinition) -> Set<Int> {
         var lastAudioPlay: [String: Int] = [:]
@@ -696,7 +696,7 @@ public final class SequenceEngine {
         var superseded: Set<Int> = []
         var position = 0
 
-        func visit(_ action: StepAction, counted: Bool) {
+        func visit(_ action: SegmentAction, counted: Bool) {
             switch action {
             case .playAudio(let audio):
                 if let earlier = lastAudioPlay[audio.channel] { superseded.insert(earlier) }
@@ -719,16 +719,16 @@ public final class SequenceEngine {
         }
 
         for index in 0..<target.index {
-            let step = sequence.steps[index]
-            for action in step.actions + scheduledInFireOrder(step).map(\.action) {
+            let segment = sequence.segments[index]
+            for action in segment.actions + scheduledInFireOrder(segment).map(\.action) {
                 visit(action, counted: true)
                 position += 1
             }
         }
-        if sequence.steps.indices.contains(target.index) {
-            let step = sequence.steps[target.index]
-            let due = step.actions
-                + scheduledInFireOrder(step).filter { $0.at <= target.offset }.map(\.action)
+        if sequence.segments.indices.contains(target.index) {
+            let segment = sequence.segments[target.index]
+            let due = segment.actions
+                + scheduledInFireOrder(segment).filter { $0.at <= target.offset }.map(\.action)
             for action in due { visit(action, counted: false) }
         }
         return superseded
@@ -748,23 +748,23 @@ public final class SequenceEngine {
     /// everything authored has fired and the completion follows naturally.
     public static func seekTarget(for time: TimeInterval,
                                   in sequence: SequenceDefinition) -> (index: Int, offset: TimeInterval)? {
-        guard !sequence.steps.isEmpty else { return nil }
+        guard !sequence.segments.isEmpty else { return nil }
         let clamped = max(0, time)
         var start: TimeInterval = 0
-        for (index, step) in sequence.steps.enumerated() {
-            if clamped < start + step.duration { return (index, clamped - start) }
-            start += step.duration
+        for (index, segment) in sequence.segments.enumerated() {
+            if clamped < start + segment.duration { return (index, clamped - start) }
+            start += segment.duration
         }
-        let last = sequence.steps.count - 1
-        return (last, sequence.steps[last].duration)
+        let last = sequence.segments.count - 1
+        return (last, sequence.segments[last].duration)
     }
 
     /// A Segment's scheduled actions in the order they fire: by time, ties
-    /// broken by authored order. The step loop and the seek pre-fire both
+    /// broken by authored order. The segment loop and the seek pre-fire both
     /// read this, so a seek cannot replay a Segment in a different order than
     /// playing through it would have.
-    static func scheduledInFireOrder(_ step: StepDefinition) -> [ScheduledAction] {
-        step.scheduledActions
+    static func scheduledInFireOrder(_ segment: SegmentDefinition) -> [ScheduledAction] {
+        segment.scheduledActions
             .enumerated()
             .sorted { a, b in
                 a.element.at != b.element.at ? a.element.at < b.element.at
@@ -775,7 +775,7 @@ public final class SequenceEngine {
 
     /// SEEK TO A TIME, NOT TO A BOUNDARY.
     ///
-    /// `jumpToStep` can only land on a Segment's start, and it lands there
+    /// `jumpToSegment` can only land on a Segment's start, and it lands there
     /// with a freshly reset scene — everything earlier Segments revealed is
     /// gone. A seek applies the state the audience WOULD have at `time`:
     /// every earlier Segment's actions fire, in order, then the target
@@ -784,7 +784,7 @@ public final class SequenceEngine {
     ///
     /// The earlier Segments are pre-fired HERE, synchronously, so the reset
     /// scene and the restored one land in the same frame. The target
-    /// Segment's own actions are not: the step loop starts with its clock
+    /// Segment's own actions are not: the segment loop starts with its clock
     /// already at the offset, so its first due-check fires exactly the
     /// actions authored at or before it, through the one cursor that then
     /// goes on to fire the rest. Nothing can fire twice because nothing has
@@ -805,7 +805,7 @@ public final class SequenceEngine {
         guard let sequence = currentSequence,
               let target = Self.seekTarget(for: time, in: sequence) else { return }
 
-        logger.info("Seeking to \(String(format: "%.2f", time))s: step index \(target.index) +\(String(format: "%.2f", target.offset))s")
+        logger.info("Seeking to \(String(format: "%.2f", time))s: segment index \(target.index) +\(String(format: "%.2f", target.offset))s")
 
         tearDownForRelocation()
         // A seek can leave an Explore region without passing its exit. Drop
@@ -813,7 +813,7 @@ public final class SequenceEngine {
         storyRegions?.regionDidComplete()
 
         var targetStart: TimeInterval = 0
-        for i in 0..<target.index { targetStart += sequence.steps[i].duration }
+        for i in 0..<target.index { targetStart += sequence.segments[i].duration }
         let seekTime = targetStart + target.offset
         sequenceStartTime = Date.now.addingTimeInterval(-seekTime)
 
@@ -824,13 +824,13 @@ public final class SequenceEngine {
         let superseded = Self.supersededMediaPlays(before: target, in: sequence)
         var position = 0
         for index in 0..<target.index {
-            let step = sequence.steps[index]
-            currentStepIndex = index
-            stepStartTime = .now
-            entityExecutor?.clearStepMotions()
-            let timed: [(TimeInterval, StepAction)] =
-                step.actions.map { (0, $0) }
-                + Self.scheduledInFireOrder(step).map { (min($0.at, step.duration), $0.action) }
+            let segment = sequence.segments[index]
+            currentSegmentIndex = index
+            segmentStartTime = .now
+            entityExecutor?.clearSegmentMotions()
+            let timed: [(TimeInterval, SegmentAction)] =
+                segment.actions.map { (0, $0) }
+                + Self.scheduledInFireOrder(segment).map { (min($0.at, segment.duration), $0.action) }
             for (at, action) in timed {
                 defer { position += 1 }
                 guard !superseded.contains(position) else { continue }
@@ -838,64 +838,64 @@ public final class SequenceEngine {
                 // video stamp and a motion's `startedAt` both read it, so a
                 // move authored ten seconds ago is ten seconds into its
                 // progress rather than starting now.
-                stepStartTime = Date.now.addingTimeInterval(-at)
+                segmentStartTime = Date.now.addingTimeInterval(-at)
                 currentFiringOffset = at
                 preFire(action)
             }
         }
 
         // Leave the clock ON the seek time, not on the last pre-fired
-        // action: a frame can sample it before the step loop's Task starts.
-        currentStepIndex = target.index
-        stepStartTime = Date.now.addingTimeInterval(-target.offset)
+        // action: a frame can sample it before the segment loop's Task starts.
+        currentSegmentIndex = target.index
+        segmentStartTime = Date.now.addingTimeInterval(-target.offset)
         currentFiringOffset = 0
         startStatusReporting()
         startPlayTask(sequence: sequence, startIndex: target.index, startOffset: target.offset)
     }
 
-    // MARK: - Step Loop
+    // MARK: - Segment Loop
 
-    /// Shared step-iteration loop used by play(), jumpToStep(), and playAndAwait().
+    /// Shared segment-iteration loop used by play(), jumpToSegment(), and playAndAwait().
     /// Returns the sequence completion only when playback reaches its natural end.
     ///
     /// `startOffset` is a seek's: the FIRST Segment run begins with its clock
     /// already that far in, so its first due-check fires everything authored
     /// at or before the offset, in order, and the cursor carries on from
     /// there. Every later Segment starts at zero as it always has.
-    private func runStepsFrom(index startIndex: Int, in sequence: SequenceDefinition,
+    private func runSegmentsFrom(index startIndex: Int, in sequence: SequenceDefinition,
                               startOffset: TimeInterval = 0) async -> CompletionAction? {
-        let stepCount = sequence.steps.count
-        logger.notice("▶ runStepsFrom: sequence=\(sequence.id) startIndex=\(startIndex) stepCount=\(stepCount) isCancelled=\(Task.isCancelled)")
+        let segmentCount = sequence.segments.count
+        logger.notice("▶ runSegmentsFrom: sequence=\(sequence.id) startIndex=\(startIndex) segmentCount=\(segmentCount) isCancelled=\(Task.isCancelled)")
 
-        for index in startIndex..<stepCount {
-            let step = sequence.steps[index]
+        for index in startIndex..<segmentCount {
+            let segment = sequence.segments[index]
             guard !Task.isCancelled else {
-                logger.warning("⚠️ Sequence \(sequence.id) cancelled at step \(step.id) — playTask was cancelled before step could start")
+                logger.warning("⚠️ Sequence \(sequence.id) cancelled at segment \(segment.id) — playTask was cancelled before segment could start")
                 return nil
             }
 
-            currentStepIndex = index
-            let enteredAt = index == startIndex ? max(0, min(startOffset, step.duration)) : 0
-            stepStartTime = Date.now.addingTimeInterval(-enteredAt)
-            stepPausedDuration = 0
-            logger.info("Step → \(step.id) (\(step.name), \(String(format: "%.1f", step.duration))s)")
+            currentSegmentIndex = index
+            let enteredAt = index == startIndex ? max(0, min(startOffset, segment.duration)) : 0
+            segmentStartTime = Date.now.addingTimeInterval(-enteredAt)
+            segmentPausedDuration = 0
+            logger.info("Segment → \(segment.id) (\(segment.name), \(String(format: "%.1f", segment.duration))s)")
 
-            // Per-frame motion curves are scoped to a single step. Clearing here means
-            // the previous step's `.animateMotion` actions stop affecting entities
-            // before this step's own actions run (and may register fresh ones).
+            // Per-frame motion curves are scoped to a single segment. Clearing here means
+            // the previous segment's `.animateMotion` actions stop affecting entities
+            // before this segment's own actions run (and may register fresh ones).
             //
-            // MOTION ACTIONS 2.0 BEHAVIORS ARE NOT STEP-SCOPED and are not
+            // MOTION ACTIONS 2.0 BEHAVIORS ARE NOT SEGMENT-SCOPED and are not
             // cleared here — they are timed on the authored sequence clock and
-            // saturate on their own. `clearStepMotions()` carries the whole
+            // saturate on their own. `clearSegmentMotions()` carries the whole
             // reasoning; a Sequence teardown still clears everything through
             // `resetAllEntities()`.
-            entityExecutor?.clearStepMotions()
+            entityExecutor?.clearSegmentMotions()
 
             currentFiringOffset = 0
-            await executeActions(step.actions)
-            let actionsElapsed = Date.now.timeIntervalSince(stepStartTime) - enteredAt
-            logger.info("executeActions: \(String(format: "%.3f", actionsElapsed))s for step \(step.id)")
-            onStepChanged?(step, index)
+            await executeActions(segment.actions)
+            let actionsElapsed = Date.now.timeIntervalSince(segmentStartTime) - enteredAt
+            logger.info("executeActions: \(String(format: "%.3f", actionsElapsed))s for segment \(segment.id)")
+            onSegmentChanged?(segment, index)
             sendStatus()
 
             // Scheduled actions fire inline within the timing loop — no fire-and-forget
@@ -905,41 +905,41 @@ public final class SequenceEngine {
             // SORTED CURSOR, NOT A RESCAN. This used to walk every scheduled
             // action on every 250 ms tick and test a Set for whether it had
             // already fired — O(actions) four times a second, on the main
-            // actor, forever. Timeline 3.0 makes Steps longer and fewer (they
+            // actor, forever. Timeline 3.0 makes Segments longer and fewer (they
             // are runtime pause regions now, not editorial containers), so a
-            // feature-length sequence can put hundreds of actions in one Step
+            // feature-length sequence can put hundreds of actions in one Segment
             // and that scan becomes the hot path.
             //
             // Fires in TIME order, ties broken by authored order — which is
             // also what `MaestroKit.SequenceTime.actionsInAbsoluteOrder` does,
             // so the editor and the runtime agree on what happens first.
-            let scheduledInFireOrder = Self.scheduledInFireOrder(step)
+            let scheduledInFireOrder = Self.scheduledInFireOrder(segment)
             var nextScheduled = 0
 
-            // An action stored past its Step's end is late, not lost: the
+            // An action stored past its Segment's end is late, not lost: the
             // boundary drain below fires it. Say so, because the document is
             // still malformed and the author's timing is not what they wrote.
-            for scheduled in scheduledInFireOrder where scheduled.at > step.duration {
-                let detail = "step '\(step.id)': action scheduled at +"
-                    + String(format: "%.2f", scheduled.at) + "s but the step is only "
-                    + String(format: "%.2f", step.duration)
-                    + "s long. It fires at the step's end instead. The document is malformed."
+            for scheduled in scheduledInFireOrder where scheduled.at > segment.duration {
+                let detail = "segment '\(segment.id)': action scheduled at +"
+                    + String(format: "%.2f", scheduled.at) + "s but the segment is only "
+                    + String(format: "%.2f", segment.duration)
+                    + "s long. It fires at the segment's end instead. The document is malformed."
                 logger.error("\(detail, privacy: .public)")
             }
 
             // ONE CLOCK. The fire test below is pause-aware
-            // (`- stepPausedDuration`) and this exit test was not, so after a
-            // pause of P seconds the step ended P seconds early on the action
+            // (`- segmentPausedDuration`) and this exit test was not, so after a
+            // pause of P seconds the segment ended P seconds early on the action
             // clock and everything authored in that window was dropped.
             func timeLeft() -> Double {
-                max(0, step.duration - (Date.now.timeIntervalSince(stepStartTime) - stepPausedDuration))
+                max(0, segment.duration - (Date.now.timeIntervalSince(segmentStartTime) - segmentPausedDuration))
             }
             var remaining = timeLeft()
-            // `repeat`, not `while`: a ZERO-DURATION step starts with
+            // `repeat`, not `while`: a ZERO-DURATION segment starts with
             // `remaining == 0`, so a plain `while` never entered the body and
-            // anything scheduled at +0 in such a step never fired. Running the
+            // anything scheduled at +0 in such a segment never fired. Running the
             // body once drains the due actions and then exits on the same
-            // condition, so nothing changes for a step with real duration.
+            // condition, so nothing changes for a segment with real duration.
             repeat {
                 guard !Task.isCancelled else { return nil }
 
@@ -952,13 +952,13 @@ public final class SequenceEngine {
                     sendStatus()
                 }
 
-                let elapsedSinceStepStart = Date.now.timeIntervalSince(stepStartTime) - stepPausedDuration
+                let elapsedSinceSegmentStart = Date.now.timeIntervalSince(segmentStartTime) - segmentPausedDuration
                 while nextScheduled < scheduledInFireOrder.count,
-                      elapsedSinceStepStart >= scheduledInFireOrder[nextScheduled].at {
+                      elapsedSinceSegmentStart >= scheduledInFireOrder[nextScheduled].at {
                     let scheduled = scheduledInFireOrder[nextScheduled]
                     nextScheduled += 1
-                    let lateMs = (Date.now.timeIntervalSince(stepStartTime) - stepPausedDuration - scheduled.at) * 1000
-                    logger.notice("[timing] action at +\(String(format: "%.3f", scheduled.at))s fired \(String(format: "%.0f", lateMs)) ms late (step \(step.id, privacy: .public))")
+                    let lateMs = (Date.now.timeIntervalSince(segmentStartTime) - segmentPausedDuration - scheduled.at) * 1000
+                    logger.notice("[timing] action at +\(String(format: "%.3f", scheduled.at))s fired \(String(format: "%.0f", lateMs)) ms late (segment \(segment.id, privacy: .public))")
                     currentFiringOffset = scheduled.at
                     if scheduled.action.isAsync {
                         await executeAction(scheduled.action)
@@ -986,7 +986,7 @@ public final class SequenceEngine {
                 // housekeeping cadence (status, Explore) stays the ceiling.
                 var sleepTime = min(remaining, 0.25)
                 if nextScheduled < scheduledInFireOrder.count {
-                    let now = Date.now.timeIntervalSince(stepStartTime) - stepPausedDuration
+                    let now = Date.now.timeIntervalSince(segmentStartTime) - segmentPausedDuration
                     sleepTime = min(sleepTime, max(0.002, scheduledInFireOrder[nextScheduled].at - now))
                 }
                 try? await Task.sleep(for: .seconds(sleepTime))
@@ -1005,8 +1005,8 @@ public final class SequenceEngine {
                 guard !Task.isCancelled else { return nil }
                 let scheduled = scheduledInFireOrder[nextScheduled]
                 nextScheduled += 1
-                logger.info("Scheduled action fired at the boundary of step \(step.id) (authored at +\(String(format: "%.2f", scheduled.at))s of \(String(format: "%.2f", step.duration))s)")
-                currentFiringOffset = min(scheduled.at, step.duration)
+                logger.info("Scheduled action fired at the boundary of segment \(segment.id) (authored at +\(String(format: "%.2f", scheduled.at))s of \(String(format: "%.2f", segment.duration))s)")
+                currentFiringOffset = min(scheduled.at, segment.duration)
                 if scheduled.action.isAsync {
                     await executeAction(scheduled.action)
                 } else {
@@ -1014,7 +1014,7 @@ public final class SequenceEngine {
                 }
             }
 
-            if let gate = step.gate {
+            if let gate = segment.gate {
                 guard !Task.isCancelled else { return nil }
 
                 if isPaused {
@@ -1041,7 +1041,7 @@ public final class SequenceEngine {
 
         logger.info("Sequence \(sequence.id) complete")
 
-        if case .holdOnLastStep = sequence.onComplete {
+        if case .holdOnLastSegment = sequence.onComplete {
             sendStatus(isComplete: true)
         } else {
             isPlaying = false
@@ -1061,7 +1061,7 @@ public final class SequenceEngine {
     private func startPlayTask(sequence: SequenceDefinition, startIndex: Int,
                                startOffset: TimeInterval = 0) {
         playTask = Task { @MainActor in
-            guard let completion = await self.runStepsFrom(
+            guard let completion = await self.runSegmentsFrom(
                 index: startIndex, in: sequence, startOffset: startOffset) else { return }
             self.onSequenceComplete?(completion)
         }
@@ -1091,7 +1091,7 @@ public final class SequenceEngine {
 
     /// THE STORY'S MEMORY CHANGED — does a waiting boundary continue now?
     ///
-    /// Called after every applied mutation, from wherever it arrived: a step
+    /// Called after every applied mutation, from wherever it arrived: a segment
     /// action, an Interaction response, a response nested in `onAudioComplete`.
     ///
     /// Only a `.storyCondition` gate is released here. A gate that asked for an
@@ -1106,7 +1106,7 @@ public final class SequenceEngine {
     }
 
     /// Wait at a gate, respecting pause. Returns when gate is satisfied or task cancelled.
-    private func waitAtGate(_ gate: StepGate) async {
+    private func waitAtGate(_ gate: SegmentGate) async {
         // A GATE ASKS "IS THIS TRUE?", NOT "DID THIS JUST HAPPEN".
         //
         // So a story-condition boundary whose facts ALREADY hold does not stall
@@ -1133,7 +1133,7 @@ public final class SequenceEngine {
 
         // A STORY REGION OWNS ITS OWN TIMING. Its fallback runs from region
         // ENTRY on the pause-aware clock; a gate timeout would run from HERE,
-        // on a `Task.sleep`, and the two would race. Ordinary Step gates are
+        // on a `Task.sleep`, and the two would race. Ordinary Segment gates are
         // untouched — this only skips the gate timer when the gate IS a
         // region's exit.
         let regionOwnsTiming = storyRegions?.ownsActiveGateTiming == true
@@ -1150,12 +1150,12 @@ public final class SequenceEngine {
 
         // EXPLORE'S PUMP WHILE THE STORY IS PARKED.
         //
-        // `waitAtGate` suspends on a continuation, so the step loop's tick is
+        // `waitAtGate` suspends on a continuation, so the segment loop's tick is
         // not running — yet a held region still has to advance its dwell,
         // poll its fallback timer and drive its loop overlays. This is that
         // pump, and it is cancelled with the gate.
         //
-        // Four times a second, matching the step loop's own cadence. It reads a
+        // Four times a second, matching the segment loop's own cadence. It reads a
         // clock and compares a handful of regions; it never walks the document,
         // rebuilds a projection or issues a media command unless a phase
         // actually changed.
@@ -1200,29 +1200,29 @@ public final class SequenceEngine {
     // MARK: - Action Execution
 
     /// Test-only entry point — allows unit tests to verify action routing deterministically.
-    public func testExecuteAction(_ action: StepAction) async {
+    public func testExecuteAction(_ action: SegmentAction) async {
         await executeAction(action)
     }
 
-    /// RUN A RESPONSE THAT DID NOT COME FROM A STEP.
+    /// RUN A RESPONSE THAT DID NOT COME FROM A SEGMENT.
     ///
     /// An entity interaction fires when the VIEWER acts, not when the clock
     /// reaches a second — but what it runs is an ordinary action list, so it
     /// goes through the ordinary dispatch. That is the whole point: there is no
     /// second action engine, and `playAudio` means one thing in this app.
     ///
-    /// Deliberately independent of step context: it does not advance, pause,
-    /// satisfy a gate or touch `currentStepIndex`. An interaction leaves the
+    /// Deliberately independent of segment context: it does not advance, pause,
+    /// satisfy a gate or touch `currentSegmentIndex`. An interaction leaves the
     /// story exactly where it was.
-    public func performActions(_ actions: [StepAction]) {
+    public func performActions(_ actions: [SegmentAction]) {
         guard !actions.isEmpty else { return }
         Task { @MainActor in await self.executeActions(actions) }
     }
 
-    private func executeActions(_ actions: [StepAction]) async {
+    private func executeActions(_ actions: [SegmentAction]) async {
 #if DEBUG
-        if currentStepIndex == 0 {
-            stepSignposter.emitEvent("step1_dispatch")
+        if currentSegmentIndex == 0 {
+            segmentSignposter.emitEvent("segment1_dispatch")
         }
 #endif
         for action in actions {
@@ -1236,36 +1236,36 @@ public final class SequenceEngine {
 
     // MARK: - Occurrence stamps (FL-12 / FL-13)
 
-    /// The current Step, when one is playing.
-    private var firingStep: (step: StepDefinition, start: TimeInterval)? {
+    /// The current Segment, when one is playing.
+    private var firingSegment: (segment: SegmentDefinition, start: TimeInterval)? {
         guard let sequence = currentSequence,
-              sequence.steps.indices.contains(currentStepIndex) else { return nil }
+              sequence.segments.indices.contains(currentSegmentIndex) else { return nil }
         var start: TimeInterval = 0
-        for i in 0..<currentStepIndex { start += sequence.steps[i].duration }
-        return (sequence.steps[currentStepIndex], start)
+        for i in 0..<currentSegmentIndex { start += sequence.segments[i].duration }
+        return (sequence.segments[currentSegmentIndex], start)
     }
 
     /// The play, stamped with where it starts on the Sequence clock and how
     /// long its occurrence runs — the Kit's `Occurrence.start` / `end`.
     private func stamped(_ action: VideoAction) -> VideoAction {
-        guard let (step, start) = firingStep else { return action }
+        guard let (segment, start) = firingSegment else { return action }
         var stamped = action
         stamped.firedAt = start + currentFiringOffset
         stamped.timelineSpan = Self.occurrenceSpan(
-            channel: action.channel, firedAt: currentFiringOffset, in: step)
+            channel: action.channel, firedAt: currentFiringOffset, in: segment)
         return stamped
     }
 
     /// THE SPAN RULE, mirrored from the Kit's Timeline projection: an
-    /// occurrence that fires at `offset` into `step` runs until the same
-    /// channel's next stop or play LATER in the Step (a same-instant action
+    /// occurrence that fires at `offset` into `segment` runs until the same
+    /// channel's next stop or play LATER in the Segment (a same-instant action
     /// precedes it by authored order, so it does not end it), else until
-    /// the Step's end.
+    /// the Segment's end.
     public static func occurrenceSpan(channel: String, firedAt offset: TimeInterval,
-                                      in step: StepDefinition) -> TimeInterval {
-        var end = step.duration
-        let timed: [(TimeInterval, StepAction)] =
-            step.actions.map { (0, $0) } + step.scheduledActions.map { ($0.at, $0.action) }
+                                      in segment: SegmentDefinition) -> TimeInterval {
+        var end = segment.duration
+        let timed: [(TimeInterval, SegmentAction)] =
+            segment.actions.map { (0, $0) } + segment.scheduledActions.map { ($0.at, $0.action) }
         for (at, action) in timed where at > offset + 1e-6 && at < end {
             switch action {
             case .stopVideo(let c) where c == channel: end = at
@@ -1287,10 +1287,10 @@ public final class SequenceEngine {
     /// does with it (mix it, or simply replace it once it has a frame) is the
     /// video manager's decision.
     private func dissolveFollowsStop(on channel: String) -> Bool {
-        guard let (step, _) = firingStep else { return false }
+        guard let (segment, _) = firingSegment else { return false }
         let offset = currentFiringOffset
-        let timed: [(TimeInterval, StepAction)] =
-            step.actions.map { (0, $0) } + step.scheduledActions.map { ($0.at, $0.action) }
+        let timed: [(TimeInterval, SegmentAction)] =
+            segment.actions.map { (0, $0) } + segment.scheduledActions.map { ($0.at, $0.action) }
         return timed.contains { at, action in
             guard abs(at - offset) < 1e-6, case .playVideo(let v) = action,
                   v.channel == channel else { return false }
@@ -1302,24 +1302,24 @@ public final class SequenceEngine {
     /// the Sequence. The video manager warms it while this one plays.
     static func upcomingVideo(on channel: String, after absoluteTime: TimeInterval,
                               in sequence: SequenceDefinition) -> VideoAction? {
-        var stepStart: TimeInterval = 0
+        var segmentStart: TimeInterval = 0
         var best: (time: TimeInterval, action: VideoAction)?
-        for step in sequence.steps {
-            let timed: [(TimeInterval, StepAction)] =
-                step.actions.map { (0, $0) } + step.scheduledActions.map { ($0.at, $0.action) }
+        for segment in sequence.segments {
+            let timed: [(TimeInterval, SegmentAction)] =
+                segment.actions.map { (0, $0) } + segment.scheduledActions.map { ($0.at, $0.action) }
             for (at, action) in timed {
                 guard case .playVideo(let video) = action, video.channel == channel else { continue }
-                let time = stepStart + min(at, step.duration)
+                let time = segmentStart + min(at, segment.duration)
                 guard time > absoluteTime + 1e-6 else { continue }
                 if best == nil || time < best!.time { best = (time, video) }
             }
-            stepStart += step.duration
+            segmentStart += segment.duration
         }
         return best?.action
     }
 
     /// Async action dispatch — for actions where the executor is actually async.
-    private func executeAction(_ action: StepAction) async {
+    private func executeAction(_ action: SegmentAction) async {
         switch action {
         // No async actions in the default SharedVisions action set; extend here as needed.
         default:
@@ -1328,7 +1328,7 @@ public final class SequenceEngine {
     }
 
     /// Synchronous action dispatch — no suspension points.
-    private func executeActionSync(_ action: StepAction) {
+    private func executeActionSync(_ action: SegmentAction) {
         switch action {
         // Entity
         case .showEntity(let name):
@@ -1370,7 +1370,7 @@ public final class SequenceEngine {
 
         // Audio
         case .playAudio(let audioAction):
-            audioExecutor?.play(audioAction, stepContext: "\(currentSequenceId)/\(currentStepId)")
+            audioExecutor?.play(audioAction, segmentContext: "\(currentSequenceId)/\(currentSegmentId)")
         case .stopAudio(let channel):
             audioExecutor?.stop(channel: channel)
         case .fadeAudio(let channel, let to, let duration):
@@ -1461,7 +1461,7 @@ public final class SequenceEngine {
             //
             // Deliberately fire-and-report: the current Sequence is left as-is
             // here, and the navigator decides whether it is suspended (Go To)
-            // or discarded (Restart / End). Tearing down from inside a step
+            // or discarded (Restart / End). Tearing down from inside a segment
             // dispatch would race the very playback issuing it.
             logger.info("[flow] authored navigation requested: \(String(describing: intent))")
             onNavigationRequested?(intent)
@@ -1504,18 +1504,18 @@ public final class SequenceEngine {
     // MARK: - Status Reporting
 
     private func sendStatus(playing: Bool? = nil, isComplete: Bool = false) {
-        guard let sequence = currentSequence, let step = currentStep else { return }
+        guard let sequence = currentSequence, let segment = currentSegment else { return }
 
         let status = SequenceStatus(
             sequenceId: sequence.id,
-            stepId: step.id,
-            stepIndex: currentStepIndex,
-            stepName: step.name,
-            stepElapsed: stepElapsed,
-            stepDuration: step.duration,
+            segmentId: segment.id,
+            segmentIndex: currentSegmentIndex,
+            segmentName: segment.name,
+            segmentElapsed: segmentElapsed,
+            segmentDuration: segment.duration,
             totalElapsed: totalElapsed,
             totalDuration: totalDuration,
-            totalSteps: sequence.steps.count,
+            totalSegments: sequence.segments.count,
             isPlaying: playing ?? (isPlaying && !isPaused),
             isWaiting: isWaiting,
             isComplete: isComplete,

@@ -42,8 +42,8 @@ extension Visibility {
     }
 }
 
-private extension StepTimingFunction {
-    init(_ dto: ChapterScript.StepTimingFunction) {
+private extension SegmentTimingFunction {
+    init(_ dto: ChapterScript.SegmentTimingFunction) {
         switch dto {
         case .linear:     self = .linear
         case .easeIn:     self = .easeIn
@@ -147,7 +147,7 @@ private extension MoveAction {
             absoluteRotation: dto.absoluteRotation.map { quatFromEulerDegrees(SIMD3($0)) },
             rotationOffset: dto.rotationOffset.map { quatFromEulerDegrees(SIMD3($0)) },
             duration: dto.duration,
-            timing: StepTimingFunction(dto.timing)
+            timing: SegmentTimingFunction(dto.timing)
         )
     }
 }
@@ -168,7 +168,7 @@ private extension FadeAction {
             entity: dto.entity,
             opacity: dto.opacity,
             duration: dto.duration,
-            timing: StepTimingFunction(dto.timing)
+            timing: SegmentTimingFunction(dto.timing)
         )
     }
 }
@@ -312,12 +312,12 @@ private extension SparkBurstConfig {
     }
 }
 
-// MARK: - StepAction
+// MARK: - SegmentAction
 
-extension StepAction {
-    /// Convert a ChapterScript action DTO into a runtime `StepAction`.
+extension SegmentAction {
+    /// Convert a ChapterScript action DTO into a runtime `SegmentAction`.
     /// Throws on `.unknown` (forward-compat case the engine can't represent).
-    public init(dto: StepActionDTO) throws {
+    public init(dto: SegmentActionDTO) throws {
         switch dto {
 
         // Entity
@@ -325,7 +325,7 @@ extension StepAction {
         case .hideEntity(let name):       self = .hideEntity(name: name)
         case .moveEntity(let m):          self = .moveEntity(MoveAction(m))
         case .scaleEntity(let name, let mult, let dur, let timing):
-            self = .scaleEntity(name: name, multiplier: mult, duration: dur, timing: StepTimingFunction(timing))
+            self = .scaleEntity(name: name, multiplier: mult, duration: dur, timing: SegmentTimingFunction(timing))
         case .fadeEntity(let f):          self = .fadeEntity(FadeAction(f))
         case .persistEntity(let name):    self = .persistEntity(name: name)
         case .unpersistEntity(let name):  self = .unpersistEntity(name: name)
@@ -345,7 +345,7 @@ extension StepAction {
         case .stopAudio(let channel):                 self = .stopAudio(channel: channel)
         case .fadeAudio(let channel, let to, let d):  self = .fadeAudio(channel: channel, to: to, duration: d)
         case .onAudioComplete(let channel, let then):
-            self = .onAudioComplete(channel: channel, then: try then.map { try StepAction(dto: $0) })
+            self = .onAudioComplete(channel: channel, then: try then.map { try SegmentAction(dto: $0) })
 
         // Video
         case .playVideo(let v):       self = .playVideo(VideoAction(v))
@@ -416,10 +416,10 @@ extension StepAction {
     }
 }
 
-// MARK: - StepGate / VisibilityState / CompletionAction
+// MARK: - SegmentGate / VisibilityState / CompletionAction
 
-private extension StepGate {
-    init(_ dto: StepGateDTO) {
+private extension SegmentGate {
+    init(_ dto: SegmentGateDTO) {
         self.init(
             type: GateType(dto.type),
             timeout: dto.timeout,
@@ -464,7 +464,7 @@ public extension CompletionAction {
     /// than silently becoming a hold.
     var authored: CompletionActionDTO {
         switch self {
-        case .holdOnLastStep:                          return .holdOnLastStep
+        case .holdOnLastSegment:                          return .holdOnLastSegment
         case .transitionTo(let phase, let visibility): return .transitionTo(phase: phase, visibility: visibility.dto)
         case .autoAdvance(let nextSequenceId):         return .autoAdvance(nextSequenceId: nextSequenceId)
         case .dismissToHome:                           return .dismissToHome
@@ -476,7 +476,7 @@ public extension CompletionAction {
 private extension CompletionAction {
     init(_ dto: CompletionActionDTO) {
         switch dto {
-        case .holdOnLastStep:                         self = .holdOnLastStep
+        case .holdOnLastSegment:                         self = .holdOnLastSegment
         case .transitionTo(let phase, let visibility): self = .transitionTo(phase: phase, visibility: VisibilityState(visibility))
         case .autoAdvance(let nextSequenceId):          self = .autoAdvance(nextSequenceId: nextSequenceId)
         case .dismissToHome:                           self = .dismissToHome
@@ -488,26 +488,26 @@ private extension CompletionAction {
     }
 }
 
-// MARK: - ScheduledAction / StepDefinition / SequenceDefinition
+// MARK: - ScheduledAction / SegmentDefinition / SequenceDefinition
 
 private extension ScheduledAction {
     init(_ dto: ScheduledActionDTO) throws {
-        self.init(at: dto.at, action: try StepAction(dto: dto.action))
+        self.init(at: dto.at, action: try SegmentAction(dto: dto.action))
     }
 }
 
-extension StepDefinition {
-    public init(dto: StepDefinitionDTO) throws {
+extension SegmentDefinition {
+    public init(dto: SegmentDefinitionDTO) throws {
         // THE CANONICAL POSITIONAL ACCESSOR: `authoredActions` is the one
         // ordered list (format v4); `.actions` / `.scheduledActions` are the
         // deprecated at<=0 / at>0 split kept only for pre-v4 call sites. This
         // walk builds the player's own two-array runtime shape in one pass,
         // preserving the deprecated getters' order (stable filter) without
         // reading them.
-        var opening: [StepAction] = []
+        var opening: [SegmentAction] = []
         var scheduled: [ScheduledAction] = []
         for authored in dto.authoredActions {
-            var action = try StepAction(dto: authored.action)
+            var action = try SegmentAction(dto: authored.action)
             // FL-11: the authored id is the only name a Mask's matte
             // reference can mean, so it is carried here — the one place
             // that still has it.
@@ -527,7 +527,7 @@ extension StepDefinition {
             duration: dto.duration,
             actions: opening,
             scheduledActions: scheduled,
-            gate: dto.gate.map { StepGate($0) }
+            gate: dto.gate.map { SegmentGate($0) }
         )
     }
 }
@@ -545,7 +545,7 @@ extension SequenceDefinition {
             effectKeyTracks: dto.effectKeyTracks ?? [],
             materialKeyTracks: dto.materialKeyTracks ?? [],
             subElementKeyTracks: dto.subElementKeyTracks ?? [],
-            steps: try dto.steps.map { try StepDefinition(dto: $0) },
+            segments: try dto.segments.map { try SegmentDefinition(dto: $0) },
             animationTracks: dto.animationTracks,
             audioTracks: dto.audioTracks,
             mutedDestinations: dto.mutedDestinations ?? [],

@@ -11,7 +11,7 @@
 //  FOUR RULES SHAPE EVERYTHING HERE.
 //
 //  1. RESPONSES GO THROUGH THE EXISTING ENGINE. `perform` hands the actions to
-//     `SequenceEngine`, which routes them to the same executors a step's
+//     `SequenceEngine`, which routes them to the same executors a segment's
 //     actions use. There is no `playAudioFromInteraction`. An interaction
 //     decides WHEN a behavior runs and never what it means.
 //
@@ -44,7 +44,7 @@
 //  never arrives here. The two may disagree. Do not "fix" that.
 //
 //  WHAT THIS DELIBERATELY DOES NOT DO: gates. Nothing here reads, writes or
-//  satisfies a `StepGate`. An interaction leaves the story exactly where it was.
+//  satisfies a `SegmentGate`. An interaction leaves the story exactly where it was.
 //
 
 import Combine
@@ -71,8 +71,8 @@ public final class InteractionController {
     @ObservationIgnored public let detector: SpatialTriggerDetector
 
     /// Runs a response. Wired to `SequenceEngine.performActions`, so an
-    /// interaction's actions travel the same path a step's do.
-    @ObservationIgnored public var perform: (([StepAction]) -> Void)?
+    /// interaction's actions travel the same path a segment's do.
+    @ObservationIgnored public var perform: (([SegmentAction]) -> Void)?
 
     /// Resolves an authored entity name to the live entity.
     @ObservationIgnored public var entityProvider: ((String) -> Entity?)?
@@ -370,8 +370,8 @@ public final class InteractionController {
         }
         armedCount = ledger.armedCount
 
-        let actions = responses.compactMap { dto -> StepAction? in
-            do { return try StepAction(dto: dto) } catch {
+        let actions = responses.compactMap { dto -> SegmentAction? in
+            do { return try SegmentAction(dto: dto) } catch {
                 logger.warning("Interaction '\(interactionId)' carries an action this build cannot run: \(String(describing: error))")
                 return nil
             }

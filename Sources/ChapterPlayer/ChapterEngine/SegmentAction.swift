@@ -1,9 +1,9 @@
 //
-//  StepAction.swift
+//  SegmentAction.swift
 //  SharedVisions
 //
-//  Composable actions that fire when a step starts.
-//  Multiple actions execute in parallel within a single step.
+//  Composable actions that fire when a segment starts.
+//  Multiple actions execute in parallel within a single segment.
 //
 
 import Foundation
@@ -11,14 +11,14 @@ import simd
 import SwiftUI
 import ChapterScript
 
-// MARK: - Step Action
+// MARK: - Segment Action
 
-public enum StepAction: Sendable {
+public enum SegmentAction: Sendable {
     // Entity
     case showEntity(name: String)
     case hideEntity(name: String)
     case moveEntity(MoveAction)
-    case scaleEntity(name: String, multiplier: Float, duration: TimeInterval, timing: StepTimingFunction)
+    case scaleEntity(name: String, multiplier: Float, duration: TimeInterval, timing: SegmentTimingFunction)
     case fadeEntity(FadeAction)
     case persistEntity(name: String)
     case unpersistEntity(name: String)
@@ -59,7 +59,7 @@ public enum StepAction: Sendable {
     case setCategoryVolume(category: String, volume: Float)
 
     // Audio Completion — runs `then` actions after `channel` finishes.
-    case onAudioComplete(channel: String, then: [StepAction])
+    case onAudioComplete(channel: String, then: [SegmentAction])
 
     // Audio Zones
     case addAudioZone(AudioZone)
@@ -102,7 +102,7 @@ public enum StepAction: Sendable {
 
     /// True only for actions whose executor method is async.
     /// All other actions execute synchronously and must not be `await`ed
-    /// to avoid MainActor suspension points that starve the step loop.
+    /// to avoid MainActor suspension points that starve the segment loop.
     public var isAsync: Bool {
         switch self {
         case .custom:
@@ -134,7 +134,7 @@ public struct MoveAction: Sendable {
     /// orientation. Ignored when `absoluteRotation` is set.
     public let rotationOffset: simd_quatf?
     public let duration: TimeInterval
-    public let timing: StepTimingFunction
+    public let timing: SegmentTimingFunction
 
     public init(
         entity: String,
@@ -147,7 +147,7 @@ public struct MoveAction: Sendable {
         absoluteRotation: simd_quatf? = nil,
         rotationOffset: simd_quatf? = nil,
         duration: TimeInterval = 1.0,
-        timing: StepTimingFunction = .easeInOut
+        timing: SegmentTimingFunction = .easeInOut
     ) {
         assert(headRelativePosition == nil || absolutePosition == nil,
                "headRelativePosition and absolutePosition are mutually exclusive")
@@ -169,7 +169,7 @@ public struct MoveAction: Sendable {
 
 // MARK: - Fade Action
 
-/// A step action that animates an entity's opacity via `OpacityComponent`.
+/// A segment action that animates an entity's opacity via `OpacityComponent`.
 ///
 /// **Important:** `fadeEntity` makes the entity visually transparent but it remains
 /// enabled — it still receives gestures and participates in collisions.
@@ -180,13 +180,13 @@ public struct FadeAction: Sendable {
     public let opacity: Float
     /// Animation duration, clamped ≥ 0. Duration of 0 snaps immediately.
     public let duration: TimeInterval
-    public let timing: StepTimingFunction
+    public let timing: SegmentTimingFunction
 
     public init(
         entity: String,
         opacity: Float,
         duration: TimeInterval = 1.0,
-        timing: StepTimingFunction = .easeInOut
+        timing: SegmentTimingFunction = .easeInOut
     ) {
         self.entity = entity
         self.opacity = min(max(opacity, 0.0), 1.0)
@@ -199,8 +199,8 @@ public struct FadeAction: Sendable {
 
 /// Per-frame parametric/keyframe motion driven by `MotionCurve`. The action describes
 /// optional position/scale/rotation curves; the engine evaluates them every frame
-/// against `engine.stepElapsed / duration` and `engine.totalElapsed`. Motions clear
-/// at the next step boundary.
+/// against `engine.segmentElapsed / duration` and `engine.totalElapsed`. Motions clear
+/// at the next segment boundary.
 ///
 /// Curves come straight from the ChapterScript format; no runtime mirror needed
 /// because they're all primitive Codable value types.
@@ -215,8 +215,8 @@ public struct AnimateMotionAction: Sendable {
 // MARK: - Reveal Action
 
 /// Atomically snap-invisible → position/scale → enable → fade-in an entity.
-/// Eliminates the fragile multi-step show/fade choreography that causes visual pops.
-/// `revealEntity` MUST be the first action in its step's action array.
+/// Eliminates the fragile multi-segment show/fade choreography that causes visual pops.
+/// `revealEntity` MUST be the first action in its segment's action array.
 public struct RevealAction: Sendable {
     public let entity: String
     public let position: SIMD3<Float>?
@@ -438,7 +438,7 @@ public struct VideoAction: Sendable {
     /// stamped by the ENGINE at dispatch — never by the bridge, which
     /// cannot know it: when this play fired, in `sequenceAnimationTime`
     /// seconds, and how long the occurrence runs (to the channel's next
-    /// stop or play in the Step, else the Step's end). A retime fraction
+    /// stop or play in the Segment, else the Segment's end). A retime fraction
     /// and a dissolve's progress are measured against these — the Kit's
     /// `Occurrence.start` / `end`, arrived at from the schedule the
     /// player already fires. Absent on a play the engine did not stamp
@@ -557,8 +557,8 @@ public enum VideoLayout: String, Sendable {
 // MARK: - Scheduled Action
 
 public struct ScheduledAction: Sendable {
-    public let at: TimeInterval        // Seconds after step starts (0.0 = immediate)
-    public let action: StepAction
+    public let at: TimeInterval        // Seconds after segment starts (0.0 = immediate)
+    public let action: SegmentAction
 }
 
 // MARK: - Audio Zone

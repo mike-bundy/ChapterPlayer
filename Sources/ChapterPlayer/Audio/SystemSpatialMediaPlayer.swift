@@ -213,7 +213,7 @@ final class SystemSpatialMediaPlayer {
     /// THE ONLY PLACE AN `AVPlayer` IS CONSTRUCTED.
     ///
     /// A choke point on purpose. The listening frame is not a one-time setup
-    /// step that a later code path can skip: source replacement, a loop
+    /// segment that a later code path can skip: source replacement, a loop
     /// restart, a re-prepare after a seek — any of them producing a fresh
     /// player would otherwise silently revert to the system default while the
     /// Inspector still showed the author's choice. Route every construction
