@@ -766,9 +766,13 @@ public final class SequenceEngine {
     static func scheduledInFireOrder(_ segment: SegmentDefinition) -> [ScheduledAction] {
         segment.scheduledActions
             .enumerated()
+            // The same rule as the editor (ChapterScript `FireOrder`): one
+            // instant to the microsecond, and a stop before a start at a cut.
             .sorted { a, b in
-                a.element.at != b.element.at ? a.element.at < b.element.at
-                                             : a.offset < b.offset
+                FireOrder.precedes(at: a.element.at, closes: a.element.action.endsAnOccurrence,
+                                   offset: a.offset,
+                                   before: b.element.at, closes: b.element.action.endsAnOccurrence,
+                                   offset: b.offset)
             }
             .map(\.element)
     }

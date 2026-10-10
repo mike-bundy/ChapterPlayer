@@ -719,3 +719,14 @@ public struct SparkBurstConfig: Sendable, Equatable {
         self.tintBlue = tintBlue
     }
 }
+
+
+extension SegmentAction {
+    /// Ends an occurrence on its channel or entity (ChapterScript `FireOrder`).
+    var endsAnOccurrence: Bool {
+        switch self {
+        case .stopVideo, .stopAudio, .hideEntity: return true
+        default: return false
+        }
+    }
+}
