@@ -100,6 +100,11 @@ public enum SegmentAction: Sendable {
     // Custom escape hatch
     case custom(id: String)
 
+    /// A future authored action this runtime cannot execute. Keep its payload
+    /// intact instead of rejecting its containing Sequence or treating it as
+    /// a registered custom action. The engine reports it and does no work.
+    case unsupported(name: String, raw: AnyCodableValue)
+
     /// True only for actions whose executor method is async.
     /// All other actions execute synchronously and must not be `await`ed
     /// to avoid MainActor suspension points that starve the segment loop.
@@ -588,6 +593,18 @@ public struct AudioZone: Sendable {
         self.audio = audio
         self.fadeInDuration = fadeInDuration
         self.fadeOutDuration = fadeOutDuration
+    }
+
+    /// The zone overrides its channel, entry fade and missing category.
+    /// Every other authored cue field crosses this playback boundary intact.
+    public var playbackAction: AudioAction {
+        AudioAction(file: audio.file, channel: "zone_\(id)", scope: audio.scope,
+                    volume: audio.volume, loop: audio.loop, fadeIn: fadeInDuration,
+                    fadeOut: audio.fadeOut, spatial: audio.spatial,
+                    category: audio.category ?? "ambient", crossfade: audio.crossfade,
+                    loopConfig: audio.loopConfig, sourceRange: audio.sourceRange,
+                    playbackModel: audio.playbackModel, spatialPresentation: audio.spatialPresentation,
+                    retime: audio.retime, pitch: audio.pitch)
     }
 }
 

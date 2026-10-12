@@ -1680,19 +1680,29 @@ open class ChapterPlayerCore {
     /// load-time snapshot (MaestroVision) can resolve auto-advance
     /// targets against their CURRENT document instead.
     open func sequenceFromLoadedDocument(id: String) -> SequenceDefinition? {
-        guard let document = loadedExperience?.document else { return nil }
-        return try? SequenceDefinition.from(document: document, sequenceId: id)
+        guard let dto = loadedExperience?.document.sequences.first(where: { $0.id == id }) else { return nil }
+        return runtimeSequence(dto)
     }
 
     /// All runtime sequences that the player UI should render in any
     /// timeline scrub bar. When a ChapterScript document is loaded
     /// (live, file-open, or local folder), returns its sequences mapped
-    /// through `SequenceDefinition.from`. Empty when nothing is loaded
+    /// through the same conversion as loaded Sequence lookup. Empty when nothing is loaded
     /// — the consumer's UI surfaces an empty state.
     public var displaySequences: [SequenceDefinition] {
         guard let document = loadedExperience?.document else { return [] }
-        return document.sequences.compactMap { dto in
-            try? SequenceDefinition.from(document: document, sequenceId: dto.id)
+        return document.sequences.compactMap { runtimeSequence($0) }
+    }
+
+    /// Unknown actions are represented by the bridge, so they cannot erase a
+    /// valid Sequence here. A conversion safety refusal is different and must
+    /// be reported rather than hidden behind `try?`.
+    private func runtimeSequence(_ dto: SequenceDefinitionDTO) -> SequenceDefinition? {
+        do {
+            return try SequenceDefinition(dto: dto)
+        } catch {
+            logger.error("Sequence '\(dto.id, privacy: .public)' could not be converted: \(String(describing: error), privacy: .public)")
+            return nil
         }
     }
 

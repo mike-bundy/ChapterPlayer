@@ -127,6 +127,11 @@ public final class SequenceEngine {
     /// Called when a gate is satisfied — lets ImmersiveView hide the prompt
     public var onGateEnded: (() -> Void)?
 
+    /// Observes the same unsupported-action dispatch that emits an OSLog
+    /// warning. Only the kind is reported; opaque authored payloads are never
+    /// logged or passed to custom executors. This is runtime-only state.
+    @ObservationIgnored public var onUnsupportedAction: ((_ kind: String) -> Void)?
+
     /// Runtime spatial-gate detection (viewer-facing / proximity / grab). Wired by
     /// `ChapterPlayerCore`; runs alongside `onGateStarted`/`onGateEnded`,
     /// which stay reserved for the consumer's prompt UI.
@@ -1486,6 +1491,10 @@ public final class SequenceEngine {
         case .custom(let id):
             logger.info("Custom action: \(id)")
             effectExecutor?.handleCustomAction(id: id)
+
+        case .unsupported(let name, _):
+            logger.warning("Unsupported action '\(name, privacy: .public)' in Sequence '\(self.currentSequenceId, privacy: .public)', Segment '\(self.currentSegmentId, privacy: .public)' was preserved and skipped.")
+            onUnsupportedAction?(name)
         }
     }
 

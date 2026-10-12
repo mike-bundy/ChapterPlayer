@@ -15,6 +15,7 @@ import ChapterScript
 public enum ChapterScriptRuntimeError: Error, CustomStringConvertible {
     case unsupportedAction(String)
     case unsupportedDocument(reason: String)
+    case actionNestingLimitExceeded(limit: Int)
 
     public var description: String {
         switch self {
@@ -22,6 +23,8 @@ public enum ChapterScriptRuntimeError: Error, CustomStringConvertible {
             return "ChapterScript action '\(kind)' has no runtime equivalent yet."
         case .unsupportedDocument(let reason):
             return "Unsupported document: \(reason)"
+        case .actionNestingLimitExceeded(let limit):
+            return "Runtime action conversion exceeds the \(limit)-level audio-completion nesting limit."
         }
     }
 }
@@ -318,8 +321,16 @@ private extension SparkBurstConfig {
 
 extension SegmentAction {
     /// Convert a ChapterScript action DTO into a runtime `SegmentAction`.
-    /// Throws on `.unknown` (forward-compat case the engine can't represent).
+    /// Unknown payloads remain inert, preserved actions. Deeply nested audio
+    /// completion carriers are refused explicitly at the runtime safety limit;
+    /// this does not add a schema rule or rewrite the authored DTO.
     public init(dto: SegmentActionDTO) throws {
+        try self.init(dto: dto, audioCompletionDepth: 0)
+    }
+
+    private static let maximumAudioCompletionDepth = 64
+
+    private init(dto: SegmentActionDTO, audioCompletionDepth: Int) throws {
         switch dto {
 
         // Entity
@@ -347,7 +358,13 @@ extension SegmentAction {
         case .stopAudio(let channel):                 self = .stopAudio(channel: channel)
         case .fadeAudio(let channel, let to, let d):  self = .fadeAudio(channel: channel, to: to, duration: d)
         case .onAudioComplete(let channel, let then):
-            self = .onAudioComplete(channel: channel, then: try then.map { try SegmentAction(dto: $0) })
+            guard audioCompletionDepth < Self.maximumAudioCompletionDepth else {
+                throw ChapterScriptRuntimeError.actionNestingLimitExceeded(
+                    limit: Self.maximumAudioCompletionDepth)
+            }
+            self = .onAudioComplete(channel: channel, then: try then.map {
+                try SegmentAction(dto: $0, audioCompletionDepth: audioCompletionDepth + 1)
+            })
 
         // Video
         case .playVideo(let v):       self = .playVideo(VideoAction(v))
@@ -412,8 +429,8 @@ extension SegmentAction {
             ))
 
         // Forward-compat
-        case .unknown(let name, _):
-            throw ChapterScriptRuntimeError.unsupportedAction("unknown:\(name)")
+        case .unknown(let name, let raw):
+            self = .unsupported(name: name, raw: raw)
         }
     }
 }

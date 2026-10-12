@@ -859,17 +859,7 @@ public class SpatialAudioManager {
             if isInZone && !wasActive {
                 // Enter zone — start playing
                 let channelName = "zone_\(zoneId)"
-                let zoneAction = AudioAction(
-                    file: zone.audio.file,
-                    channel: channelName,
-                    volume: zone.audio.volume,
-                    loop: zone.audio.loop,
-                    fadeIn: zone.fadeInDuration,
-                    spatial: zone.audio.spatial,
-                    category: zone.audio.category ?? "ambient",
-                    crossfade: zone.audio.crossfade,
-                    loopConfig: zone.audio.loopConfig
-                )
+                let zoneAction = zone.playbackAction
                 play(action: zoneAction)
                 activeZoneChannels[zoneId] = channelName
                 logger.info("Entered audio zone: \(zoneId)")
